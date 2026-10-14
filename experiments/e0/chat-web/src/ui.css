@@ -1,0 +1,16 @@
+* { box-sizing: border-box; }
+body { margin: 0; padding: 12px 18px; color: #20242b; background: #f7f8fa; font: 13px system-ui, sans-serif; }
+header { display: flex; align-items: center; gap: 28px; min-height: 34px; }
+.brand { display: flex; gap: 10px; align-items: baseline; white-space: nowrap; }
+.brand span, small { color: #646b76; }
+.status { display: flex; align-items: center; gap: 10px; flex: 1; }
+.navigation { display: flex; gap: 5px; }
+#chat-status[data-state="error"], #chat-status[data-state="blocked"] { color: #a32626; }
+#external-offer { display: flex; align-items: center; gap: 8px; }
+main { display: grid; grid-template-columns: 160px minmax(240px, 1fr) auto minmax(260px, 1fr) auto 1fr; align-items: center; gap: 8px 10px; padding-top: 9px; border-top: 1px solid #d9dde4; }
+label { font-weight: 600; }
+textarea { width: 100%; resize: vertical; min-height: 42px; padding: 7px; border: 1px solid #bcc3ce; border-radius: 5px; font: inherit; }
+button { padding: 7px 10px; border: 1px solid #afb7c3; border-radius: 5px; background: #fff; cursor: pointer; white-space: nowrap; }
+button:hover { background: #edf2fa; }
+#copy-result { min-width: 110px; color: #23633d; }
+small { grid-column: 1 / -1; }

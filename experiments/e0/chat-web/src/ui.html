@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prueba Chat web manual</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><strong>A3 · E0-B1</strong><span>Chat web manual</span></div>
+    <div class="navigation"><button id="back" type="button" aria-label="Atrás" disabled>←</button><button id="forward" type="button" aria-label="Adelante" disabled>→</button></div>
+    <div class="status"><span id="chat-status">Cargando ChatGPT…</span><button id="retry" type="button">Reintentar</button></div>
+    <div id="external-offer" hidden><span id="external-label"></span><button id="open-external" type="button">Abrir en navegador externo</button></div>
+  </header>
+  <main>
+    <label for="selected-context">Pega aquí texto seleccionado en A3</label>
+    <textarea id="selected-context" rows="2" placeholder="Selecciona y copia texto del proyecto en A3; pégalo aquí manualmente."></textarea>
+    <button id="copy-selection" type="button">Copiar selección</button>
+    <label for="prompt">Prompt preparado</label>
+    <textarea id="prompt" rows="2">Resume el contexto pegado y dime qué preguntas faltan.</textarea>
+    <button id="copy-prompt" type="button">Copiar prompt</button>
+    <span id="copy-result" role="status" aria-live="polite"></span>
+    <small>La página inferior es independiente. Pega allí tú mismo el texto copiado; este demo no lee ni controla su contenido.</small>
+  </main>
+  <script src="ui.js"></script>
+</body>
+</html>

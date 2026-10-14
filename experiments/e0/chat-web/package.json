@@ -1,0 +1,14 @@
+{
+  "name": "a3-e0-b1-chat-web-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Temporary Electron WebContentsView compatibility spike for E0-B1",
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "node test/run.cjs --interactive",
+    "test": "node test/run.cjs"
+  },
+  "devDependencies": {
+    "electron": "44.7.2"
+  }
+}
