@@ -10,6 +10,8 @@ Contratos: [dominio e invariantes](docs/e0/contracts/domain.md), [comandos y mig
 
 Tecnologías realmente usadas: JSON Schema 2020-12, JSON/Markdown UTF-8, JavaScript sobre Node.js, Ajv 8.20.0 para E0-A y Electron 44.7.2 solo dentro del spike de E0-B1. E0-B2 usa módulos integrados de Node.js y el Codex CLI local, sin dependencias npm. Los spikes están aislados; no se añadieron dependencias al package raíz ni a una dependencia de producción.
 
+E0-C1 añade una prueba de almacenamiento y recuperación en Windows en `experiments/e0/windows-storage/`, solo con módulos integrados de Node.js y datos temporales. Se ejecuta con `npm test --prefix experiments/e0/windows-storage`; resultados y límites están en [la nota de compatibilidad de almacenamiento](docs/e0/compatibility/windows-storage-recovery.md). No prueba cortes de energía ni implementa el project-store.
+
 Para reproducir las comprobaciones desde la raíz, con Node.js y npm:
 
 ```sh

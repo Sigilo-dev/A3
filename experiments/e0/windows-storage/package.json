@@ -1,0 +1,9 @@
+{
+  "name": "a3-e0-windows-storage-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Temporary-folder Windows storage and recovery spike for A3",
+  "scripts": {
+    "test": "node run.cjs"
+  }
+}
