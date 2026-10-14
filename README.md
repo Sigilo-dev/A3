@@ -14,6 +14,8 @@ E0-C1 añade una prueba de almacenamiento y recuperación en Windows en `experim
 
 E0-C2 añade `experiments/e0/windows-isolation/`, una prueba negativa de guardas de rutas y permisos heredados por un hijo Node en Windows. Usa únicamente módulos integrados, fixtures sintéticos temporales y no realiza conexiones de red. Se ejecuta con `npm test --prefix experiments/e0/windows-isolation`; los mecanismos del sistema no probados y la matriz de perfiles están en [la nota de aislamiento de procesos](docs/e0/compatibility/windows-process-isolation.md). No implementa un sandbox ni el broker de permisos.
 
+E0-D1 añade el spike local experiments/e0/editors-canvas/: Milkdown/Crepe y CodeMirror sobre el mismo fixture Markdown, React Flow con Perfect Freehand, y exportadores SVG/PNG. Sus dependencias están fijadas solo en el package-lock.json del spike; no forman parte de la aplicación ni de dependencias productivas. La nota docs/e0/compatibility/editors-canvas-export.md incluye los resultados manuales y los límites.
+
 Para reproducir las comprobaciones desde la raíz, con Node.js y npm:
 
 ```sh

@@ -1,0 +1,20 @@
+{
+  "fixtureVersion": "e0-d1-1",
+  "nodes": [
+    {
+      "id": "entity-a",
+      "type": "default",
+      "position": { "x": 120, "y": 110 },
+      "data": { "label": "Entidad A", "width": 170, "height": 72 }
+    },
+    {
+      "id": "entity-b",
+      "type": "default",
+      "position": { "x": 500, "y": 240 },
+      "data": { "label": "Entidad B", "width": 170, "height": 72 }
+    }
+  ],
+  "edges": [],
+  "viewport": { "x": 0, "y": 0, "zoom": 1 },
+  "drawings": []
+}

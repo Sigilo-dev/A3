@@ -1,0 +1,41 @@
+:root { font-family: Inter, Segoe UI, sans-serif; color: #172033; background: #eef2f7; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 760px; }
+button, a { font: inherit; }
+button { border: 1px solid #c8d2df; background: #fff; border-radius: 7px; color: #263448; padding: 7px 10px; cursor: pointer; }
+button:hover, a:hover { border-color: #64748b; }
+button.active { background: #dceafe; border-color: #3b82f6; color: #123e7a; }
+.app-shell { width: min(1440px, calc(100% - 32px)); margin: 0 auto; padding: 22px 0 38px; }
+.page-header { display: flex; align-items: end; justify-content: space-between; gap: 32px; margin: 0 2px 18px; }
+.page-header h1 { margin: 2px 0 0; font-size: 26px; }
+.page-header > p { max-width: 400px; color: #64748b; font-size: 13px; line-height: 1.5; }
+.eyebrow { margin: 0; text-transform: uppercase; letter-spacing: .12em; color: #64748b; font: 11px 'DM Mono', monospace; }
+.panel { background: #fff; border: 1px solid #d7e0eb; border-radius: 12px; box-shadow: 0 8px 24px #25364a0b; padding: 16px; margin: 14px 0; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+.section-heading h2 { margin: 3px 0 0; font-size: 17px; }
+.fixture-label { color: #64748b; font: 11px 'DM Mono', monospace; }
+.editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.editor-card { min-width: 0; overflow: hidden; border: 1px solid #d7e0eb; border-radius: 8px; }
+.editor-title { display: flex; justify-content: space-between; align-items: center; padding: 8px; background: #f8fafc; border-bottom: 1px solid #d7e0eb; font-size: 12px; }
+.milkdown-root { min-height: 315px; max-height: 390px; overflow: auto; padding: 8px; }
+.milkdown-root .milkdown { min-height: 290px; }
+.milkdown-root .milkdown .editor { padding: 14px 16px; }
+.codemirror-root { height: 365px; overflow: auto; }
+.codemirror-root .cm-editor { height: 365px; font: 12px/1.65 'DM Mono', Consolas, monospace; }
+.codemirror-root .cm-scroller { overflow: auto; }
+.editor-status { margin: 7px 0; min-height: 17px; color: #475569; font-size: 11px; font-family: 'DM Mono', monospace; }
+.small-note { color: #64748b; font-size: 11px; line-height: 1.5; }
+details { padding: 0 10px 10px; font-size: 11px; }
+details pre { max-height: 180px; overflow: auto; padding: 8px; background: #f1f5f9; font: 10px/1.5 'DM Mono', monospace; white-space: pre-wrap; }
+.toolbar, .export-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 10px 0; }
+.toolbar button, .export-row button, .export-row a { font-size: 11px; }
+.export-row a { display: inline-block; text-decoration: none; color: #1d4ed8; padding: 7px 4px; }
+.flow-host { width: 100%; height: 510px; overflow: hidden; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; touch-action: none; }
+.probe-node { display: flex; position: relative; align-items: center; justify-content: center; border: 2px solid #334155; border-radius: 9px; background: #fff; box-shadow: 0 4px 12px #0f172a18; font-size: 13px; font-weight: 600; }
+.probe-node .react-flow__handle { width: 10px; height: 10px; background: #2563eb; border: 2px solid #fff; }
+.stroke-world { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.world-stroke { pointer-events: none; }
+.preview-stroke { opacity: .68; }
+.draw-mode .react-flow__pane { cursor: crosshair; }
+.png-preview { display: block; max-width: min(100%, 600px); max-height: 320px; margin-top: 10px; border: 1px solid #cbd5e1; background: white; }
+footer { padding: 10px 4px; color: #64748b; font-size: 11px; }
