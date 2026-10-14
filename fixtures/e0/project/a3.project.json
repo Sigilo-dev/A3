@@ -1,0 +1,11 @@
+{
+  "formatVersion": "1.0.0",
+  "projectId": "00000000-0000-4000-8000-000000000001",
+  "revision": 1,
+  "name": "Ejemplo E0-A",
+  "defaultWorkspaceId": "00000000-0000-4000-8000-000000000006",
+  "createdAt": "2026-10-14T12:00:00Z",
+  "locale": "es",
+  "catalogRoot": ".a3",
+  "extensions": {}
+}

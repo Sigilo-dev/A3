@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigilo-dev.github.io/A3/schemas/e0/resource.schema.json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "id": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid"
+    },
+    "revision": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/revision"
+    },
+    "kind": {
+      "enum": [
+        "project-file",
+        "mounted-file",
+        "remote-url"
+      ]
+    },
+    "path": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/path"
+    },
+    "mountId": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid"
+    },
+    "url": {
+      "type": "string",
+      "format": "absolute-url"
+    },
+    "mediaType": {
+      "type": "string",
+      "minLength": 1
+    },
+    "extensions": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "id",
+    "revision",
+    "kind",
+    "extensions"
+  ],
+  "additionalProperties": true,
+  "oneOf": [
+    {
+      "properties": {
+        "kind": {
+          "const": "project-file"
+        },
+        "mountId": false,
+        "url": false,
+        "path": {
+          "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/path"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "mounted-file"
+        },
+        "url": false,
+        "path": {
+          "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/path"
+        },
+        "mountId": {
+          "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid"
+        }
+      },
+      "required": [
+        "path",
+        "mountId"
+      ]
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "remote-url"
+        },
+        "path": false,
+        "mountId": false,
+        "url": {
+          "type": "string",
+          "format": "absolute-url"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    }
+  ]
+}

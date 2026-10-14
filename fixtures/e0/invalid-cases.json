@@ -1,0 +1,197 @@
+[
+  {
+    "name": "invalid uuid",
+    "kind": "entity",
+    "path": [
+      "id"
+    ],
+    "value": "not-a-uuid"
+  },
+  {
+    "name": "fractional revision",
+    "kind": "entity",
+    "path": [
+      "revision"
+    ],
+    "value": 1.5
+  },
+  {
+    "name": "zero revision",
+    "kind": "workspace",
+    "path": [
+      "revision"
+    ],
+    "value": 0
+  },
+  {
+    "name": "unsupported major",
+    "kind": "project",
+    "path": [
+      "formatVersion"
+    ],
+    "value": "2.0.0"
+  },
+  {
+    "name": "invalid calendar date",
+    "kind": "project",
+    "path": [
+      "createdAt"
+    ],
+    "value": "2026-02-30T12:00:00Z"
+  },
+  {
+    "name": "missing reference",
+    "kind": "placement",
+    "path": [
+      "entityId"
+    ],
+    "remove": true
+  },
+  {
+    "name": "unqualified property",
+    "kind": "entity",
+    "path": [
+      "properties"
+    ],
+    "value": {
+      "title": "unqualified"
+    }
+  },
+  {
+    "name": "unqualified extension",
+    "kind": "entity",
+    "path": [
+      "extensions"
+    ],
+    "value": {
+      "notes": {}
+    }
+  },
+  {
+    "name": "conflicting location",
+    "kind": "resource",
+    "path": [
+      "url"
+    ],
+    "value": "https://example.com"
+  },
+  {
+    "name": "parent path",
+    "kind": "resource",
+    "path": [
+      "path"
+    ],
+    "value": "../secret"
+  },
+  {
+    "name": "absolute path",
+    "kind": "resource",
+    "path": [
+      "path"
+    ],
+    "value": "C:/secret"
+  },
+  {
+    "name": "backslash path",
+    "kind": "resource",
+    "path": [
+      "path"
+    ],
+    "value": "pages\\note.md"
+  },
+  {
+    "name": "empty segment",
+    "kind": "resource",
+    "path": [
+      "path"
+    ],
+    "value": "pages//note.md"
+  },
+  {
+    "name": "unknown resource kind",
+    "kind": "resource",
+    "path": [
+      "kind"
+    ],
+    "value": "file"
+  },
+  {
+    "name": "invalid coordinate",
+    "kind": "placement",
+    "path": [
+      "position",
+      "x"
+    ],
+    "value": "ten"
+  },
+  {
+    "name": "nonpositive size",
+    "kind": "placement",
+    "path": [
+      "size",
+      "width"
+    ],
+    "value": 0
+  },
+  {
+    "name": "invalid relation endpoint",
+    "kind": "relation",
+    "path": [
+      "source",
+      "entityId"
+    ],
+    "value": "name"
+  },
+  {
+    "name": "invalid edge endpoint",
+    "kind": "visual-edge",
+    "path": [
+      "targetPlacementId"
+    ],
+    "value": "name"
+  },
+  {
+    "name": "invalid view reference",
+    "kind": "relation-view",
+    "path": [
+      "relationId"
+    ],
+    "value": "name"
+  },
+  {
+    "name": "missing license",
+    "kind": "package-manifest",
+    "path": [
+      "license"
+    ],
+    "remove": true
+  },
+  {
+    "name": "non-namespaced package",
+    "kind": "package-manifest",
+    "path": [
+      "id"
+    ],
+    "value": "notes"
+  },
+  {
+    "name": "executable entrypoint",
+    "kind": "package-manifest",
+    "path": [
+      "entrypoints"
+    ],
+    "value": {
+      "main": "plugin.js"
+    }
+  },
+  {
+    "name": "invalid permissions",
+    "kind": "package-manifest",
+    "path": [
+      "permissions"
+    ],
+    "value": [
+      "filesystem"
+    ]
+  }
+]

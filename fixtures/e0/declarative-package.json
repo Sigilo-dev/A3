@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "demo.notes",
+  "name": "Notas declarativas",
+  "version": "1.0.0",
+  "license": "MIT",
+  "a3ApiVersion": "1.0.0",
+  "contributes": {
+    "demo.notes": {
+      "label": "Notas"
+    }
+  },
+  "permissions": [],
+  "extensions": {}
+}

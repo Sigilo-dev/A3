@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigilo-dev.github.io/A3/schemas/e0/project.schema.json",
+  "type": "object",
+  "properties": {
+    "formatVersion": {
+      "const": "1.0.0"
+    },
+    "projectId": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid"
+    },
+    "revision": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/revision"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "defaultWorkspaceId": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "utc-date-time"
+    },
+    "locale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "catalogRoot": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/path"
+    },
+    "extensions": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions"
+    }
+  },
+  "required": [
+    "formatVersion",
+    "projectId",
+    "revision",
+    "name",
+    "defaultWorkspaceId",
+    "createdAt",
+    "locale",
+    "catalogRoot",
+    "extensions"
+  ],
+  "additionalProperties": true
+}
