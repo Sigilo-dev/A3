@@ -2,3 +2,5 @@
 /A3_*PROMPTS.md
 node_modules/
 **/.a3/local/
+apps/desktop/out/
+apps/desktop/dist/

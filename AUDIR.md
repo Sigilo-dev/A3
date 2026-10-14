@@ -1,5 +1,30 @@
 # Registro de trabajo y correcciones
 
+## 2026-10-14 — E1-A
+
+Se verificó raíz Git, árbol limpio y origin `https://github.com/Sigilo-dev/A3.git`. El remoto conservaba E0-E `a6d8c13` en `codex/e0-foundation`; `main` aún contenía solo bootstrap. Se creó `codex/e1-base` desde E0-E sin alterar main ni historia. No se modificaron los documentos locales de especificación/prompts ni los locks de los experimentos.
+
+Se convirtió el package raíz en workspace npm y se añadió `apps/desktop`: main/preload/renderer separados, consulta de estado tipada, sandbox/contextIsolation/Node desactivado en renderer, assets locales por protocolo a3, CSP, rechazo de permisos, ventanas nuevas y navegación externa. La UI ofrece navegación real a secciones placeholder, actividad y estado del host; no implementa servicios de proyecto. Fallos de arranque muestran un diálogo nativo; errores de consulta/render tienen recuperación visible. La última ventana cierra Electron y el handler se retira al salir.
+
+Se fijaron Electron 44.7.2, React/React DOM 19.3.1 y Vite 8.3.4 de E0, más versiones estables verificadas por registry/peers: electron-vite 6.0.0, electron-builder 26.15.3, TypeScript 7.0.2, plugin React 6.1.2 y tipos Node/React. Las decisiones y licencias están en `docs/adr/0001-desktop-shell.md` y `docs/e1/desktop-foundation.md`. Se añadió MIT para el código original y se incluyeron avisos del runtime y textos React/React DOM/Scheduler en el directorio de prueba. No se empaquetaron motores externos, herramientas de build ni credenciales.
+
+Validación final en Windows 10 x64 build 19045, Node host 24.13.1/npm 11.10.0:
+
+- `npm ci --no-audit --no-fund`: instalación limpia desde el lock, exit 0.
+- `npm run typecheck` y `npm run build`: exit 0; también se ejecutan como parte de `npm run pack:win`.
+- `npm test`: 34 contratos E0 aprobados.
+- `npm run test:desktop`: arranque seguro, API limitada, rechazo de IPC de otra ventana, navegación y panel, CSP de producción, bloqueo de popups/navegación externa y cierre normal. Renderer/preload ausentes mostraron el error de inicio y salida 1 en fixtures temporales.
+- `npm run pack:win`: directorio x64 con ASAR, recursos de versión A3, sin firma/publicación; exit 0. `node apps/desktop/test/run-smoke.mjs --packaged` pasó sobre el ASAR con Electron 44.7.2.
+- `node apps/desktop/test/run-smoke.mjs --development`: Vite local + main compilado, renderer aislado y cierre; exit 0. El servidor propio terminó y los perfiles temporales se eliminaron.
+- Inspección del paquete: ASAR 238,508 bytes, solo assets compilados y package.json; no node_modules ni fuentes/tests. EXE ProductName A3, ProductVersion 0.1.0.0 y FileVersion 0.1.0-dev.0. Electron incluye Chromium 152.0.7977.149 y Node 24.21.0.
+- Se revisó visualmente una captura de la interfaz y `git diff --check` no detectó errores de whitespace.
+
+Correcciones durante elaboración: una consulta inicial de metadata para `@types/node/24` devolvió 404 (se resolvió el mayor 24 y se fijó 24.19.2); un glob de rg pasado como ruta literal no funcionó en PowerShell y se sustituyó por `-g`. El primer build no minificó renderer (575.71 kB); se activó minificación y quedó en 224.84 kB. El panel de actividad extendía la página: se limitó el grid al viewport con scroll dentro de paneles. La configuración inicial omitía edición de recursos del EXE; se cambió a `signExecutable: false`, manteniendo metadata y evitando firma. React se movió a deps de build porque ya se incorpora al bundle, eliminando copias redundantes del paquete. Se recompilaron y verificaron los resultados tras estos cambios.
+
+`npm audit` reportó 8 alertas moderadas en dependencias de desarrollo de electron-builder, derivadas de sprintf-js/roarr/global-agent; no hubo altas/críticas. No se aplicó el downgrade automático propuesto a builder 26.5.0 ni overrides sin prueba. Hay advertencias de paquetes deprecados en esa cadena; permanecen como límite del toolchain, que no se distribuye en el ASAR. La revisión de metadata y avisos no equivale a auditoría legal del instalador final.
+
+A3-050 queda abierto: esta entrega proporciona evidencia de base compilada y arranque, no instalador, actualización/rollback, datos de proyectos reales ni aceptación Windows 11. La versión leída por el harness corresponde al Electron ejecutor del test; no se confundió con la versión del EXE, cuyos recursos se inspeccionaron por separado. El commit usa `build(desktop): bootstrap electron application`; la publicación corresponde solo a `codex/e1-base`.
+
 ## 2026-10-14 — E0-A
 
 Se verificó la raíz `C:/Users/VR/Documents/ChatGPT/A3`, sin commits, rama inicial `master`, sin remotos y solo dos archivos de planificación sin seguimiento. `git ls-remote` confirmó que el destino autorizado no tenía refs. Se añadió `origin` a `https://github.com/Sigilo-dev/A3.git`, se inició `main` y se publicó el bootstrap `97752ae` con README y exclusiones. Luego se creó `codex/e0-foundation` desde main.

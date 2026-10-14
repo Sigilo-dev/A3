@@ -1,11 +1,24 @@
 {
-  "name": "a3-e0-contracts",
+  "name": "a3",
   "version": "0.0.0",
   "private": true,
-  "description": "Development-only A3 E0 contract validation",
+  "description": "A3 local project workspace",
+  "license": "MIT",
   "type": "module",
+  "packageManager": "npm@11.10.0",
+  "engines": {
+    "node": ">=24.13.1 <25",
+    "npm": ">=11.10.0 <12"
+  },
+  "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "test": "node --test scripts/e0/contracts.test.mjs"
+    "dev": "npm run dev --workspace @a3/desktop",
+    "start": "npm run start --workspace @a3/desktop",
+    "typecheck": "npm run typecheck --workspace @a3/desktop",
+    "build": "npm run build --workspace @a3/desktop",
+    "pack:win": "npm run pack:win --workspace @a3/desktop",
+    "test": "node --test scripts/e0/contracts.test.mjs",
+    "test:desktop": "npm run test:smoke --workspace @a3/desktop"
   },
   "devDependencies": {
     "ajv": "8.20.0"

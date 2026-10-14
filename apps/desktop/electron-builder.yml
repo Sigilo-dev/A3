@@ -1,0 +1,23 @@
+appId: dev.sigilo.a3
+productName: A3
+directories:
+  output: dist
+files:
+  - out/**/*
+  - package.json
+extraFiles:
+  - from: ../../LICENSE
+    to: LICENSE.a3.txt
+  - from: ../../node_modules/react/LICENSE
+    to: licenses/react.txt
+  - from: ../../node_modules/react-dom/LICENSE
+    to: licenses/react-dom.txt
+  - from: ../../node_modules/scheduler/LICENSE
+    to: licenses/scheduler.txt
+asar: true
+npmRebuild: false
+win:
+  target: dir
+  executableName: A3
+  signExecutable: false
+publish: null
