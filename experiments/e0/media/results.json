@@ -1,0 +1,775 @@
+{
+  "schemaVersion": 1,
+  "executedAt": "2026-10-14T20:02:05.660Z",
+  "host": {
+    "os": "Windows_NT 10.0.19045 x64",
+    "node": "v24.13.1",
+    "cpu": "AMD Ryzen 7 3700X 8-Core Processor             ",
+    "logicalCores": 16,
+    "totalMemoryBytes": 34301165568
+  },
+  "sharp": {
+    "packageVersion": "0.35.5",
+    "packageLicense": "Apache-2.0",
+    "platformPackage": "@img/sharp-win32-x64",
+    "platformPackageVersion": "0.35.5",
+    "platformPackageLicense": "Apache-2.0 AND LGPL-3.0-or-later",
+    "nativeAndCodecVersions": {
+      "aom": "3.15.1",
+      "archive": "3.8.9",
+      "cairo": "1.18.6",
+      "cgif": "0.5.4",
+      "exif": "0.6.26",
+      "expat": "2.8.5",
+      "ffi": "3.8.0",
+      "fontconfig": "2.18.3",
+      "freetype": "2.14.3",
+      "fribidi": "1.0.17",
+      "glib": "2.90.0",
+      "harfbuzz": "14.5.0",
+      "heif": "1.23.5",
+      "highway": "1.4.0",
+      "imagequant": "2.4.1",
+      "lcms": "2.19.1",
+      "mozjpeg": "0826579",
+      "pango": "1.58.2",
+      "pixman": "0.46.4",
+      "png": "1.6.58",
+      "proxy-libintl": "0.5",
+      "rsvg": "2.63.2",
+      "tiff": "4.7.2",
+      "uhdr": "2.0.2",
+      "vips": "8.18.7",
+      "webp": "1.6.0",
+      "xml2": "2.15.4",
+      "zlib-ng": "2.3.3",
+      "sharp": "0.35.5"
+    },
+    "formatFlags": {
+      "jpeg": {
+        "input": {
+          "file": true,
+          "buffer": true,
+          "stream": true,
+          "fileSuffix": [
+            ".jpg",
+            ".jpeg",
+            ".jpe",
+            ".jfif"
+          ]
+        },
+        "output": {
+          "file": true,
+          "buffer": true,
+          "stream": true,
+          "alias": [
+            "jpe",
+            "jpg"
+          ]
+        }
+      },
+      "png": {
+        "input": {
+          "file": true,
+          "buffer": true,
+          "stream": true,
+          "fileSuffix": [
+            ".png"
+          ]
+        },
+        "output": {
+          "file": true,
+          "buffer": true,
+          "stream": true
+        }
+      },
+      "webp": {
+        "input": {
+          "file": true,
+          "buffer": true,
+          "stream": true,
+          "fileSuffix": [
+            ".webp"
+          ]
+        },
+        "output": {
+          "file": true,
+          "buffer": true,
+          "stream": true
+        }
+      },
+      "tiff": {
+        "input": {
+          "file": true,
+          "buffer": true,
+          "stream": true,
+          "fileSuffix": [
+            ".tif",
+            ".tiff"
+          ]
+        },
+        "output": {
+          "file": true,
+          "buffer": true,
+          "stream": true,
+          "alias": [
+            "tif"
+          ]
+        }
+      },
+      "magick": {
+        "input": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        },
+        "output": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        }
+      },
+      "openslide": {
+        "input": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        },
+        "output": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        }
+      },
+      "dz": {
+        "input": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        },
+        "output": {
+          "file": true,
+          "buffer": true,
+          "stream": true
+        }
+      },
+      "ppm": {
+        "input": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        },
+        "output": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        }
+      },
+      "fits": {
+        "input": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        },
+        "output": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        }
+      },
+      "gif": {
+        "input": {
+          "file": true,
+          "buffer": true,
+          "stream": true,
+          "fileSuffix": [
+            ".gif"
+          ]
+        },
+        "output": {
+          "file": true,
+          "buffer": true,
+          "stream": true
+        }
+      },
+      "svg": {
+        "input": {
+          "file": true,
+          "buffer": true,
+          "stream": true,
+          "fileSuffix": [
+            ".svg",
+            ".svgz",
+            ".svg.gz"
+          ]
+        },
+        "output": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        }
+      },
+      "heif": {
+        "input": {
+          "file": true,
+          "buffer": true,
+          "stream": true,
+          "fileSuffix": [
+            ".avif"
+          ]
+        },
+        "output": {
+          "file": true,
+          "buffer": true,
+          "stream": true,
+          "alias": [
+            "avif"
+          ]
+        }
+      },
+      "pdf": {
+        "input": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        },
+        "output": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        }
+      },
+      "vips": {
+        "input": {
+          "file": true,
+          "buffer": false,
+          "stream": false,
+          "fileSuffix": [
+            ".v",
+            ".vips"
+          ]
+        },
+        "output": {
+          "file": true,
+          "buffer": false,
+          "stream": false
+        }
+      },
+      "jp2": {
+        "input": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        },
+        "output": {
+          "file": false,
+          "buffer": false,
+          "stream": false,
+          "alias": [
+            "j2c",
+            "j2k",
+            "jp2",
+            "jpx"
+          ]
+        }
+      },
+      "jxl": {
+        "input": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        },
+        "output": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        }
+      },
+      "rad": {
+        "input": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        },
+        "output": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        }
+      },
+      "dcraw": {
+        "input": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        },
+        "output": {
+          "file": false,
+          "buffer": false,
+          "stream": false
+        }
+      },
+      "raw": {
+        "input": {
+          "file": false,
+          "buffer": true,
+          "stream": true
+        },
+        "output": {
+          "file": false,
+          "buffer": true,
+          "stream": true
+        }
+      }
+    },
+    "sources": {
+      "source-alpha.png": {
+        "metadata": {
+          "format": "png",
+          "width": 32,
+          "height": 24,
+          "space": "srgb",
+          "channels": 4,
+          "hasAlpha": true
+        },
+        "bytes": 2336,
+        "sha256": "431f4c93d7428314742b5bb63d480a1a1282f96b1c8596ed0f19e18a8566721f"
+      },
+      "source.jpg": {
+        "metadata": {
+          "format": "jpeg",
+          "width": 32,
+          "height": 24,
+          "space": "srgb",
+          "channels": 3,
+          "hasAlpha": false
+        },
+        "bytes": 648,
+        "sha256": "0aa02cecb7c49c676f2a05655a91b1eee1b4f5d7021e0f2fa06b00ec28e37e73"
+      },
+      "source.avif": {
+        "metadata": {
+          "format": "heif",
+          "width": 32,
+          "height": 24,
+          "space": "srgb",
+          "channels": 4,
+          "hasAlpha": true,
+          "pages": 1,
+          "compression": "av1"
+        },
+        "bytes": 624,
+        "sha256": "d2b0a808ccb741b936a0fe2e99a97430a4fc4d65747906ddd9a9a9a08ea20740"
+      },
+      "source.gif": {
+        "metadata": {
+          "format": "gif",
+          "width": 12,
+          "height": 12,
+          "space": "srgb",
+          "channels": 4,
+          "hasAlpha": true,
+          "pages": 2
+        },
+        "bytes": 965,
+        "sha256": "902f2ad288f93af5395d5982c7276c27f2131bc1ba1ca119f91ef7fddb0a40e0"
+      }
+    },
+    "outputs": {
+      "png": {
+        "bytes": 2336,
+        "elapsedMs": 10.28,
+        "metadata": {
+          "format": "png",
+          "width": 32,
+          "height": 24,
+          "space": "srgb",
+          "channels": 4,
+          "hasAlpha": true
+        }
+      },
+      "jpeg": {
+        "bytes": 650,
+        "elapsedMs": 5.98,
+        "metadata": {
+          "format": "jpeg",
+          "width": 32,
+          "height": 24,
+          "space": "srgb",
+          "channels": 3,
+          "hasAlpha": false
+        }
+      },
+      "webp": {
+        "bytes": 432,
+        "elapsedMs": 5.6,
+        "metadata": {
+          "format": "webp",
+          "width": 32,
+          "height": 24,
+          "space": "srgb",
+          "channels": 4,
+          "hasAlpha": true
+        }
+      },
+      "avif": {
+        "bytes": 624,
+        "elapsedMs": 13.5,
+        "metadata": {
+          "format": "heif",
+          "width": 32,
+          "height": 24,
+          "space": "srgb",
+          "channels": 4,
+          "hasAlpha": true,
+          "pages": 1,
+          "compression": "av1"
+        }
+      },
+      "tiff": {
+        "bytes": 546,
+        "elapsedMs": 5.14,
+        "metadata": {
+          "format": "tiff",
+          "width": 32,
+          "height": 24,
+          "space": "srgb",
+          "channels": 4,
+          "hasAlpha": true,
+          "pages": 1
+        }
+      }
+    },
+    "gifEncode": {
+      "supported": true,
+      "bytes": 1607,
+      "elapsedMs": 19.27,
+      "metadata": {
+        "format": "gif",
+        "width": 32,
+        "height": 24,
+        "space": "srgb",
+        "channels": 4,
+        "hasAlpha": true,
+        "pages": 1
+      }
+    },
+    "exifBehavior": {
+      "syntheticSourceBytes": 878,
+      "sourceHasExif": true,
+      "defaultOutputStrippedExif": true,
+      "keepExifOutputPreservedExif": true
+    },
+    "thumbnail": {
+      "file": "thumbnail.webp",
+      "width": 16,
+      "height": 12,
+      "bytes": 192,
+      "elapsedMs": 6.5
+    },
+    "unsupportedInput": {
+      "rejected": true,
+      "diagnostic": "Input file contains unsupported image format"
+    },
+    "pdfInputOutputFlags": {
+      "id": "pdf",
+      "input": {
+        "file": false,
+        "buffer": false,
+        "stream": false
+      },
+      "output": {
+        "file": false,
+        "buffer": false,
+        "stream": false
+      }
+    },
+    "sourceHashesPreserved": true
+  },
+  "ffmpeg": {
+    "distribution": "Gyan FFmpeg full build installed through WinGet (Gyan.FFmpeg 8.0.1)",
+    "ffmpegVersion": "ffmpeg version 8.0.1-full_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers",
+    "ffprobeVersion": "ffprobe version 8.0.1-full_build-www.gyan.dev Copyright (c) 2007-2025 the FFmpeg developers",
+    "ffmpegSha256": "74db6c184a03dba2bdfe23e1a1f41cf5a8385bc1de6a7a1b26db1dc541abef93",
+    "ffprobeSha256": "55bb6c6289367ae2383efa86b26bf2596f8adb72ac747360eb13df162354161c",
+    "licenseOutput": [
+      "ffmpeg is free software; you can redistribute it and/or modify",
+      "it under the terms of the GNU General Public License as published by",
+      "the Free Software Foundation; either version 3 of the License, or",
+      "(at your option) any later version.",
+      "",
+      "ffmpeg is distributed in the hope that it will be useful,",
+      "but WITHOUT ANY WARRANTY; without even the implied warranty of"
+    ],
+    "buildConfiguration": [
+      "configuration:",
+      "--enable-gpl",
+      "--enable-version3",
+      "--enable-static",
+      "--disable-w32threads",
+      "--disable-autodetect",
+      "--enable-fontconfig",
+      "--enable-iconv",
+      "--enable-gnutls",
+      "--enable-lcms2",
+      "--enable-libxml2",
+      "--enable-gmp",
+      "--enable-bzlib",
+      "--enable-lzma",
+      "--enable-libsnappy",
+      "--enable-zlib",
+      "--enable-librist",
+      "--enable-libsrt",
+      "--enable-libssh",
+      "--enable-libzmq",
+      "--enable-avisynth",
+      "--enable-libbluray",
+      "--enable-libcaca",
+      "--enable-libdvdnav",
+      "--enable-libdvdread",
+      "--enable-sdl2",
+      "--enable-libaribb24",
+      "--enable-libaribcaption",
+      "--enable-libdav1d",
+      "--enable-libdavs2",
+      "--enable-libopenjpeg",
+      "--enable-libquirc",
+      "--enable-libuavs3d",
+      "--enable-libxevd",
+      "--enable-libzvbi",
+      "--enable-liboapv",
+      "--enable-libqrencode",
+      "--enable-librav1e",
+      "--enable-libsvtav1",
+      "--enable-libvvenc",
+      "--enable-libwebp",
+      "--enable-libx264",
+      "--enable-libx265",
+      "--enable-libxavs2",
+      "--enable-libxeve",
+      "--enable-libxvid",
+      "--enable-libaom",
+      "--enable-libjxl",
+      "--enable-libvpx",
+      "--enable-mediafoundation",
+      "--enable-libass",
+      "--enable-frei0r",
+      "--enable-libfreetype",
+      "--enable-libfribidi",
+      "--enable-libharfbuzz",
+      "--enable-liblensfun",
+      "--enable-libvidstab",
+      "--enable-libvmaf",
+      "--enable-libzimg",
+      "--enable-amf",
+      "--enable-cuda-llvm",
+      "--enable-cuvid",
+      "--enable-dxva2",
+      "--enable-d3d11va",
+      "--enable-d3d12va",
+      "--enable-ffnvcodec",
+      "--enable-libvpl",
+      "--enable-nvdec",
+      "--enable-nvenc",
+      "--enable-vaapi",
+      "--enable-libshaderc",
+      "--enable-vulkan",
+      "--enable-libplacebo",
+      "--enable-opencl",
+      "--enable-libcdio",
+      "--enable-openal",
+      "--enable-libgme",
+      "--enable-libmodplug",
+      "--enable-libopenmpt",
+      "--enable-libopencore-amrwb",
+      "--enable-libmp3lame",
+      "--enable-libshine",
+      "--enable-libtheora",
+      "--enable-libtwolame",
+      "--enable-libvo-amrwbenc",
+      "--enable-libcodec2",
+      "--enable-libilbc",
+      "--enable-libgsm",
+      "--enable-liblc3",
+      "--enable-libopencore-amrnb",
+      "--enable-libopus",
+      "--enable-libspeex",
+      "--enable-libvorbis",
+      "--enable-ladspa",
+      "--enable-libbs2b",
+      "--enable-libflite",
+      "--enable-libmysofa",
+      "--enable-librubberband",
+      "--enable-libsoxr",
+      "--enable-chromaprint",
+      "--enable-whisper",
+      "Exiting with exit code 0"
+    ],
+    "gplEnabled": true,
+    "version3Enabled": true,
+    "nonfreeEnabled": false,
+    "encoderAvailability": {
+      "ffv1": true,
+      "libx264": true,
+      "aac": true,
+      "libmp3lame": true,
+      "flac": true
+    },
+    "syntheticSources": {
+      "wav": {
+        "bytes": 176478,
+        "streams": [
+          {
+            "codec_type": "audio",
+            "codec_name": "pcm_s16le",
+            "sample_rate": "44100",
+            "channels": 1
+          }
+        ]
+      },
+      "mkv": {
+        "bytes": 248113,
+        "formatName": "matroska,webm",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "ffv1",
+            "width": 160,
+            "height": 90
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "pcm_s16le",
+            "sample_rate": "44100",
+            "channels": 1
+          }
+        ]
+      }
+    },
+    "conversions": {
+      "mp4-h264-aac": {
+        "output": "sample.mp4",
+        "bytes": 63417,
+        "elapsedMs": 100.89,
+        "formatName": "mov,mp4,m4a,3gp,3g2,mj2",
+        "majorBrand": "isom",
+        "durationSeconds": "2.000000",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "profile": "Constrained Baseline",
+            "width": 160,
+            "height": 90
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "profile": "LC",
+            "sample_rate": "44100",
+            "channels": 1
+          }
+        ],
+        "decodedToNull": true
+      },
+      "mov-h264-aac": {
+        "output": "sample.mov",
+        "bytes": 63468,
+        "elapsedMs": 98.04,
+        "formatName": "mov,mp4,m4a,3gp,3g2,mj2",
+        "majorBrand": "qt  ",
+        "durationSeconds": "2.000000",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "profile": "Constrained Baseline",
+            "width": 160,
+            "height": 90
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "aac",
+            "profile": "LC",
+            "sample_rate": "44100",
+            "channels": 1
+          }
+        ],
+        "decodedToNull": true
+      },
+      "mkv-h264-flac": {
+        "output": "sample.mkv",
+        "bytes": 62704,
+        "elapsedMs": 60.77,
+        "formatName": "matroska,webm",
+        "durationSeconds": "2.000000",
+        "streams": [
+          {
+            "codec_type": "video",
+            "codec_name": "h264",
+            "profile": "Constrained Baseline",
+            "width": 160,
+            "height": 90
+          },
+          {
+            "codec_type": "audio",
+            "codec_name": "flac",
+            "sample_rate": "44100",
+            "channels": 1
+          }
+        ],
+        "decodedToNull": true
+      },
+      "mp3-libmp3lame": {
+        "output": "sample.mp3",
+        "bytes": 8912,
+        "elapsedMs": 61.62,
+        "formatName": "mp3",
+        "durationSeconds": "2.000000",
+        "streams": [
+          {
+            "codec_type": "audio",
+            "codec_name": "mp3",
+            "sample_rate": "44100",
+            "channels": 1
+          }
+        ],
+        "decodedToNull": true
+      },
+      "flac-native": {
+        "output": "sample.flac",
+        "bytes": 32434,
+        "elapsedMs": 58.95,
+        "formatName": "flac",
+        "durationSeconds": "2.000000",
+        "streams": [
+          {
+            "codec_type": "audio",
+            "codec_name": "flac",
+            "sample_rate": "44100",
+            "channels": 1
+          }
+        ],
+        "decodedToNull": true
+      }
+    },
+    "unsupportedInput": {
+      "rejected": true,
+      "exitCode": 1,
+      "diagnostic": "Invalid data found when processing input"
+    },
+    "cancellation": {
+      "sent": true,
+      "code": null,
+      "signal": "SIGTERM",
+      "elapsedMs": 916.94,
+      "partialOutputExisted": true,
+      "temporaryRemoved": true,
+      "originalSha256Preserved": true,
+      "diagnostic": ""
+    },
+    "sourceHashesPreserved": true
+  },
+  "result": "passed",
+  "scopeLimit": "Synthetic samples only. Timing and output sizes describe this host and these sample dimensions."
+}

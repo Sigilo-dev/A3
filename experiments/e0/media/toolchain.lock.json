@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "consultedAt": "2026-10-14",
+  "sharp": {
+    "package": "sharp",
+    "version": "0.35.5",
+    "registryUrl": "https://registry.npmjs.org/sharp/-/sharp-0.35.5.tgz",
+    "integrity": "sha512-Ywn4OnzGukp7CDMrp08RQ50YKmuwG47brZgIVPTvBaaAfQlRlygrRqSrxdCiL9M+LlzLBiJ68IR1QqvzHyjC7g==",
+    "license": "Apache-2.0",
+    "nodeEngine": ">=20.9.0",
+    "windowsX64Package": {
+      "name": "@img/sharp-win32-x64",
+      "version": "0.35.5",
+      "integrity": "sha512-x76eH0vEiHlcMQu8Y8IenntaACtddpT6W0wmXtWrnKcnKI7ME5DdgqhAD6SEWOEl1v2zDvkZDhFA9KnURwpfqg==",
+      "license": "Apache-2.0 AND LGPL-3.0-or-later",
+      "libvipsVersion": "8.18.7",
+      "licensesReadme": "https://github.com/lovell/sharp-libvips/blob/v1.3.4/THIRD-PARTY-NOTICES.md"
+    }
+  },
+  "ffmpeg": {
+    "packageIdentifier": "Gyan.FFmpeg",
+    "installedVersion": "8.0.1",
+    "variant": "full_build, static, Windows x64",
+    "packageManager": "WinGet; already present before this spike",
+    "releaseUrl": "https://github.com/GyanD/codexffmpeg/releases/download/8.0.1/ffmpeg-8.0.1-full_build.zip",
+    "releaseArchiveSha256": "467CDE100A47ED4B03A897988AEB4A296890C1E2B2D2864204657D002BC5FB90",
+    "wingetManifestUrl": "https://github.com/microsoft/winget-pkgs/blob/master/manifests/g/Gyan/FFmpeg/8.0.1/Gyan.FFmpeg.installer.yaml",
+    "binarySha256": {
+      "ffmpeg.exe": "74db6c184a03dba2bdfe23e1a1f41cf5a8385bc1de6a7a1b26db1dc541abef93",
+      "ffprobe.exe": "55bb6c6289367ae2383efa86b26bf2596f8adb72ac747360eb13df162354161c"
+    },
+    "declaredLicense": "GPLv3",
+    "latestAvailableAsConsulted": "9.0.2; not installed by the spike",
+    "noBinaryCopiedIntoRepository": true
+  }
+}

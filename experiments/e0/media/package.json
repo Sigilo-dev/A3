@@ -1,0 +1,12 @@
+{
+  "name": "a3-e0-d3-local-media-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node scripts/run-media-spike.mjs"
+  },
+  "dependencies": {
+    "sharp": "0.35.5"
+  }
+}
