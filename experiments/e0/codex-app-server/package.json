@@ -1,0 +1,8 @@
+{
+  "name": "a3-e0-b2-codex-app-server-spike",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node ./test/handshake.cjs"
+  }
+}
