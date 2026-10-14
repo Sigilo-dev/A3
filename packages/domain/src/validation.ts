@@ -77,7 +77,10 @@ function validateShape(kind: string, value: unknown): Diagnostic[] {
   const validator = ajv.getSchema(`https://sigilo-dev.github.io/A3/schemas/${version}/${kind}.schema.json`);
   if (!validator) return [diagnostic('unknown-document-kind', 'El tipo de documento no está soportado.')];
   if (validator(value)) return [];
-  return (validator.errors ?? []).map((error) => diagnostic('schema-invalid', `${kind}${error.instancePath}: ${error.message ?? 'inválido'}`));
+  return (validator.errors ?? []).map((error) => ({
+    ...diagnostic('schema-invalid', `${kind}${error.instancePath}: ${error.message ?? 'inválido'}`),
+    instancePath: error.instancePath
+  }));
 }
 
 export function validateRecord(record: unknown): Diagnostic[] {

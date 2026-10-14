@@ -88,6 +88,7 @@ export interface Actor { kind: 'user' | 'agent' | 'extension' | 'importer'; id: 
 export type ErrorCode = 'VALIDATION_FAILED' | 'REVISION_CONFLICT' | 'PERMISSION_DENIED' | 'RESOURCE_MISSING' |
   'PATH_UNAVAILABLE' | 'ENGINE_UNAVAILABLE' | 'AUTH_REQUIRED' | 'RATE_LIMITED' | 'EXTERNAL_SERVICE_FAILED' | 'IO_FAILED' | 'CANCELLED';
 export interface Diagnostic {
+  instancePath?: string;
   code: ErrorCode; detail: string; severity: 'error' | 'warning'; message: string;
   recovery: string; ref?: DocumentRef;
 }

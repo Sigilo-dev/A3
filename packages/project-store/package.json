@@ -1,0 +1,19 @@
+{
+  "name": "@a3/project-store",
+  "version": "0.1.0-dev.0",
+  "private": true,
+  "description": "Validated A3 document codecs and read-only local project loading",
+  "license": "MIT",
+  "type": "module",
+  "files": ["dist"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "scripts": {
+    "typecheck": "npm run build --workspace @a3/domain && tsc --noEmit -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build --workspace @a3/domain && npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": { "@a3/domain": "0.1.0-dev.0" },
+  "devDependencies": { "@types/node": "24.19.2", "typescript": "7.0.2" }
+}

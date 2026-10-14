@@ -1,6 +1,6 @@
 # A3
 
-A3 será una aplicación de escritorio local para organizar documentación, recursos y diagramas sobre workspaces visuales. El repositorio contiene E0 (contratos y comprobaciones de viabilidad), E1-A (base Electron con navegación inicial) y E1-B (núcleo de dominio independiente); los servicios de proyecto se incorporarán después.
+A3 será una aplicación de escritorio local para organizar documentación, recursos y diagramas sobre workspaces visuales. El repositorio contiene E0 (contratos y comprobaciones de viabilidad), E1-A (base Electron con navegación inicial), E1-B (núcleo de dominio independiente) y E1-C1 (codecs y lectura validada de archivos); el guardado de proyecto se incorporará después.
 
 Tecnologías previstas: Electron, React, TypeScript, Vite, React Flow, Milkdown y CodeMirror 6. El formato propio de dominio usa JSON y Markdown, independiente del estado de esas bibliotecas.
 
@@ -44,7 +44,13 @@ El ejecutable de prueba queda en `apps/desktop/dist/win-unpacked/A3.exe`. El ren
 
 `packages/domain` exporta modelos, validación de documentos/grafo, resolución de variables y propuestas inmutables de comandos. Usa los esquemas E0 sin modificarlos y añade contratos E1 para grupos, colecciones, variables y definiciones declarativas. No lee archivos ni depende de React/Electron; el host aporta identidad, permisos y observaciones de contenido. La persistencia y el ledger de operaciones pertenecen a E1-C/D.
 
-`npm run test:domain` compila y prueba el núcleo; `npm test` ejecuta contratos E0 y dominio. `npm run build` compila dominio y desktop; `npm run typecheck` verifica ambos workspaces. Consulta [la ADR del núcleo](docs/adr/0002-domain-kernel.md) y [su API/evidencia](docs/e1/domain-kernel.md).
+`npm run test:domain` compila y prueba el núcleo; `npm test` ejecuta contratos E0, dominio y store. `npm run build` compila dominio, store y desktop; `npm run typecheck` verifica los tres workspaces. Consulta [la ADR del núcleo](docs/adr/0002-domain-kernel.md) y [su API/evidencia](docs/e1/domain-kernel.md).
+
+## Lectura y codecs de proyecto
+
+`packages/project-store` lee el catálogo local con los esquemas/versiones E0/E1, separa diagnósticos de sintaxis/esquema/referencias y preserva JSON dañado o futuro para inspección. Un no-op devuelve bytes idénticos; edits explícitos producen JSON UTF-8 con claves ordenadas, indentación de dos espacios y LF final, sin eliminar datos desconocidos no editados. Markdown/código se leen como bytes originales. Las rutas se comprueban para Windows y no se siguen junctions/symlinks. El paquete no escribe archivos ni se conecta todavía al shell.
+
+`npm run test:store` compila dominio/store y prueba los codecs y el lector en copias temporales. Consulta [la ADR de preservación](docs/adr/0003-project-codecs.md) y [la API, evidencia y límites E1-C1](docs/e1/project-serialization.md). A3-045 está cubierto en apertura degradada; A3-048 solo en lectura de versión desconocida. Restauración, guardado, journal y migraciones siguen pendientes.
 
 `schemas/e0/` contiene diez esquemas: definiciones comunes, proyecto, entidad, recurso, relación, workspace, placement, arista visual, vista de relación y paquete declarativo. `fixtures/e0/project/` conserva la estructura de proyecto con dos workspaces, dos entidades y una sola fuente Markdown compartida por dos placements. La relación semántica y la arista visual son documentos distintos; se incluye una RelationView.
 

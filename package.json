@@ -15,9 +15,10 @@
     "dev": "npm run dev --workspace @a3/desktop",
     "start": "npm run start --workspace @a3/desktop",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "build": "npm run build --workspace @a3/domain && npm run build --workspace @a3/desktop",
+    "build": "npm run build --workspace @a3/domain && npm run build --workspace @a3/project-store && npm run build --workspace @a3/desktop",
     "pack:win": "npm run pack:win --workspace @a3/desktop",
-    "test": "node --test scripts/e0/contracts.test.mjs && npm run test --workspace @a3/domain",
+    "test": "node --test scripts/e0/contracts.test.mjs && npm run test --workspace @a3/domain && npm run test --workspace @a3/project-store",
+    "test:store": "npm run test --workspace @a3/project-store",
     "test:domain": "npm run test --workspace @a3/domain",
     "test:desktop": "npm run test:smoke --workspace @a3/desktop"
   },

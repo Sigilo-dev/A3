@@ -1,5 +1,30 @@
 # Registro de trabajo y correcciones
 
+## 2026-10-14 — E1-C1
+
+Se verificó raíz Git `C:/Users/VR/Documents/ChatGPT/A3`, origin `https://github.com/Sigilo-dev/A3.git`, árbol limpio y HEAD/remoto `c141918` en `codex/e1-base`. Se continuó sobre E1-B; no se cambió la base, main, schemas/fixtures E0/E1, locks de spikes ni documentos de planificación locales ignorados. No había cambios ajenos al iniciar.
+
+Se implementó `@a3/project-store`, paquete de host Node independiente de renderer y dominio. El codec valida gramática JSON/UTF-8 y luego schemas E0/E1 mediante el dominio; el lector resuelve referencias semánticas aparte y conserva documentos originales. Se añadió únicamente `instancePath` opcional al diagnóstico de dominio para localizar errores de schema. No se descarga ningún esquema de usuario ni se ejecutan paquetes al abrir.
+
+Un no-op devuelve exactamente los bytes originales, incluidos BOM, CRLF, espacios y escapes. Edits explícitos por JSON Pointer conservan todo lo no mencionado; la salida modificada usa UTF-8, claves ordenadas por unidades UTF-16 incluso cuando parecen numéricas, dos espacios y LF final. Identidad/ámbito son constantes; una modificación exige exactamente la revisión siguiente sin incrementarla implícitamente. Código/Markdown/binarios se leen como Resource bytes + SHA-256, sin decodificación o normalización.
+
+JSON inválido conserva bytes y diagnóstico por archivo/línea/columna/offset, sin objeto vacío ni registro tipado. Claves duplicadas, números que sufrirían redondeo/overflow/underflow, -0 y exceso de profundidad quedan en inspección de bytes, no en dominio aproximado. Versión distinta de 1.0.0 queda en solo lectura; major mayor no se degrada. Manifiesto futuro se inspecciona sin inventar layout; un documento futuro/dañado dentro del catálogo actual no impide leer los vecinos sanos. Drawings son opacos hasta el codec de geometría.
+
+El lector usa catalogRoot y UUIDs, verifica filename/ID y scope de variables, carga categorías ratificadas E0/E1-B y no sigue montajes/URLs. Valida rutas relativas y aliases de Windows, comprueba componentes/tipo/realpath antes/después y rechaza symlinks/junctions observadas. Lecturas acotadas detectan cambios observables de tamaño/mtime y presupuestos agotados generan diagnóstico/catálogo parcial. Estas guardas no cierran todas las carreras nativas ni crean snapshot coherente frente a otro escritor; broker E1-E y revalidación bajo el futuro writer siguen pendientes.
+
+Se añadió únicamente el workspace al lock raíz. Runtime depende de la versión exacta local de dominio; reutiliza TypeScript 7.0.2, tipos Node 24.19.2 y Ajv 8.20.0 existentes sin actualizar pins. La ADR 0003 documenta estas decisiones, la API/garantías están en `docs/e1/project-serialization.md` y README incorpora el bloque y scripts.
+
+Comprobaciones en Windows 10 x64 build 19045, Node host 24.13.1/npm 11.10.0:
+
+- `npm ci --no-audit --no-fund`: instalación limpia del lock, exit 0 (347 paquetes). Los avisos de deprecación corresponden al árbol previo.
+- `npm test`: 34 E0 + 44 dominio + 50 store = 128 aprobadas. Casos dirigidos: unknown fields/namespace/prototype keys, JSON/UTF-8 inválidos, JSON Pointer, revisión/agotamiento, versiones major/minor futuras, profundidad en lectura/encoder, round-trip exacto, rutas relativas, encabezados/filenames, scopes E1-B, referencias separadas, lectura original de Markdown/code y junction real de Windows en temp.
+- `npm run typecheck` y `npm run build`: exit 0; store compila con los tipos estrictos y desktop conserva assets E1-A. El cambio final del guard de accessors se recompila y verifica con pruebas store/tipos.
+- Revisión de lock: solo 16 líneas nuevas para workspace/link; ninguna versión externa existente cambia. `git diff --check` sin errores. No se crean builds de publicación ni se repiten spikes/instalador ajenos a C1.
+
+Correcciones durante elaboración: una prueba comparaba Buffer con Uint8Array por tipo, aun con bytes iguales; se normalizó solo la comparación de test. La primera guarda de edits filtraba un detalle incorrecto de dominio y no rechazaba accessors; se corrigió validando todo el probe, antes de copiar o consultar datos, y se añadió comprobación de getters en value/wrapper sin ejecución. Se exigió revisión siguiente para contenido modificado, se rechazó -0 también en inputs nuevos y se clasificó profundidad máxima como compatibilidad/inspección, en vez de declarar inválido un JSON gramaticalmente válido. La revisión final añadió la misma guarda de profundidad al encoder para no emitir JSON que su propio lector no admite ni entrar en recursión sin cota. Las comprobaciones pasan tras esas correcciones.
+
+A3-045 tiene evidencia de corrupción localizada/apertura degradada con bytes intactos; restauración sin pisar cambios externos requiere E1-C2/D. A3-048 tiene únicamente inspección de major desconocido sin downgrade; no hay migrador ni prueba de interrupción de migración. C1 no escribe archivos, no contiene journal, lock, recovery, watchers o permisos de guardado y no está conectado a UI/IPC. Commit solicitado: `feat(store): add validated project serialization`, publicación solo en `codex/e1-base` sin force push.
+
 ## 2026-10-14 — E1-B
 
 Se verificó raíz, origin `https://github.com/Sigilo-dev/A3.git`, árbol limpio y HEAD/remoto `4985d08` en `codex/e1-base`. Se continuó directamente sobre E1-A. No se cambió main, la base E0, los contratos/esquemas/fixtures de E0, los locks de spikes ni la planificación local ignorada.
