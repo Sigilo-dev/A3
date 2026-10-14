@@ -1,0 +1,27 @@
+{
+  "name": "@a3/domain",
+  "version": "0.1.0-dev.0",
+  "private": true,
+  "description": "Pure A3 domain models, validation and command planning",
+  "license": "MIT",
+  "type": "module",
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "generate": "node scripts/generate-schemas.mjs",
+    "typecheck": "npm run generate && tsc --noEmit -p tsconfig.json",
+    "build": "npm run generate && tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "ajv": "8.20.0"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

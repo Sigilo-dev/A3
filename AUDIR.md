@@ -1,5 +1,30 @@
 # Registro de trabajo y correcciones
 
+## 2026-10-14 — E1-B
+
+Se verificó raíz, origin `https://github.com/Sigilo-dev/A3.git`, árbol limpio y HEAD/remoto `4985d08` en `codex/e1-base`. Se continuó directamente sobre E1-A. No se cambió main, la base E0, los contratos/esquemas/fixtures de E0, los locks de spikes ni la planificación local ignorada.
+
+Se implementó `@a3/domain` con modelos Project, Workspace, Entity, Resource, Relation, Placement, VisualEdge, RelationView, Group, Collection, Variable/VariableSet y NodeType; RelationType aporta reglas declaradas. Los documentos de vista usan wrapper de workspace independiente de su JSON. Se preservan IDs, revisiones por documento, campos desconocidos y separación de fuente/vistas/relaciones. La ADR 0002 resuelve para este corte identidad global/local, campos de grupos/colecciones/variables, catálogo exacto de definiciones, cardinalidad declarada y precondiciones sin inventar semántica C4/UML/IoT. Cinco esquemas E1 complementan E0.
+
+Se añadieron 14 comandos de preparación para crear/renombrar/editar/mover/quitar/duplicar según tipo y registrar/quitar definiciones de nodo. La duplicación de placements crea una Entity/Resource por identidad canónica seleccionada, remapea relaciones internas y vistas, y conserva externas salvo opción explícita. Otra representación conserva Entity/Resource/Relation. Las copias y mudanzas locales solo entregan efectos al host con hashes esperados; el paquete no lee/escribe archivos. La eliminación prepara cascadas revisadas y conserva fuentes. Los grupos detectan ciclos y miembros repetidos; geometría de dibujo queda fuera del contrato E1-B. Variables respetan alcance explícito, tipos/ciclos y no persisten el contexto de ejecución.
+
+El actor recibido no autoriza: se compara con la identidad autenticada del contexto y se llama AuthorizationPort antes/después del cálculo. La segunda llamada lleva cambios concretos y ubicaciones propuestas, además de cambios de NodeType. Fallos del adapter, scope insuficiente, conflicto de revisión/hash, ausencia no declarada, identidad duplicada o revisión agotada devuelven diagnósticos sin cambios parciales. El plan se congela, queda prepared y conserva fingerprints/readSet para revalidar bajo el futuro writer. No implementa ledger durable ni comunica guardado/completado.
+
+Se reutiliza Ajv 8.20.0 como dependencia runtime del núcleo y TypeScript 7.0.2 como herramienta ya fijada. No se actualizaron versiones existentes. El generador de build incorpora esquemas como módulo estático; esa lectura vive fuera del runtime de dominio. Los índices de referencias/identidades son derivados, sin cache global mutable ni segunda fuente UI. El desktop conserva su IPC y placeholders de E1-A.
+
+Comprobaciones realizadas en Node host 24.13.1/npm 11.10.0, Windows 10 x64:
+
+- `npm ci --no-audit --no-fund`: instalación limpia del lock, exit 0.
+- `npm run typecheck`: verifica desktop y dominio, exit 0.
+- `npm run build`: compila dominio y desktop, exit 0; bundle del renderer E1-A conserva los mismos hashes/tamaños.
+- `npm test`: 34 pruebas E0 y 44 del dominio aprobadas (78 en total), incluida una comprobación final de mapas con aliases UUID ambiguos. Tras la revisión de índices se repitieron las pruebas pertinentes.
+- `npm run test:desktop`: smoke healthy y errores de renderer/preload ausentes aprobados, exit 0. No se volvió a construir instalador ni se ampliaron pruebas de motores externos.
+- `git diff --check` y comparación de pins previos se realizan en la revisión previa al commit; no se añaden artefactos generados.
+
+Correcciones durante elaboración: el control de flujo TypeScript no estrechaba unions al llamar un helper never definido como variable; se convirtió en declaración de función y se validó el shape de hashes por elemento. Un patch tuvo hunks fuera de orden y no se aplicó; se corrigió sin perder cambios. Dos pruebas leían diagnostics dentro del plan en vez del Outcome; se ajustaron para verificar el contrato real. La revisión detectó que un payload de ubicación podía sustituir metadatos: se restringieron los campos de ubicación y se añadió prueba de ID/revisión estables. Se amplió la autorización final para que el host vea rutas nuevas antes de conceder permisos. Se evitaron recorridos repetidos por referencia mediante índices locales y se conservó metadata opaca al comprobar simetría de reglas. Las pruebas finales pasaron tras estas correcciones.
+
+A3-004 y A3-005 tienen evidencia de invariantes y propuestas en memoria; faltan UI, edición de bytes, copia real, writer/journal y aceptación completa en E1-C/D/E2. Los mínimos de cardinalidad incompletos y tipos ausentes siguen como diagnósticos; una exportación técnica no puede tratarlos como validación completa. Detalles, API y límites: `docs/e1/domain-kernel.md`. Commit solicitado: `feat(domain): implement project domain kernel`, publicado solo en `codex/e1-base`.
+
 ## 2026-10-14 — E1-A
 
 Se verificó raíz Git, árbol limpio y origin `https://github.com/Sigilo-dev/A3.git`. El remoto conservaba E0-E `a6d8c13` en `codex/e0-foundation`; `main` aún contenía solo bootstrap. Se creó `codex/e1-base` desde E0-E sin alterar main ni historia. No se modificaron los documentos locales de especificación/prompts ni los locks de los experimentos.

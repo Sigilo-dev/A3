@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigilo-dev.github.io/A3/schemas/e1/node-type.schema.json",
+  "type": "object",
+  "properties": {
+    "name": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
+    },
+    "version": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/version"
+    },
+    "packageId": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
+    },
+    "fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
+          },
+          "valueType": {
+            "enum": [
+              "string",
+              "number",
+              "boolean",
+              "json"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "valueType",
+          "required"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "ports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "direction": {
+            "enum": [
+              "input",
+              "output",
+              "inout"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "direction"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "bindingFields": {
+      "type": "array",
+      "items": {
+        "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
+      },
+      "uniqueItems": true
+    },
+    "extensions": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "packageId",
+    "fields",
+    "ports",
+    "bindingFields",
+    "extensions"
+  ],
+  "additionalProperties": true
+}

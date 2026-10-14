@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigilo-dev.github.io/A3/schemas/e1/relation-type.schema.json",
+  "type": "object",
+  "properties": {
+    "name": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
+    },
+    "version": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/version"
+    },
+    "direction": {
+      "enum": [
+        "directed",
+        "undirected"
+      ]
+    },
+    "allowSelf": {
+      "type": "boolean"
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "entityTypes": {
+          "oneOf": [
+            {
+              "const": "*"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
+              },
+              "uniqueItems": true,
+              "minItems": 1
+            }
+          ]
+        },
+        "requirePort": {
+          "type": "boolean"
+        },
+        "portDirections": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "input",
+              "output",
+              "inout"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "cardinality": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              ]
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "entityTypes",
+        "requirePort",
+        "cardinality"
+      ],
+      "additionalProperties": true
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "entityTypes": {
+          "oneOf": [
+            {
+              "const": "*"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
+              },
+              "uniqueItems": true,
+              "minItems": 1
+            }
+          ]
+        },
+        "requirePort": {
+          "type": "boolean"
+        },
+        "portDirections": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "input",
+              "output",
+              "inout"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "cardinality": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              ]
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "entityTypes",
+        "requirePort",
+        "cardinality"
+      ],
+      "additionalProperties": true
+    },
+    "extensions": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "direction",
+    "allowSelf",
+    "source",
+    "target",
+    "extensions"
+  ],
+  "additionalProperties": true
+}

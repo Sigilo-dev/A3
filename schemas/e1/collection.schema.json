@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigilo-dev.github.io/A3/schemas/e1/collection.schema.json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "id": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid"
+    },
+    "revision": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/revision"
+    },
+    "extensions": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entityIds": {
+      "type": "array",
+      "items": {
+        "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid"
+      },
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "id",
+    "revision",
+    "extensions",
+    "name",
+    "entityIds"
+  ],
+  "additionalProperties": true
+}

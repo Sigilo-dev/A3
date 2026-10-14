@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigilo-dev.github.io/A3/schemas/e1/variable-set.schema.json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "revision": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/revision"
+    },
+    "extensions": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions"
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "project",
+            "workspace",
+            "entity"
+          ]
+        },
+        "ownerId": {
+          "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid"
+        }
+      },
+      "required": [
+        "kind",
+        "ownerId"
+      ],
+      "additionalProperties": true
+    },
+    "variables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
+          },
+          "valueType": {
+            "enum": [
+              "string",
+              "number",
+              "boolean",
+              "json"
+            ]
+          },
+          "source": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "literal"
+                  },
+                  "value": true
+                },
+                "required": [
+                  "kind",
+                  "value"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "reference"
+                  },
+                  "name": {
+                    "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "name"
+                ],
+                "additionalProperties": true
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "valueType",
+          "source"
+        ],
+        "additionalProperties": true
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "revision",
+    "extensions",
+    "scope",
+    "variables"
+  ],
+  "additionalProperties": true
+}

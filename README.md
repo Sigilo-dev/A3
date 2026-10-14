@@ -1,6 +1,6 @@
 # A3
 
-A3 será una aplicación de escritorio local para organizar documentación, recursos y diagramas sobre workspaces visuales. El repositorio contiene E0 (contratos y comprobaciones de viabilidad) y E1-A: una base Electron con navegación inicial; los servicios de proyecto se incorporarán después.
+A3 será una aplicación de escritorio local para organizar documentación, recursos y diagramas sobre workspaces visuales. El repositorio contiene E0 (contratos y comprobaciones de viabilidad), E1-A (base Electron con navegación inicial) y E1-B (núcleo de dominio independiente); los servicios de proyecto se incorporarán después.
 
 Tecnologías previstas: Electron, React, TypeScript, Vite, React Flow, Milkdown y CodeMirror 6. El formato propio de dominio usa JSON y Markdown, independiente del estado de esas bibliotecas.
 
@@ -39,6 +39,12 @@ npm run pack:win     # directorio Windows x64 de prueba; no publica
 ```
 
 El ejecutable de prueba queda en `apps/desktop/dist/win-unpacked/A3.exe`. El renderer no dispone de Node ni de un IPC genérico. Las secciones de navegación indican su estado de placeholder; no crean ni guardan proyectos. Las instrucciones, licencias verificadas y límites de A3-050 están en [E1-A](docs/e1/desktop-foundation.md). `dist/` y `out/` se excluyen de Git.
+
+## Núcleo de dominio
+
+`packages/domain` exporta modelos, validación de documentos/grafo, resolución de variables y propuestas inmutables de comandos. Usa los esquemas E0 sin modificarlos y añade contratos E1 para grupos, colecciones, variables y definiciones declarativas. No lee archivos ni depende de React/Electron; el host aporta identidad, permisos y observaciones de contenido. La persistencia y el ledger de operaciones pertenecen a E1-C/D.
+
+`npm run test:domain` compila y prueba el núcleo; `npm test` ejecuta contratos E0 y dominio. `npm run build` compila dominio y desktop; `npm run typecheck` verifica ambos workspaces. Consulta [la ADR del núcleo](docs/adr/0002-domain-kernel.md) y [su API/evidencia](docs/e1/domain-kernel.md).
 
 `schemas/e0/` contiene diez esquemas: definiciones comunes, proyecto, entidad, recurso, relación, workspace, placement, arista visual, vista de relación y paquete declarativo. `fixtures/e0/project/` conserva la estructura de proyecto con dos workspaces, dos entidades y una sola fuente Markdown compartida por dos placements. La relación semántica y la arista visual son documentos distintos; se incluye una RelationView.
 
