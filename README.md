@@ -12,6 +12,8 @@ Tecnologías realmente usadas: JSON Schema 2020-12, JSON/Markdown UTF-8, JavaScr
 
 E0-C1 añade una prueba de almacenamiento y recuperación en Windows en `experiments/e0/windows-storage/`, solo con módulos integrados de Node.js y datos temporales. Se ejecuta con `npm test --prefix experiments/e0/windows-storage`; resultados y límites están en [la nota de compatibilidad de almacenamiento](docs/e0/compatibility/windows-storage-recovery.md). No prueba cortes de energía ni implementa el project-store.
 
+E0-C2 añade `experiments/e0/windows-isolation/`, una prueba negativa de guardas de rutas y permisos heredados por un hijo Node en Windows. Usa únicamente módulos integrados, fixtures sintéticos temporales y no realiza conexiones de red. Se ejecuta con `npm test --prefix experiments/e0/windows-isolation`; los mecanismos del sistema no probados y la matriz de perfiles están en [la nota de aislamiento de procesos](docs/e0/compatibility/windows-process-isolation.md). No implementa un sandbox ni el broker de permisos.
+
 Para reproducir las comprobaciones desde la raíz, con Node.js y npm:
 
 ```sh

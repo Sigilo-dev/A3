@@ -1,0 +1,9 @@
+{
+  "name": "a3-e0-windows-isolation-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Temporary-folder Windows process isolation capability probe for A3",
+  "scripts": {
+    "test": "node run.cjs"
+  }
+}
