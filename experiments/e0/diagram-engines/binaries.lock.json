@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "artifacts": {
+    "plantuml": {
+      "version": "1.2026.8",
+      "distribution": "MIT flavor compiled JAR",
+      "url": "https://github.com/plantuml/plantuml/releases/download/v1.2026.8/plantuml-mit-1.2026.8.jar",
+      "sha256": "3629c9cd017c7f73e6450396eea0040216c7e1eef8473ce33cc1aad469dab2f9",
+      "license": "MIT",
+      "requires": "Java 8+; host uses Java 21"
+    },
+    "structurizr": {
+      "version": "2026.09.19",
+      "moduleVersion": "6.2.3",
+      "distribution": "official Playwright-enabled Java WAR",
+      "url": "https://download.structurizr.com/structurizr-2026.09.19-playwright.war",
+      "bytes": 426971336,
+      "sha256": "7b717f14d7dfcbfffa26b9a52d570351375eaea29c8c9b7bd2e0f071a8077d90",
+      "license": "Structurizr source repository Apache-2.0; local command free per official binary documentation; server command separately requires a license",
+      "requires": "Java 21; Playwright browser binaries for PNG/SVG export",
+      "observedBrowserDownloads": {
+        "chromium": "151.0.7922.34 (playwright build 1234)",
+        "firefox": "153.0 (playwright build 1538)",
+        "webkit": "26.5 (playwright build 2336)",
+        "ffmpeg": "playwright build 1011",
+        "winldd": "playwright build 1007"
+      }
+    }
+  }
+}

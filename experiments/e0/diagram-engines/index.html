@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A3 E0-D2 Mermaid spike</title>
+    <style>
+      body { font: 14px/1.45 system-ui, sans-serif; margin: 2rem auto; max-width: 1120px; padding: 0 1rem; }
+      button { padding: .55rem .8rem; }
+      #status { white-space: pre-wrap; border: 1px solid #bbb; padding: .75rem; }
+      .diagram { border: 1px solid #ddd; margin: 1rem 0; overflow: auto; padding: 1rem; }
+      svg { max-width: 100%; }
+    </style>
+  </head>
+  <body>
+    <h1>Mermaid local render check</h1>
+    <p>This isolated page renders only synthetic source fixtures. It has no A3 application bridge.</p>
+    <button id="render" type="button">Parse and render both fixtures</button>
+    <pre id="status">Not run</pre>
+    <section id="diagrams"></section>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

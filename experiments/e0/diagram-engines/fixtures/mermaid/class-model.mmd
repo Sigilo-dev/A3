@@ -1,0 +1,11 @@
+classDiagram
+class Project {
+  +UUID id
+  +String name
+  +createRevision() UUID
+}
+class Workspace {
+  +UUID id
+  +UUID projectId
+}
+Project "1" --> "0..*" Workspace : representedBy

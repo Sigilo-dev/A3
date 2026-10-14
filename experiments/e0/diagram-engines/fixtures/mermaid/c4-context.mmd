@@ -1,0 +1,7 @@
+C4Context
+title A3 synthetic context
+Person(editor, "Editor", "Maintains a local project")
+System(a3, "A3", "Local modeling workspace")
+System_Ext(model, "Text model", "Optional external service")
+Rel(editor, a3, "edits")
+Rel(a3, model, "receives a manually copied prompt", "HTTPS")

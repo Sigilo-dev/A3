@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "files": {
+    "fixtures/mermaid/c4-context.mmd": {
+      "provenance": "original synthetic A3 E0-D2 fixture",
+      "license": "MIT",
+      "sha256": "c533dd3d27e17714425600f60d189f2939b21181b437aec653f16465db07bd4f"
+    },
+    "fixtures/mermaid/class-model.mmd": {
+      "provenance": "original synthetic A3 E0-D2 fixture",
+      "license": "MIT",
+      "sha256": "0b3c3fc6742350f704ffc9cc47caa27017125e862b1f1102cd8d612aeb65ccdf"
+    },
+    "fixtures/plantuml/class-model.puml": {
+      "provenance": "original synthetic A3 E0-D2 fixture",
+      "license": "MIT",
+      "sha256": "cf2dd8d35d35521b82b2ce0e69bae93ea92eeabfa60bb1b14ae16546f13c06ce"
+    },
+    "fixtures/structurizr/workspace.dsl": {
+      "provenance": "original synthetic A3 E0-D2 fixture",
+      "license": "MIT",
+      "sha256": "2ccf47606c3ae0571b4fed7a2e2ab0a93ab14adddbdd38c695550d16ef766486"
+    },
+    "fixtures/structurizr/workspace.json": {
+      "provenance": "generated from the original synthetic workspace.dsl fixture by Structurizr 2026.09.19",
+      "license": "MIT",
+      "sha256": "84a00174886287b307278300169f9488e048806d949f6b2623963dc516a33d15"
+    }
+  },
+  "fixturesLicense": "MIT"
+}

@@ -1,0 +1,14 @@
+@startuml
+title A3 synthetic UML class view
+skinparam classAttributeIconSize 0
+class Project {
+  +UUID id
+  +String name
+  +createRevision() UUID
+}
+class Workspace {
+  +UUID id
+}
+Project "1" --> "0..*" Workspace : representedBy
+note right of Project : source remains authoritative
+@enduml

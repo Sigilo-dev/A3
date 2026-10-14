@@ -1,0 +1,17 @@
+{
+  "name": "a3-e0-d2-diagram-engines",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "mermaid:ast": "node scripts/mermaid-contract.mjs",
+    "mermaid:serve": "vite --host 127.0.0.1 --port 4173 --strictPort"
+  },
+  "dependencies": {
+    "@mermaid-js/parser": "2.0.1",
+    "mermaid": "12.2.0"
+  },
+  "devDependencies": {
+    "vite": "8.3.4"
+  }
+}

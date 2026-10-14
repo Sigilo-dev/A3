@@ -1,0 +1,117 @@
+{
+  "configuration" : { },
+  "description" : "Local-only E0-D2 fixture",
+  "documentation" : { },
+  "id" : 0,
+  "model" : {
+    "people" : [ {
+      "description" : "Maintains a local project",
+      "id" : "1",
+      "name" : "Editor",
+      "properties" : {
+        "structurizr.dsl.identifier" : "editor"
+      },
+      "relationships" : [ {
+        "description" : "models",
+        "destinationId" : "2",
+        "id" : "4",
+        "sourceId" : "1",
+        "tags" : "Relationship"
+      }, {
+        "description" : "reads and writes",
+        "destinationId" : "3",
+        "id" : "5",
+        "sourceId" : "1",
+        "tags" : "Relationship"
+      } ],
+      "tags" : "Element,Person"
+    } ],
+    "softwareSystems" : [ {
+      "containers" : [ {
+        "description" : "JSON and Markdown documents",
+        "documentation" : { },
+        "id" : "3",
+        "name" : "Project files",
+        "properties" : {
+          "structurizr.dsl.identifier" : "projectFiles"
+        },
+        "tags" : "Element,Container",
+        "technology" : "Local files"
+      } ],
+      "description" : "Local modeling workspace",
+      "documentation" : { },
+      "id" : "2",
+      "name" : "A3",
+      "properties" : {
+        "structurizr.dsl.identifier" : "a3"
+      },
+      "tags" : "Element,Software System"
+    } ]
+  },
+  "name" : "A3 synthetic architecture",
+  "properties" : {
+    "structurizr.inspection.error" : "5",
+    "structurizr.dsl" : "d29ya3NwYWNlICJBMyBzeW50aGV0aWMgYXJjaGl0ZWN0dXJlIiAiTG9jYWwtb25seSBFMC1EMiBmaXh0dXJlIiB7DQogIG1vZGVsIHsNCiAgICBlZGl0b3IgPSBwZXJzb24gIkVkaXRvciIgIk1haW50YWlucyBhIGxvY2FsIHByb2plY3QiDQogICAgYTMgPSBzb2Z0d2FyZVN5c3RlbSAiQTMiICJMb2NhbCBtb2RlbGluZyB3b3Jrc3BhY2UiIHsNCiAgICAgIHByb2plY3RGaWxlcyA9IGNvbnRhaW5lciAiUHJvamVjdCBmaWxlcyIgIkpTT04gYW5kIE1hcmtkb3duIGRvY3VtZW50cyIgIkxvY2FsIGZpbGVzIg0KICAgIH0NCiAgICBlZGl0b3IgLT4gYTMgIm1vZGVscyINCiAgICBlZGl0b3IgLT4gcHJvamVjdEZpbGVzICJyZWFkcyBhbmQgd3JpdGVzIg0KICB9DQoNCiAgdmlld3Mgew0KICAgIHN5c3RlbUNvbnRleHQgYTMgImNvbnRleHQiIHsNCiAgICAgIGluY2x1ZGUgKg0KICAgICAgYXV0b0xheW91dCBscg0KICAgIH0NCiAgICBjb250YWluZXIgYTMgImNvbnRhaW5lcnMiIHsNCiAgICAgIGluY2x1ZGUgKg0KICAgICAgYXV0b0xheW91dCBscg0KICAgIH0NCiAgfQ0KfQ==",
+    "structurizr.inspection.info" : "0",
+    "structurizr.inspection.ignore" : "0",
+    "structurizr.inspection.warning" : "0"
+  },
+  "views" : {
+    "configuration" : {
+      "styles" : { },
+      "terminology" : { }
+    },
+    "containerViews" : [ {
+      "automaticLayout" : {
+        "edgeSeparation" : 50,
+        "nodeSeparation" : 50,
+        "rankDirection" : "LeftRight",
+        "rankSeparation" : 100,
+        "vertices" : true
+      },
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "3",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "externalSoftwareSystemBoundariesVisible" : false,
+      "key" : "containers",
+      "name" : "Container View: A3",
+      "order" : 2,
+      "relationships" : [ {
+        "id" : "5"
+      } ],
+      "softwareSystemId" : "2"
+    } ],
+    "systemContextViews" : [ {
+      "automaticLayout" : {
+        "edgeSeparation" : 50,
+        "nodeSeparation" : 50,
+        "rankDirection" : "LeftRight",
+        "rankSeparation" : 100,
+        "vertices" : true
+      },
+      "elements" : [ {
+        "id" : "1",
+        "x" : 0,
+        "y" : 0
+      }, {
+        "id" : "2",
+        "x" : 0,
+        "y" : 0
+      } ],
+      "enterpriseBoundaryVisible" : true,
+      "key" : "context",
+      "name" : "System Context View: A3",
+      "order" : 1,
+      "relationships" : [ {
+        "id" : "4"
+      } ],
+      "softwareSystemId" : "2"
+    } ]
+  }
+}
