@@ -3,6 +3,18 @@ import test from 'node:test';
 import { prepareCommand, revalidatePlan, getRecord, resolveVariable } from '../dist/src/index.js';
 import { fixture, context, id, W1, W2, E1, E2, R1, P1, P2, P3, REL, hash, find, group, collection, variableSet, literal, freshDocument, refOf, request, run, success, rejection, duplicatePayload } from './fixture.mjs';
 
+test('workspace camera command preserves opaque data, identities and all geometry outside its own viewport', () => {
+  const state = fixture(); find(state, 'workspace', W1).value.viewport.futureCamera = { keep: true };
+  const viewport = { x: -1e12 + 0.125, y: 1e12 - 0.25, zoom: 0.05 };
+  const result = success(run(state, 'a3.core.set-workspace-viewport', { workspaceId: W1, viewport }));
+  assert.deepEqual(find(result.nextSnapshot, 'workspace', W1).value.viewport, { ...viewport, futureCamera: { keep: true } });
+  assert.equal(result.changes.length, 1); assert.equal(result.changes[0].ref.kind, 'workspace');
+  assert.deepEqual(find(result.nextSnapshot, 'workspace', W2), find(state, 'workspace', W2));
+  assert.deepEqual(find(result.nextSnapshot, 'placement', P1, W1), find(state, 'placement', P1, W1));
+  rejection(run(state, 'a3.core.set-workspace-viewport', { workspaceId: W1, viewport: { x: 0, y: 0, zoom: 0 } }), 'invalid-viewport');
+  rejection(run(state, 'a3.core.set-workspace-viewport', { workspaceId: W1, viewport: { ...viewport, id: E1 } }), 'invalid-viewport');
+});
+
 test('A3-004: content identity is shared; moving one view does not move the other', () => {
   const state = fixture();
   const original = structuredClone(state);

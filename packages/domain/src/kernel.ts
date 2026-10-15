@@ -10,7 +10,7 @@ function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnost
 }
 const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity',
   'a3.core.move-placement', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-collection-members',
-  'a3.core.set-variables', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
+  'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
 const kinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
 const scoped = new Set(['placement', 'visual-edge', 'relation-view', 'group', 'drawing']);
 
@@ -298,6 +298,18 @@ function apply(draft: Draft): void {
       if (request.payload.record.kind === 'project' || request.payload.record.kind === 'drawing') fail('unsupported-create', 'Usa el constructor de proyecto; E2 administra trazos.');
       draft.add(request.payload.record);
       break;
+    case 'a3.core.set-workspace-viewport': {
+      const { viewport, workspaceId } = request.payload;
+      if (!isObject(viewport) || Object.keys(viewport).some((key) => !['x', 'y', 'zoom'].includes(key)) ||
+          !Number.isFinite(viewport.x) || !Number.isFinite(viewport.y) || !Number.isFinite(viewport.zoom) || viewport.zoom <= 0) {
+        fail('invalid-viewport', 'La cámara requiere coordenadas finitas y una escala positiva.');
+      }
+      draft.edit({ kind: 'workspace', id: workspaceId }, 'workspace', (value) => {
+        // Only camera values are editable; opaque viewport fields and extensions survive.
+        value.viewport = { ...value.viewport, ...copy(viewport) };
+      });
+      break;
+    }
     case 'a3.core.rename': {
       const record = draft.require(request.payload.ref);
       if (record.kind === 'entity') draft.edit(request.payload.ref, 'entity', (value) => { value.title = request.payload.name; });

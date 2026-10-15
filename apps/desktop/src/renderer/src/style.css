@@ -65,6 +65,27 @@ input:focus-visible { outline: 2px solid #c3ed82; outline-offset: 2px; }
 .delete-dialog code { overflow-wrap: anywhere; }
 @media (max-width: 1100px) { .project-actions { grid-template-columns: 1fr; gap: 0; } .input-row { flex-wrap: wrap; } }
 button:focus-visible, a:focus-visible { outline: 2px solid #c3ed82; outline-offset: 3px; }
+.content:has(.canvas-panel) { display: flex; flex-direction: column; padding: 18px; overflow: hidden; }
+.content:has(.canvas-panel) .breadcrumb { margin-bottom: 8px; }
+.canvas-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.canvas-heading, .canvas-toolbar, .canvas-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.canvas-heading { justify-content: space-between; }
+.canvas-heading h1 { margin: 0; font-size: 25px; }
+.canvas-heading label { margin: 0; display: flex; align-items: center; gap: 8px; }
+.canvas-heading select { padding: 6px; border: 1px solid #41515e; border-radius: 4px; background: #10151b; color: #e8edf0; }
+.canvas-toolbar { padding: 10px 0 0; font-size: 12px; }
+.canvas-toolbar button { margin: 0; padding: 6px 10px; }
+.canvas-toolbar output { min-width: 48px; text-align: center; }
+.canvas-fixture { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 11px; }
+.canvas-fixture input { width: auto; }
+.canvas-help { font-size: 11px; color: #aab7c2; margin: 8px 0; line-height: 1.5; }
+.canvas-host { position: relative; flex: 1; min-height: 240px; border: 1px solid #33413b; border-radius: 6px; overflow: hidden; touch-action: none; overscroll-behavior: contain; }
+.canvas-host:focus-visible { outline: 2px solid #c3ed82; }
+.canvas-guides, .canvas-reference { position: absolute; overflow: visible; pointer-events: none; }
+.canvas-guides line { stroke: #8baf78; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: .5; }
+.canvas-reference rect { fill: #20332c; stroke: #9bc279; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.canvas-reference text { fill: #e8edf0; font-size: 14px; }
+.canvas-status { justify-content: space-between; font-size: 10px; color: #aab7c2; padding-top: 9px; }
 .shell { display: grid; grid-template-columns: 214px minmax(360px, 1fr) 260px; grid-template-rows: 58px minmax(0, 1fr) 36px auto; height: 100vh; min-height: 500px; }
 .topbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 32px; padding: 0 24px; border-bottom: 1px solid #293139; }
 .brand { font-size: 24px; font-weight: 750; letter-spacing: -1px; display: flex; gap: 4px; align-items: baseline; }

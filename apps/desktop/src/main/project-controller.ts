@@ -1,7 +1,17 @@
 import { clipboard, dialog, type BrowserWindow } from 'electron';
 import { join } from 'node:path';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { FilesRequest, FilesResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasRequest, CanvasResult, FilesRequest, FilesResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import { validViewport } from '../shared/world-viewport';
+
+function validCanvasRequest(value: unknown): value is CanvasRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (typeof input.action !== 'string' || typeof input.sessionId !== 'string' || typeof input.workspaceId !== 'string' || !uuid.test(input.sessionId) || !uuid.test(input.workspaceId)) return false;
+  if (input.action === 'stage') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) >= 1 && validViewport(input.viewport);
+  return ['load', 'flush', 'discard'].includes(String(input.action)) && Object.keys(input).length === 3;
+}
 
 function validRequest(value: unknown): value is ProjectsRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -50,6 +60,20 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
+    async handleCanvas(value: unknown): Promise<CanvasResult> {
+      if (!validCanvasRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de lienzo inválida.', recovery: 'Reabre el workspace.' } };
+      try {
+        switch (value.action) {
+          case 'load': return { ok: true, value: await manager.loadCanvasWorkspace(value.sessionId, value.workspaceId) };
+          case 'stage': return { ok: true, value: await manager.stageCanvasViewport(value.sessionId, value.workspaceId, value.expectedRevision, value.viewport) };
+          case 'flush': return { ok: true, value: await manager.flushCanvasWorkspace(value.sessionId, value.workspaceId) };
+          case 'discard': return { ok: true, value: await manager.discardCanvasViewport(value.sessionId, value.workspaceId) };
+        }
+      } catch (error) {
+        return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED', message: error instanceof LocalProjectError ? error.message : 'No se pudo guardar la vista del workspace.',
+          recovery: 'La vista pendiente se conserva en la sesión. Reintenta guardar o descártala explícitamente antes de releer.' } };
+      }
+    },
     async handle(value: unknown): Promise<ProjectsResult> {
       if (!validRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de proyecto inválida.', recovery: 'Vuelve a realizar la acción desde A3.' } };
       try {

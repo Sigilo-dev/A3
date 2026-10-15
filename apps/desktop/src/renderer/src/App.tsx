@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import type { AppInfo, LocalProjectsState } from '../../shared/desktop-api';
 import { ProjectsPanel } from './ProjectsPanel';
 import { FileExplorerPanel } from './FileExplorerPanel';
+const CanvasPanel = lazy(() => import('./CanvasPanel').then((module) => ({ default: module.CanvasPanel })));
 
 const sections = [
   ['projects', 'Proyectos', 'Inicio y selección de proyectos locales.'],
+  ['canvas', 'Lienzo', 'Workspaces y navegación por el lienzo.'],
   ['files', 'Archivos', 'Explorador de archivos y carpetas referenciadas.'],
   ['search', 'Buscar', 'Búsqueda dentro del proyecto.'],
   ['gallery', 'Galería', 'Imágenes y videos del proyecto.'],
@@ -73,7 +75,7 @@ export function App(): React.JSX.Element {
     </aside>
     <main id="content" className="content" tabIndex={-1}>
       <div className="breadcrumb">A3 <span>/</span> {section[1]}</div>
-      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} /> : active === 'files' ? <FileExplorerPanel active={projects?.active} /> : <><section className="intro" aria-labelledby="section-title">
+      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} /> : active === 'canvas' ? <Suspense fallback={<p role="status">Abriendo lienzo…</p>}><CanvasPanel active={projects?.active} /></Suspense> : active === 'files' ? <FileExplorerPanel active={projects?.active} /> : <><section className="intro" aria-labelledby="section-title">
         <p className="eyebrow">Un lugar para tus ideas</p>
         <h1 id="section-title">{section[1]}</h1>
         <p className="lead">{section[2]}</p>
@@ -81,7 +83,7 @@ export function App(): React.JSX.Element {
           <div><strong>Área preparada</strong><p>La navegación está disponible. Las funciones de esta sección se incorporarán en las próximas etapas.</p></div>
         </div>
       </section></>}
-      {active !== 'projects' && <section className="foundation" aria-labelledby="foundation-title">
+      {active !== 'projects' && active !== 'canvas' && <section className="foundation" aria-labelledby="foundation-title">
         <div><p className="eyebrow">Primer paso</p><h2 id="foundation-title">Una base común</h2></div>
         <p>Explora las secciones desde la barra izquierda. Esta entrega prepara la ventana y la comunicación de escritorio.</p>
         <button className="secondary" onClick={() => setActive('preferences')}>Ver Preferencias <span aria-hidden="true">↗</span></button>
@@ -99,7 +101,7 @@ export function App(): React.JSX.Element {
         <dt>Chromium</dt><dd>{info.chromium}</dd>
         <dt>Node del host</dt><dd>{info.node}</dd>
       </dl>}
-      <p className="inspector-note">{projects?.active ? `${projects.active.name} · ${projects.active.externalConflict ? 'Conflicto externo' : projects.active.pendingName ? 'Sin guardar' : projects.active.mode === 'writer' ? 'Guardado' : 'Solo lectura'}. Los permisos se aplican a esta carpeta.` : 'Crea o abre un proyecto desde Inicio. Las aprobaciones de carpetas pertenecen a este dispositivo.'}</p>
+      <p className="inspector-note">{projects?.active ? `${projects.active.name} · ${projects.active.externalConflict ? 'Conflicto externo' : projects.active.pendingName || projects.active.pendingViewport ? 'Sin guardar' : projects.active.mode === 'writer' ? 'Guardado' : 'Solo lectura'}. Los permisos se aplican a esta carpeta.` : 'Crea o abre un proyecto desde Inicio. Las aprobaciones de carpetas pertenecen a este dispositivo.'}</p>
     </aside>
     <footer className="statusbar">
       <span><span className="status-dot" />{info && !error ? 'Escritorio listo' : 'Verificando escritorio'}</span>

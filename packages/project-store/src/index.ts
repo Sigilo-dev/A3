@@ -10,4 +10,5 @@ export type { BrokerOptions, Capability, CapabilityDecision, GrantMode, LocalMou
 export { MountPathError, inspectLocalMountFile, readMountedResource, validateMountRelativePath } from './mounts.js';
 export type { MountActionPreview, MountedBytes } from './mounts.js';
 export { LocalProjectManager, LocalProjectError, validateProjectName } from './projects.js';
+export type { LocalCanvasWorkspace, WorkspaceViewport } from './projects.js';
 export type { LocalProjectSession, LocalProjectsState, LocalProjectsOptions, LocalExplorerEntry, LocalExplorerMount, LocalExplorerListing, LocalExplorerOpen, LocalExplorerDeletePreview, ProjectInitializationPreview, RecentProject } from './projects.js';

@@ -1,9 +1,15 @@
-import type { LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
+import type { LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
+export type { LocalCanvasWorkspace } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
 export const PROJECTS_CHANNEL = 'a3.projects:command';
 export const FILES_CHANNEL = 'a3.files:command';
+export const CANVAS_CHANNEL = 'a3.canvas:command';
+export type CanvasRequest =
+  | { action: 'load' | 'flush' | 'discard'; sessionId: string; workspaceId: string }
+  | { action: 'stage'; sessionId: string; workspaceId: string; expectedRevision: number; viewport: WorkspaceViewport };
+export type CanvasResult = { ok: true; value: LocalCanvasWorkspace } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type ProjectsRequest =
   | { action: 'list' | 'open' }
   | { action: 'create'; name: string }
@@ -43,4 +49,5 @@ export interface DesktopAPI {
   getAppInfo(): Promise<ShellResult<AppInfo>>;
   projects(request: ProjectsRequest): Promise<ProjectsResult>;
   files(request: FilesRequest): Promise<FilesResult>;
+  canvas(request: CanvasRequest): Promise<CanvasResult>;
 }

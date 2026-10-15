@@ -106,6 +106,7 @@ export type Payloads = {
   'a3.core.create-project': { project: Project; workspace: Workspace };
   'a3.core.create-document': { record: DomainRecord };
   'a3.core.rename': { ref: DocumentRef; name: string };
+  'a3.core.set-workspace-viewport': { workspaceId: UUID; viewport: { x: number; y: number; zoom: number } };
   'a3.core.update-entity': EntityPatch;
   'a3.core.move-placement': { ref: DocumentRef; position: Point };
   'a3.core.move-resource': { resourceId: UUID; location: ResourceLocation };

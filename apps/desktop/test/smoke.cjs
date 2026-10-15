@@ -40,7 +40,7 @@ async function healthy() {
   assert.equal(probe.process, 'undefined');
   assert.equal(probe.require, 'undefined');
   assert.equal(probe.ipcRenderer, 'undefined');
-  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'files']);
+  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'files', 'canvas']);
   assert.equal(probe.url, expectedURL);
   const preferences = win.webContents.getLastWebPreferences();
   for (const [name, value] of Object.entries({ nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, webSecurity: true })) {
@@ -85,7 +85,8 @@ async function healthy() {
       if (await js(condition)) return;
       const failure = await js("document.querySelector('[data-project-error]')?.textContent");
       const fileFailure = await js("document.querySelector('[data-file-error]')?.textContent");
-      if (failure || fileFailure) throw new Error(failure || fileFailure);
+      const canvasFailure = await js("document.querySelector('[data-canvas-error]')?.textContent");
+      if (failure || fileFailure || canvasFailure) throw new Error(failure || fileFailure || canvasFailure);
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error('UI timed out: ' + condition);
@@ -149,6 +150,60 @@ async function healthy() {
   await click('[data-cancel-file-delete]'); await waitFor("!document.querySelector('[role=alertdialog]')");
   assert.deepEqual(await readFile(renamedPath), Buffer.alloc(0), 'cancel leaves file bytes unchanged');
 
+  await click('[data-section="canvas"]'); await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
+  const readViewport = () => js("(() => { const { viewportX: x, viewportY: y, viewportZoom: zoom } = document.querySelector('[data-canvas-ready]').dataset; return { x: Number(x), y: Number(y), zoom: Number(zoom) }; })()");
+  assert.deepEqual(await readViewport(), { x: 0, y: 0, zoom: 1 });
+  assert.equal(await js("document.querySelector('[data-canvas-fit]').disabled"), true);
+  await click('[data-canvas-fixture]'); await click('[data-canvas-fit]');
+  await waitFor("document.querySelector('[data-canvas-status]')?.textContent === 'Vista guardada'");
+  const fitted = await readViewport();
+  const paneRect = await js("(() => { const r = document.querySelector('.canvas-host').getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), left: r.left, top: r.top, width: r.width, height: r.height }; })()");
+  const cursor = { x: paneRect.x - paneRect.left, y: paneRect.y - paneRect.top };
+  const worldUnderCursor = { x: (cursor.x - fitted.x) / fitted.zoom, y: (cursor.y - fitted.y) / fitted.zoom };
+  win.webContents.sendInputEvent({ type: 'mouseWheel', x: paneRect.x, y: paneRect.y, deltaX: 0, deltaY: -30, modifiers: ['control'], canScroll: true });
+  await waitFor(`Number(document.querySelector('[data-canvas-ready]').dataset.viewportZoom) !== ${fitted.zoom}`);
+  const zoomed = await readViewport();
+  assert.ok(Math.abs((cursor.x - zoomed.x) / zoomed.zoom - worldUnderCursor.x) < 0.01);
+  assert.ok(Math.abs((cursor.y - zoomed.y) / zoomed.zoom - worldUnderCursor.y) < 0.01);
+  win.webContents.sendInputEvent({ type: 'mouseWheel', x: paneRect.x, y: paneRect.y, deltaX: 25, deltaY: -18, canScroll: true });
+  await waitFor(`Number(document.querySelector('[data-canvas-ready]').dataset.viewportX) !== ${zoomed.x}`);
+  const scrolled = await readViewport(); assert.equal(scrolled.zoom, zoomed.zoom);
+  // A native drag uses React Flow; wheel/pinch are normalized in the A3 visual adapter.
+  win.webContents.sendInputEvent({ type: 'mouseDown', x: paneRect.x, y: paneRect.y, button: 'left', clickCount: 1 });
+  win.webContents.sendInputEvent({ type: 'mouseMove', x: paneRect.x + 35, y: paneRect.y + 21, movementX: 35, movementY: 21 });
+  win.webContents.sendInputEvent({ type: 'mouseUp', x: paneRect.x + 35, y: paneRect.y + 21, button: 'left', clickCount: 1 });
+  await waitFor(`Number(document.querySelector('[data-canvas-ready]').dataset.viewportX) !== ${scrolled.x}`);
+  await waitFor("document.querySelector('[data-canvas-status]')?.textContent === 'Vista guardada'");
+  const beforeResize = await readViewport(); const [width, height] = win.getSize(); win.setSize(width + 130, height + 80);
+  await js('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  assert.deepEqual(await readViewport(), beforeResize, 'resize must not fit or alter the camera');
+  const matrix = await js("new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).toString()"); assert.ok(matrix.startsWith('matrix('));
+  await click('[data-section="files"]'); await click('[data-section="canvas"]');
+  await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
+  assert.deepEqual(await readViewport(), beforeResize, 'reopening workspace preserves exact camera values');
+  assert.equal(await js("document.querySelectorAll('.react-flow__node, .react-flow__edge').length"), 0);
+  const canvasState = await js("window.a3.projects({ action: 'list' })");
+  const canvasActive = canvasState.value.active; const canvasWorkspaceId = canvasActive.workspaces[0].id;
+  const malformedCanvas = await js(`window.a3.canvas({ action: 'stage', sessionId: '${canvasActive.sessionId}', workspaceId: '${canvasWorkspaceId}', expectedRevision: 1, viewport: { x: null, y: 0, zoom: 1 } })`);
+  assert.equal(malformedCanvas.error.code, 'INVALID_REQUEST');
+  const savedWorkspace = JSON.parse(await readFile(join(existing, '.a3', 'workspaces', canvasWorkspaceId, 'workspace.json'), 'utf8'));
+  assert.deepEqual(savedWorkspace.viewport, beforeResize);
+  const extensive = { x: -1e12 + 0.125, y: 1e12 - 0.25, zoom: 0.73 };
+  const canvasBase = await js(`window.a3.canvas({ action: 'load', sessionId: '${canvasActive.sessionId}', workspaceId: '${canvasWorkspaceId}' })`);
+  assert.equal((await js(`window.a3.canvas({ action: 'stage', sessionId: '${canvasActive.sessionId}', workspaceId: '${canvasWorkspaceId}', expectedRevision: ${canvasBase.value.revision}, viewport: ${JSON.stringify(extensive)} })`)).ok, true);
+  assert.equal((await js(`window.a3.canvas({ action: 'flush', sessionId: '${canvasActive.sessionId}', workspaceId: '${canvasWorkspaceId}' })`)).ok, true);
+  await click('[data-section="files"]'); await click('[data-section="canvas"]');
+  await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
+  assert.deepEqual(await readViewport(), extensive);
+  const localTransform = await js("(() => { const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform); return { x: m.e, y: m.f, zoom: m.a }; })()");
+  assert.ok(Math.abs(localTransform.x) < 1 && Math.abs(localTransform.y) < 1, 'extensive camera must use a nearby visual origin');
+  assert.equal(localTransform.zoom, extensive.zoom);
+  const gridTransform = await js("document.querySelector('.react-flow__background pattern').getAttribute('patternTransform')");
+  assert.equal(gridTransform.includes('--'), false, 'grid offset must remain a valid SVG transform after origin rebasing');
+  await click('[data-section="files"]'); await click('[data-section="canvas"]');
+  await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
+  assert.deepEqual(await readViewport(), extensive);
+
   const extra = new BrowserWindow({ show: false, webPreferences: {
     session: win.webContents.session, preload: join(dirname(entry), '../preload/index.cjs'),
     contextIsolation: true, sandbox: true, nodeIntegration: false
@@ -159,6 +214,8 @@ async function healthy() {
   assert.equal(denied.error.code, 'PERMISSION_DENIED');
   const deniedProject = await extra.webContents.executeJavaScript("window.a3.projects({ action: 'list' })");
   assert.equal(deniedProject.error.code, 'PERMISSION_DENIED');
+  const deniedCanvas = await extra.webContents.executeJavaScript(`window.a3.canvas({ action: 'load', sessionId: '${canvasActive.sessionId}', workspaceId: '${canvasWorkspaceId}' })`);
+  assert.equal(deniedCanvas.error.code, 'PERMISSION_DENIED');
   extra.destroy();
 
   await win.webContents.executeJavaScript("location.href = 'https://example.com'; undefined");
@@ -170,7 +227,7 @@ async function healthy() {
   await mkdir(dirname(screenshot), { recursive: true });
   await writeFile(screenshot, (await win.webContents.capturePage()).toPNG());
   console.log('A3_SMOKE=' + JSON.stringify({ mode, passed: true, electron: probe.result.value.electron,
-    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'explorer create and rename', 'resource identity preserved', 'keyboard open/rename/duplicate/delete-cancel', 'incremental tree navigation', 'stale sessions', 'window close'] }));
+    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'explorer create and rename', 'resource identity preserved', 'keyboard open/rename/duplicate/delete-cancel', 'incremental tree navigation', 'canvas explicit fit', 'native wheel and cursor zoom', 'React Flow native pan', 'resize without fit', 'workspace reopen without drift', 'extensive viewport rebasing', 'grid phase after rebase', 'canvas IPC denied to foreign window', 'stale sessions', 'window close'] }));
   win.close();
 }
 

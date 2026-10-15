@@ -25,13 +25,18 @@ export interface ProjectInitializationPreview {
 }
 export interface LocalProjectSession {
   sessionId: string; projectId: string; name: string; root: string; mode: 'writer' | 'read-only';
-  format: string; pendingName: boolean; externalConflict: boolean; draftName: string | null; workspaces: { id: string; name: string }[]; diagnostics: string[];
+  format: string; pendingName: boolean; pendingViewport: boolean; externalConflict: boolean; draftName: string | null; workspaces: { id: string; name: string }[]; diagnostics: string[];
 }
 export interface LocalProjectsState {
   sequence: number;
   active: LocalProjectSession | null;
   recents: (RecentProject & { available: boolean })[];
   preview: ProjectInitializationPreview | null;
+}
+export interface WorkspaceViewport { x: number; y: number; zoom: number; }
+export interface LocalCanvasWorkspace {
+  sessionId: string; workspaceId: string; name: string; revision: number;
+  viewport: WorkspaceViewport; canWrite: boolean; pending: boolean;
 }
 export interface LocalExplorerEntry extends Omit<ExplorerDirectoryPage['entries'][number], 'path' | 'identity'> { id: string; path: string; }
 export interface LocalExplorerMount extends Omit<ExplorerMountEntry, 'resourceId'> { id: string; }
@@ -127,6 +132,7 @@ export class LocalProjectManager {
   #explorerPaths = new Map<string, { id: string; identity: string }>();
   #explorerPages = new Map<string, ExplorerPageBinding>();
   #explorerDeletes = new Map<string, ExplorerDeleteBinding>();
+  #viewportDrafts = new Map<string, { sessionId: string; expectedRevision: number; viewport: WorkspaceViewport }>();
   constructor(private readonly options: LocalProjectsOptions) {
     demand(isProjectCapabilityBroker(options.host.capabilities), 'BROKER_REQUIRED', 'Se requiere el broker de permisos del host.');
   }
@@ -171,7 +177,7 @@ export class LocalProjectManager {
     const { lease, sessionId, projectId, name } = this.#active;
     const state = lease.service.state;
     const manifest = state.project.documents.find((d) => d.location.kind === 'project')?.value;
-    return { sessionId, projectId, name, root: lease.service.root, mode: state.mode, pendingName: this.#nameDraft !== undefined && this.#nameDraft !== name, externalConflict: state.externalConflict, draftName: this.#nameDraft ?? null,
+    return { sessionId, projectId, name, root: lease.service.root, mode: state.mode, pendingName: this.#nameDraft !== undefined && this.#nameDraft !== name, pendingViewport: this.#viewportDrafts.size > 0, externalConflict: state.externalConflict, draftName: this.#nameDraft ?? null,
       format: manifest && typeof manifest === 'object' && !Array.isArray(manifest) && typeof manifest.formatVersion === 'string' ? manifest.formatVersion : 'desconocido',
       workspaces: state.project.snapshot.records.flatMap((r) => r.kind === 'workspace' ? [{ id: r.value.id, name: r.value.name }] : []),
       diagnostics: [...new Set([...state.project.diagnostics, ...state.recoveryDiagnostics].map((d) => `${d.path}: ${d.message}`)), ...(state.reason ? [state.reason] : [])] };
@@ -193,6 +199,7 @@ export class LocalProjectManager {
   }
   async #allowSwitch(): Promise<void> {
     if (!this.#active) return;
+    for (const workspaceId of this.#viewportDrafts.keys()) await this.#flushCanvasWorkspace(this.#active.sessionId, workspaceId);
     if (this.#nameDraft !== undefined && this.#nameDraft !== this.#active.name) await this.#rename(this.#active.sessionId, this.#nameDraft);
     const state = this.#active.lease.service.state;
     if (state.externalConflict || state.reason === 'recovery-required') demand(await this.options.confirmClose?.(this.#summary()!), 'SWITCH_CANCELLED', 'Se conservó el proyecto abierto; revisa los cambios o la recuperación pendiente.');
@@ -220,6 +227,7 @@ export class LocalProjectManager {
       await this.#persist();
       await previous?.lease.close();
       this.#active = { lease: candidate.value, sessionId: randomUUID(), projectId, name };
+      this.#viewportDrafts.clear();
       this.#nameDraft = undefined;
       this.#preview = undefined;
     } catch (error) { this.#catalog = previousCatalog; await candidate.value.close(); throw error; }
@@ -328,6 +336,64 @@ export class LocalProjectManager {
     demand(this.#active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión ya cambió.'); await this.#allowSwitch();
     await this.#active.lease.close(); this.#active = undefined; this.#preview = undefined; this.#nameDraft = undefined; this.#clearExplorer(); return this.#state();
   }); }
+  #canvasContext(sessionId: string, workspaceId: string): { active: ActiveProjectBinding; workspace: Workspace } {
+    const active = this.#active;
+    demand(active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión cambió; vuelve a abrir el lienzo.');
+    const record = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'workspace' && record.value.id === workspaceId);
+    demand(record?.kind === 'workspace', 'WORKSPACE_MISSING', 'Este workspace no está disponible; sus archivos se conservaron.');
+    const decision = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+      projectId: active.projectId, operation: 'read-resource', paths: [], refs: [{ kind: 'workspace', id: workspaceId }], resources: [] });
+    demand(decision.allowed, 'PERMISSION_DENIED', 'El broker denegó la lectura del workspace.');
+    return { active, workspace: record.value };
+  }
+  #canvasWorkspace(sessionId: string, workspaceId: string): LocalCanvasWorkspace {
+    const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+    const edit = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+      projectId: active.projectId, operation: 'write', paths: [], refs: [{ kind: 'workspace', id: workspaceId }], resources: [], requiredCapabilities: ['diagram.edit'], stage: 'prepare' });
+    const draft = this.#viewportDrafts.get(workspaceId);
+    const { x, y, zoom } = draft?.viewport ?? workspace.viewport;
+    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft,
+      canWrite: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && edit.allowed };
+  }
+  loadCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => this.#canvasWorkspace(sessionId, workspaceId));
+  }
+  stageCanvasViewport(sessionId: string, workspaceId: string, expectedRevision: number, viewport: WorkspaceViewport): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const view = this.#canvasWorkspace(sessionId, workspaceId);
+      demand(view.canWrite, 'PERMISSION_DENIED', 'La vista puede navegarse, pero el proyecto no permite guardar el viewport.');
+      demand(viewport && Object.keys(viewport).length === 3 && [viewport.x, viewport.y, viewport.zoom].every(Number.isFinite) && viewport.zoom > 0,
+        'INVALID_VIEWPORT', 'El viewport requiere coordenadas finitas y una escala positiva.');
+      const draft = this.#viewportDrafts.get(workspaceId);
+      demand(Number.isSafeInteger(expectedRevision) && expectedRevision === view.revision && (!draft || draft.expectedRevision === expectedRevision),
+        'REVISION_CONFLICT', 'El workspace cambió; relee la vista antes de guardar.');
+      this.#viewportDrafts.set(workspaceId, { sessionId, expectedRevision, viewport: { ...viewport } });
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  async #flushCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
+    const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+    const draft = this.#viewportDrafts.get(workspaceId);
+    if (!draft) return this.#canvasWorkspace(sessionId, workspaceId);
+    demand(draft.sessionId === sessionId && workspace.revision === draft.expectedRevision, 'REVISION_CONFLICT', 'El workspace cambió; el viewport pendiente se conserva sin sobrescribir.');
+    if (workspace.viewport.x !== draft.viewport.x || workspace.viewport.y !== draft.viewport.y || workspace.viewport.zoom !== draft.viewport.zoom) {
+      const snapshot = active.lease.service.state.project.snapshot;
+      const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
+        command: 'a3.core.set-workspace-viewport', payload: { workspaceId, viewport: draft.viewport }, expectedRevisions: revisionsOf(snapshot),
+        expectedContentHashes: [], scope: { entityIds: [] } });
+      demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'VIEWPORT_SAVE_FAILED', prepared.diagnostics.map((d) => d.message).join('\n'));
+      const committed = await active.lease.service.commit(prepared.value);
+      demand(committed.ok, committed.diagnostics[0]?.code ?? 'VIEWPORT_SAVE_FAILED', committed.diagnostics.map((d) => d.message).join('\n'));
+    }
+    this.#viewportDrafts.delete(workspaceId);
+    return this.#canvasWorkspace(sessionId, workspaceId);
+  }
+  flushCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(() => this.#flushCanvasWorkspace(sessionId, workspaceId));
+  }
+  discardCanvasViewport(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => { this.#canvasContext(sessionId, workspaceId); this.#viewportDrafts.delete(workspaceId); return this.#canvasWorkspace(sessionId, workspaceId); });
+  }
   #clearExplorer(): void {
     this.#explorerSessionId = ''; this.#explorerItems.clear(); this.#explorerPaths.clear(); this.#explorerPages.clear(); this.#explorerDeletes.clear();
   }
