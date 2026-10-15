@@ -272,14 +272,16 @@ async function readEntryStates(root: string, journal: Journal, maxBytes: number)
     }
     if (restore.hash !== null && target.hash !== null && target.identity !== restore.identity && applied.hash !== null) return { states: [], issue: 'target-recreated-during-rollback', path: entry.path };
     const before = entry.beforeHash === null ? target.hash === null : !installStarted && target.hash === entry.beforeHash && target.identity === originalIdentity;
-    const restored = entry.beforeHash !== null && target.hash === entry.beforeHash && restore.hash === entry.beforeHash && target.identity === restore.identity;
+    const restored = entry.beforeHash === null
+      ? target.hash === null && entry.afterHash !== null && applied.hash === entry.afterHash && applied.identity === candidate.identity
+      : target.hash === entry.beforeHash && restore.hash === entry.beforeHash && target.identity === restore.identity;
     const after = entry.afterHash === null ? target.hash === null && entry.beforeHash !== null && detached.hash === entry.beforeHash && detached.identity === originalIdentity
       : target.hash === entry.afterHash && target.identity === candidate.identity && candidate.hash === entry.afterHash;
     const detachedState = !installStarted && entry.beforeHash !== null && entry.afterHash !== null && target.hash === null && detached.hash === entry.beforeHash &&
       detached.identity === originalIdentity && candidate.hash === entry.afterHash && staged.hash === entry.afterHash;
     const rollbackDetached = target.hash === null && applied.hash === entry.afterHash && entry.afterHash !== null &&
       candidate.identity === applied.identity && (entry.beforeHash === null || detached.hash === entry.beforeHash && detached.identity === originalIdentity);
-    if (before && applied.hash !== null) return { states: [], issue: 'target-recreated-after-recovery-detach', path: entry.path };
+    if (before && applied.hash !== null && !restored) return { states: [], issue: 'target-recreated-after-recovery-detach', path: entry.path };
     if (after && restore.hash !== null) return { states: [], issue: 'target-recreated-during-rollback', path: entry.path };
     const state: EntryState = restored ? 'restored' : before ? 'before' : after ? 'after' : rollbackDetached ? 'rollback-detached' : detachedState ? 'detached' : 'external';
     states.push(state);

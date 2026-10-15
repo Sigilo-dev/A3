@@ -324,7 +324,7 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
     },
     async setProfile(input: { root: string; projectId: string; profile?: Profile }): Promise<boolean> {
       const profile = input.profile ?? 'proponer';
-      if (!isProfile(profile) || !options.confirmUserAction || !(await options.confirmUserAction({ projectId: input.projectId, capability: 'project.read', operation: safeOperation(`policy.profile:${profile}`) }))) return false;
+      if (!isProfile(profile) || !options.confirmUserAction || !(await options.confirmUserAction({ projectId: input.projectId, capability: 'project.read', operation: safeOperation(`policy.profile:${profile}`), displayTarget: canonicalRoot(input.root) }))) return false;
       const target = localFor(input.root, input.projectId);
       if (!audit({ root: input.root, projectId: input.projectId, actor: humanActor, operation: `policy.profile:${profile}`, capability: 'project.read', allowed: true, reason: 'granted' })) return false;
       persist({ schemaVersion: '1.0.0', rootKey: target.key, projectId: input.projectId.toLowerCase(), profile, overrides: {} }, target.path);

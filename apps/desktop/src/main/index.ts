@@ -2,7 +2,8 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session } fro
 import { access } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { APP_INFO_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
+import { APP_INFO_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
+import { createProjectController } from './project-controller';
 
 const APP_URL = 'a3://desktop/index.html';
 const rendererRoot = join(__dirname, '../renderer');
@@ -11,12 +12,28 @@ let mainWindow: BrowserWindow | null = null;
 let failed = false;
 let quitting = false;
 let bootTimer: ReturnType<typeof setTimeout> | undefined;
+let projects: ReturnType<typeof createProjectController> | undefined;
+let closing = false;
+
+async function finishQuit(): Promise<void> {
+  if (closing || quitting) return;
+  closing = true;
+  try {
+    await projects?.manager.shutdown();
+    quitting = true; clearTimeout(bootTimer); app.quit();
+  } catch {
+    dialog.showErrorBox('A3 · Proyecto abierto', 'No se cerró el proyecto. Revisa el estado de guardado o la recuperación pendiente antes de salir.');
+  } finally { closing = false; }
+}
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'a3', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
 ]);
 app.enableSandbox();
 app.setName('A3');
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) { quitting = true; app.quit(); }
+app.on('second-instance', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } });
 
 function fatalStartup(): void {
   if (failed || quitting) return;
@@ -63,6 +80,7 @@ async function startDesktop(): Promise<void> {
   const development = url !== APP_URL;
   await access(preloadPath);
   if (!development) await access(join(rendererRoot, 'index.html'));
+  projects = createProjectController(app.getPath('userData'), () => mainWindow);
 
   const shellSession = session.fromPartition('persist:a3-shell');
   shellSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -101,6 +119,13 @@ async function startDesktop(): Promise<void> {
       electron: process.versions.electron, chromium: process.versions.chrome, node: process.versions.node
     } };
   });
+  ipcMain.handle(PROJECTS_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) {
+      return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Solicitud no autorizada.', recovery: 'Reabre A3.' } };
+    }
+    return projects.handle(args[0]);
+  });
 
   function createWindow(): void {
     mainWindow = new BrowserWindow({
@@ -128,6 +153,7 @@ async function startDesktop(): Promise<void> {
     });
     win.once('ready-to-show', () => win.show());
     win.once('closed', () => { clearTimeout(bootTimer); mainWindow = null; });
+    win.on('close', (event) => { if (!quitting) { event.preventDefault(); void finishQuit(); } });
     bootTimer = setTimeout(fatalStartup, 15_000);
     void win.loadURL(url).catch(fatalStartup);
   }
@@ -144,9 +170,9 @@ async function startDesktop(): Promise<void> {
   app.on('activate', () => { if (!mainWindow && !quitting) createWindow(); });
 }
 
-app.on('before-quit', () => { quitting = true; clearTimeout(bootTimer); });
+app.on('before-quit', (event) => { if (!quitting) { event.preventDefault(); void finishQuit(); } });
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => ipcMain.removeHandler(APP_INFO_CHANNEL));
+app.on('will-quit', () => { ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); });
 process.on('uncaughtException', fatalStartup);
 process.on('unhandledRejection', fatalStartup);
-void app.whenReady().then(startDesktop).catch(fatalStartup);
+void app.whenReady().then(() => { if (primaryInstance) return startDesktop(); }).catch(fatalStartup);

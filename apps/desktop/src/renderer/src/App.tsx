@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { AppInfo } from '../../shared/desktop-api';
+import type { AppInfo, LocalProjectsState } from '../../shared/desktop-api';
+import { ProjectsPanel } from './ProjectsPanel';
 
 const sections = [
   ['projects', 'Proyectos', 'Inicio y selección de proyectos locales.'],
@@ -25,6 +26,8 @@ export function App(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [projects, setProjects] = useState<LocalProjectsState | null>(null);
+  const acceptProjects = (value: LocalProjectsState): void => setProjects((previous) => previous && previous.sequence > value.sequence ? previous : value);
   const section = sections.find(([id]) => id === active)!;
 
   useEffect(() => {
@@ -35,7 +38,12 @@ export function App(): React.JSX.Element {
         if (!window.a3) throw new Error('El puente de escritorio no está disponible. Reabre A3.');
         const result = await window.a3.getAppInfo();
         if (!mounted) return;
-        if (result.ok) setInfo(result.value);
+        if (result.ok) {
+          setInfo(result.value);
+          const local = await window.a3.projects({ action: 'list' });
+          if (mounted && local.ok) acceptProjects(local.value);
+          else if (mounted && !local.ok) setError(local.error.message);
+        }
         else setError(`${result.error.message} ${result.error.recovery}`);
       } catch {
         if (mounted) setError('No se pudo conectar con el proceso principal. Reintenta o reabre A3.');
@@ -49,8 +57,8 @@ export function App(): React.JSX.Element {
     <a href="#content" className="skip-link">Saltar al contenido</a>
     <header className="topbar">
       <span className="brand" aria-label="A3">A3<span className="brand-dot" /></span>
-      <span className="project-name">Sin proyecto abierto</span>
-      <span className="stage">Base escritorio · E1-A</span>
+      <span className="project-name">{projects?.active?.name ?? 'Sin proyecto abierto'}</span>
+      <span className="stage">Proyectos locales</span>
     </header>
     <aside className="sidebar">
       <p className="eyebrow">Tu espacio de trabajo</p>
@@ -64,25 +72,24 @@ export function App(): React.JSX.Element {
     </aside>
     <main id="content" className="content" tabIndex={-1}>
       <div className="breadcrumb">A3 <span>/</span> {section[1]}</div>
-      <section className="intro" aria-labelledby="section-title">
+      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} /> : <><section className="intro" aria-labelledby="section-title">
         <p className="eyebrow">Un lugar para tus ideas</p>
-        <h1 id="section-title">{active === 'projects' ? 'De la idea al proyecto.' : section[1]}</h1>
-        <p className="lead">{active === 'projects'
-          ? 'Documentos, referencias y diagramas compartirán un mismo espacio local.' : section[2]}</p>
+        <h1 id="section-title">{section[1]}</h1>
+        <p className="lead">{section[2]}</p>
         <div className="placeholder"><span className="status-dot" />
           <div><strong>Área preparada</strong><p>La navegación está disponible. Las funciones de esta sección se incorporarán en las próximas etapas.</p></div>
         </div>
-      </section>
-      <section className="foundation" aria-labelledby="foundation-title">
+      </section></>}
+      {active !== 'projects' && <section className="foundation" aria-labelledby="foundation-title">
         <div><p className="eyebrow">Primer paso</p><h2 id="foundation-title">Una base común</h2></div>
         <p>Explora las secciones desde la barra izquierda. Esta entrega prepara la ventana y la comunicación de escritorio.</p>
         <button className="secondary" onClick={() => setActive('preferences')}>Ver Preferencias <span aria-hidden="true">↗</span></button>
-      </section>
+      </section>}
       {error && <div className="error" role="alert"><p>{error}</p>
         <button onClick={() => setAttempt((value) => value + 1)}>Reintentar conexión</button></div>}
     </main>
     <aside className="inspector" aria-label="Estado de escritorio">
-      <p className="eyebrow">Escritorio</p><h2>Estado de la base</h2>
+      <p className="eyebrow">Escritorio</p><h2>Estado del proyecto</h2>
       <p role="status" className="connection">{error ? 'Conexión con error' : info ? 'Proceso principal conectado' : 'Conectando…'}</p>
       {info && <dl>
         <dt>Aplicación</dt><dd>{info.name} {info.version}</dd>
@@ -91,7 +98,7 @@ export function App(): React.JSX.Element {
         <dt>Chromium</dt><dd>{info.chromium}</dd>
         <dt>Node del host</dt><dd>{info.node}</dd>
       </dl>}
-      <p className="inspector-note">Los archivos y servicios del proyecto se conectarán en las siguientes entregas.</p>
+      <p className="inspector-note">{projects?.active ? `${projects.active.name} · ${projects.active.externalConflict ? 'Conflicto externo' : projects.active.pendingName ? 'Sin guardar' : projects.active.mode === 'writer' ? 'Guardado' : 'Solo lectura'}. Los permisos se aplican a esta carpeta.` : 'Crea o abre un proyecto desde Inicio. Las aprobaciones de carpetas pertenecen a este dispositivo.'}</p>
     </aside>
     <footer className="statusbar">
       <span><span className="status-dot" />{info && !error ? 'Escritorio listo' : 'Verificando escritorio'}</span>

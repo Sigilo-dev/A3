@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { mkdir, writeFile } = require('node:fs/promises');
+const { mkdir, writeFile, readFile, rename, lstat } = require('node:fs/promises');
 const { dirname, join } = require('node:path');
 const { app, BrowserWindow, dialog } = require('electron');
 
@@ -10,6 +10,9 @@ app.setPath('userData', profile);
 // Hide test windows without introducing test switches or IPC into the product.
 BrowserWindow.prototype.show = function () {};
 let startupDialog;
+const folders = [];
+dialog.showOpenDialog = async () => folders.length ? { canceled: false, filePaths: [folders.shift()] } : { canceled: true, filePaths: [] };
+dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
 dialog.showErrorBox = (title, message) => {
   startupDialog = { title, message };
   if (mode !== 'healthy') {
@@ -21,6 +24,7 @@ const created = new Promise((resolve) => app.once('browser-window-created', (_ev
 
 async function healthy() {
   const win = await created;
+  win.webContents.setBackgroundThrottling(false);
   await new Promise((resolve, reject) => {
     win.webContents.once('did-finish-load', resolve);
     win.webContents.once('did-fail-load', (_event, code) => reject(new Error(`Renderer load ${code}`)));
@@ -36,7 +40,7 @@ async function healthy() {
   assert.equal(probe.process, 'undefined');
   assert.equal(probe.require, 'undefined');
   assert.equal(probe.ipcRenderer, 'undefined');
-  assert.deepEqual(probe.bridge, ['getAppInfo']);
+  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects']);
   assert.equal(probe.url, expectedURL);
   const preferences = win.webContents.getLastWebPreferences();
   for (const [name, value] of Object.entries({ nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, webSecurity: true })) {
@@ -63,6 +67,58 @@ async function healthy() {
   assert.equal(navigation.panel, true);
   assert.equal(navigation.cspBlocked, !development);
   assert.equal(navigation.popupDenied, true);
+  const networkRequests = [];
+  win.webContents.session.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (request, callback) => {
+    if (development && new URL(request.url).origin === new URL(expectedURL).origin) callback({});
+    else { networkRequests.push(request.url); callback({ cancel: true }); }
+  });
+
+  // Real UI -> preload -> sender-checked main -> broker -> store, without network.
+  const projectParent = join(profile, 'project-fixtures');
+  await mkdir(projectParent, { recursive: true });
+  const existing = join(projectParent, 'Existing'); await mkdir(existing);
+  const original = Buffer.from([0xff, 0, 13, 10, 42]); await writeFile(join(existing, 'original.bin'), original);
+  const js = (source) => win.webContents.executeJavaScript(source);
+  const click = (selector) => js(`document.querySelector(${JSON.stringify(selector)}).click(); undefined`);
+  const waitFor = async (condition) => {
+    for (let attempt = 0; attempt < 160; attempt++) {
+      if (await js(condition)) return;
+      const failure = await js("document.querySelector('[data-project-error]')?.textContent");
+      if (failure) throw new Error(failure);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error('UI timed out: ' + condition);
+  };
+  const input = (selector, value) => js(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(element, ${JSON.stringify(value)}); element.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await click('[data-section="projects"]');
+  await waitFor("Boolean(document.querySelector('#project-name'))");
+  await input('#project-name', 'Offline'); folders.push(projectParent);
+  await click('[data-create-project]'); await waitFor("Boolean(document.querySelector('[data-project-preview]'))");
+  await click('[data-confirm-project]'); await waitFor("document.querySelector('[data-active-project] h2')?.textContent === 'Offline'");
+  const firstSession = (await js("window.a3.projects({ action: 'list' })")).value.active.sessionId;
+  await input('#rename-project', 'Renamed offline');
+  // Closing drains the host draft through the writer before releasing the session.
+  await click('[data-close-project]'); await waitFor("!document.querySelector('[data-active-project]')");
+  const createdRoot = join(projectParent, 'Offline');
+  assert.equal(JSON.parse(await readFile(join(createdRoot, 'a3.project.json'), 'utf8')).name, 'Renamed offline');
+  await click('[data-open-recent]'); await waitFor("document.querySelector('[data-active-project] h2')?.textContent === 'Renamed offline'");
+  await click('[data-close-project]'); await waitFor("!document.querySelector('[data-active-project]')");
+  const moved = join(projectParent, 'Moved'); await rename(createdRoot, moved); folders.push(moved);
+  await click('[data-relocate-project]'); await waitFor("document.querySelector('[data-active-project] .path')?.textContent.endsWith('Moved')");
+  await assert.rejects(lstat(createdRoot), { code: 'ENOENT' });
+  const stale = await js(`window.a3.projects({ action: 'rename', sessionId: ${JSON.stringify(firstSession)}, name: 'stale' })`);
+  assert.equal(stale.error.code, 'STALE_SESSION');
+  await click('[data-close-project]'); await waitFor("!document.querySelector('[data-active-project]')");
+  folders.push(existing); await click('[data-open-project]'); await waitFor("Boolean(document.querySelector('[data-project-preview]'))");
+  await click('[data-cancel-project]'); await waitFor("!document.querySelector('[data-project-preview]')");
+  await assert.rejects(lstat(join(existing, '.a3')), { code: 'ENOENT' });
+  folders.push(existing); await click('[data-open-project]'); await waitFor("Boolean(document.querySelector('[data-project-preview]'))");
+  await click('[data-confirm-project]'); await waitFor("document.querySelector('[data-active-project] h2')?.textContent === 'Existing'");
+  assert.deepEqual(await readFile(join(existing, 'original.bin')), original);
+  assert.ok(await js("document.querySelector('.workspace-list')?.textContent.includes('Principal')"));
+  const invalid = await js("window.a3.projects({ action: 'open', root: 'C:/unexpected' })");
+  assert.equal(invalid.error.code, 'INVALID_REQUEST');
+  assert.equal((await js("window.a3.projects({ action: 'constructor', name: 'x' })")).error.code, 'INVALID_REQUEST');
 
   const extra = new BrowserWindow({ show: false, webPreferences: {
     session: win.webContents.session, preload: join(dirname(entry), '../preload/index.cjs'),
@@ -72,16 +128,20 @@ async function healthy() {
   const denied = await extra.webContents.executeJavaScript('window.a3.getAppInfo()');
   assert.equal(denied.ok, false);
   assert.equal(denied.error.code, 'PERMISSION_DENIED');
+  const deniedProject = await extra.webContents.executeJavaScript("window.a3.projects({ action: 'list' })");
+  assert.equal(deniedProject.error.code, 'PERMISSION_DENIED');
   extra.destroy();
 
   await win.webContents.executeJavaScript("location.href = 'https://example.com'; undefined");
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(win.webContents.getURL(), expectedURL);
   assert.equal(startupDialog, undefined);
+  assert.deepEqual(networkRequests, [], 'Project lifecycle must not issue network requests.');
+  await js('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   await mkdir(dirname(screenshot), { recursive: true });
   await writeFile(screenshot, (await win.webContents.capturePage()).toPNG());
   console.log('A3_SMOKE=' + JSON.stringify({ mode, passed: true, electron: probe.result.value.electron,
-    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'window close'] }));
+    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'stale sessions', 'window close'] }));
   win.close();
 }
 

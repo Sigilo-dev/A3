@@ -9,3 +9,5 @@ export { CAPABILITIES, createProjectCapabilityBroker, isProjectCapabilityBroker,
 export type { BrokerOptions, Capability, CapabilityDecision, GrantMode, LocalMountBinding, MountPermission, Profile, ProjectCapabilityBroker, SharedPolicyRequest } from './capabilities.js';
 export { MountPathError, readMountedResource, validateMountRelativePath } from './mounts.js';
 export type { MountActionPreview, MountedBytes } from './mounts.js';
+export { LocalProjectManager, LocalProjectError, validateProjectName } from './projects.js';
+export type { LocalProjectSession, LocalProjectsState, LocalProjectsOptions, ProjectInitializationPreview, RecentProject } from './projects.js';

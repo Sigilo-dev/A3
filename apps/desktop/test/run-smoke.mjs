@@ -47,7 +47,7 @@ async function run(mode, output, expectedCode) {
     let timedOut = false;
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
-    const timeout = setTimeout(() => { timedOut = true; child.kill(); }, 30_000);
+    const timeout = setTimeout(() => { timedOut = true; child.kill(); }, 60_000);
     child.on('error', (error) => { clearTimeout(timeout); reject(error); });
     child.on('close', (code) => {
       clearTimeout(timeout);
