@@ -3,6 +3,7 @@ import type { Capability, ProjectCapabilityBroker } from './capabilities.js';
 import type { ProjectReadResult, ResourceBytes, StoreDiagnostic } from './types.js';
 import type { MigrationStep } from './migrations.js';
 import type { SnapshotSummary } from './snapshots.js';
+import type { MountActionPreview } from './mounts.js';
 
 export interface AccessRequest {
   actor: Actor;
@@ -83,10 +84,22 @@ export interface ResourceWriteRequest {
   expectedHash: string;
   bytes: Uint8Array;
 }
+export interface MountActionRequest {
+  action: 'copy' | 'move' | 'reference';
+  operationId: string;
+  resourceId: string;
+  mountId: string;
+  sourcePath: string;
+  destinationPath?: string;
+  mediaType?: string;
+}
+export type MountActionPreviewResult = MountActionPreview;
 export interface OpenResource extends ResourceBytes {
   resourceId: string;
   revision: number;
   descriptorHash: string;
+  source: 'project-file' | 'mounted-file';
+  mountId?: string;
 }
 export type ServiceEvent =
   | { kind: 'external-change'; path: string; change: 'created' | 'deleted' | 'edited' | 'replaced' | 'unavailable'; beforeHash: string | null; afterHash: string | null; diagnostics: readonly StoreDiagnostic[] }

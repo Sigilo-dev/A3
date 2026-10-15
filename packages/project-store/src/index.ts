@@ -6,4 +6,6 @@ export type { SnapshotReason, SnapshotSummary } from './snapshots.js';
 export { migrationChain, applyMigrationChain } from './migrations.js';
 export type { MigrationScope, MigrationStep, MigrationResult } from './migrations.js';
 export { CAPABILITIES, createProjectCapabilityBroker, isProjectCapabilityBroker, parseSharedPolicyRequest } from './capabilities.js';
-export type { BrokerOptions, Capability, CapabilityDecision, GrantMode, Profile, ProjectCapabilityBroker, SharedPolicyRequest } from './capabilities.js';
+export type { BrokerOptions, Capability, CapabilityDecision, GrantMode, LocalMountBinding, MountPermission, Profile, ProjectCapabilityBroker, SharedPolicyRequest } from './capabilities.js';
+export { MountPathError, readMountedResource, validateMountRelativePath } from './mounts.js';
+export type { MountActionPreview, MountedBytes } from './mounts.js';

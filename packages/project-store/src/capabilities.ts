@@ -1,19 +1,29 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { realpathSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Actor, AuthorizationRequest } from '@a3/domain';
 import type { AccessRequest } from './service-types.js';
 
 /** Capability names are stable policy identifiers; none are inferred from agent prompts. */
 export const CAPABILITIES = [
-  'project.read', 'mount.read', 'document.edit', 'diagram.edit', 'task.edit', 'delete', 'project.recover', 'process.run',
+  'project.read', 'mount.read', 'mount.write', 'document.edit', 'diagram.edit', 'task.edit', 'delete', 'project.recover', 'process.run',
   'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push',
   'git.branch', 'git.restore', 'export'
 ] as const;
 export type Capability = typeof CAPABILITIES[number];
 export type Profile = 'consultar' | 'proponer' | 'trabajar' | 'personalizado';
 export type GrantMode = 'deny' | 'propose' | 'approval' | 'direct';
+export type MountPermission = 'read-only' | 'read-write';
+export interface LocalMountBinding {
+  mountId: string;
+  projectId: string;
+  /** Canonical host-local path. Never copy this field into a project document or renderer payload. */
+  canonicalRoot: string;
+  permission: MountPermission;
+  rootIdentity: string;
+  status: 'available' | 'root-missing' | 'root-changed';
+}
 export interface CapabilityDecision {
   allowed: boolean;
   capability: Capability;
@@ -29,6 +39,9 @@ export interface ProjectCapabilityBroker {
   setProfile(input: { root: string; projectId: string; profile?: Profile }): Promise<boolean>;
   setGrant(input: { root: string; projectId: string; capability: Capability; mode: GrantMode }): Promise<boolean>;
   revoke(input: { root: string; projectId: string; capability: Capability }): Promise<boolean>;
+  approveLocalMount(input: { root: string; projectId: string; mountId: string; selectedRoot: string; permission: MountPermission }): Promise<boolean>;
+  getLocalMount(input: { root: string; projectId: string; mountId: string }): LocalMountBinding | undefined;
+  revokeLocalMount(input: { root: string; projectId: string; mountId: string }): Promise<boolean>;
 }
 export interface BrokerOptions {
   /** Host-local app data directory. It must be outside all project roots. */
@@ -36,9 +49,10 @@ export interface BrokerOptions {
   /** Set only by the trusted main-process StoreHost constructor. */
   authenticatedActor: Actor;
   /** Main-process user confirmation callback. No callback means no interactive approvals. */
-  confirmUserAction?: (input: { projectId: string; capability: Capability; operation: string }) => boolean | Promise<boolean>;
+  confirmUserAction?: (input: { projectId: string; capability: Capability; operation: string; displayTarget?: string }) => boolean | Promise<boolean>;
 }
 interface GrantFile { schemaVersion: '1.0.0'; rootKey: string; projectId: string; profile: Profile; overrides: Partial<Record<Capability, GrantMode>>; }
+interface MountFile { schemaVersion: '1.0.0'; rootKey: string; projectId: string; mounts: Record<string, { canonicalRoot: string; permission: MountPermission; rootIdentity: string }>; }
 export interface SharedPolicyRequest { schemaVersion: '1.0.0'; requests: readonly { capability: Capability; mode: GrantMode }[]; }
 
 const profileModes: Record<Profile, Partial<Record<Capability, GrantMode>>> = {
@@ -50,7 +64,7 @@ const profileModes: Record<Profile, Partial<Record<Capability, GrantMode>>> = {
 // E0-C2 did not verify OS process isolation, network confinement, package execution,
 // Git, or export adapters. A local policy cannot turn an absent enforcement boundary on.
 const unavailable = new Set<Capability>([
-  'process.run', 'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit',
+  'mount.write', 'process.run', 'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit',
   'git.push', 'git.branch', 'git.restore', 'export'
 ]);
 const known = new Set<string>(CAPABILITIES);
@@ -64,6 +78,8 @@ function safeOperation(value: string): string {
   if (new RegExp(`^a3\\.core\\.[a-z-]+(?::${uuid})?$`, 'i').test(value)) return value.replace(new RegExp(`:${uuid}$`, 'i'), ':<operation-id>');
   if (/^policy\.profile:(consultar|proponer|trabajar|personalizado)$/.test(value)) return value;
   if (/^policy\.grant:(deny|propose|approval|direct)$/.test(value)) return value;
+  if (/^mount\.bind:(read-only|read-write)$/.test(value)) return value;
+  if (value === 'mount.revoke') return value;
   if (value === 'policy.revoke') return value;
   for (const prefix of ['snapshot.create:', 'project.maintenance:', 'resource.write:', 'journal.recovery:']) {
     if (new RegExp(`^${prefix.replaceAll('.', '\\.')} ${uuid}$`.replace(' ', ''), 'i').test(value)) return `${prefix}<operation-id>`;
@@ -71,6 +87,12 @@ function safeOperation(value: string): string {
   return 'host.operation';
 }
 function canonicalRoot(root: string): string { return realpathSync(resolve(root)).replaceAll('\\', '/').toLowerCase(); }
+function validUuid(value: string): boolean { return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value); }
+function statIdentity(stat: { dev: bigint; ino: bigint; mode: bigint }): string {
+  if (stat.ino === 0n) throw new TypeError('El sistema de archivos no ofrece una identidad estable para el montaje.');
+  return stat.dev.toString(16) + ':' + stat.ino.toString(16) + ':' + (stat.mode & 0o170000n).toString(16);
+}
+function isMountPermission(value: unknown): value is MountPermission { return value === 'read-only' || value === 'read-write'; }
 function rootKey(root: string): string { return hash(canonicalRoot(root)); }
 function decision(capability: Capability, mode: GrantMode, reason: CapabilityDecision['reason'], allowed = false): CapabilityDecision {
   return { allowed, capability, ...(!allowed && reason !== 'audit-unavailable' ? { missingCapability: capability } : {}), reason, mode };
@@ -114,6 +136,7 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
   mkdirSync(state, { recursive: true });
   const realState = realpathSync(state);
   const grantsRoot = join(state, 'project-capabilities');
+  const mountsRoot = join(state, 'project-mounts');
   const auditPath = join(state, 'capability-audit.ndjson');
   const assertStateOutside = (root: string): string => {
     const canonical = canonicalRoot(root);
@@ -126,7 +149,7 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
   const localFor = (root: string, projectId: string): { key: string; path: string } => {
     const canonical = assertStateOutside(root);
     const key = hash(canonical);
-    if (!projectId || !/^[0-9a-f-]{36}$/i.test(projectId)) throw new TypeError('projectId inválido');
+    if (!validUuid(projectId)) throw new TypeError('projectId inválido');
     return { key, path: join(grantsRoot, key, `${projectId.toLowerCase()}.json`) };
   };
   const readGrant = (root: string, projectId: string): GrantFile | undefined => {
@@ -135,6 +158,52 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
       const location = localFor(root, projectId);
       return validateGrant(JSON.parse(readFileSync(location.path, 'utf8')), location.key, projectId.toLowerCase());
     } catch { return undefined; }
+  };
+  const mountLocation = (root: string, projectId: string): { key: string; path: string } => {
+    const canonical = assertStateOutside(root);
+    if (!validUuid(projectId)) throw new TypeError('projectId inválido');
+    const key = hash(canonical);
+    return { key, path: join(mountsRoot, key, projectId.toLowerCase() + '.json') };
+  };
+  const readMountFile = (root: string, projectId: string): MountFile | undefined => {
+    try {
+      const location = mountLocation(root, projectId);
+      const value = JSON.parse(readFileSync(location.path, 'utf8')) as Partial<MountFile>;
+      if (value.schemaVersion !== '1.0.0' || value.rootKey !== location.key || value.projectId !== projectId.toLowerCase() ||
+          !value.mounts || typeof value.mounts !== 'object' || Array.isArray(value.mounts)) return undefined;
+      const mounts: MountFile['mounts'] = {};
+      for (const [mountId, binding] of Object.entries(value.mounts)) {
+        if (!validUuid(mountId) || !binding || typeof binding !== 'object' || !isMountPermission(binding.permission) ||
+            typeof binding.canonicalRoot !== 'string' || !isAbsolute(binding.canonicalRoot) ||
+            process.platform === 'win32' && !/^[a-z]:[\\/]/i.test(binding.canonicalRoot) ||
+            typeof binding.rootIdentity !== 'string' || !/^[0-9a-f]+:[0-9a-f]+:[0-9a-f]+$/i.test(binding.rootIdentity)) return undefined;
+        mounts[mountId.toLowerCase()] = { canonicalRoot: binding.canonicalRoot, permission: binding.permission, rootIdentity: binding.rootIdentity };
+      }
+      return { schemaVersion: '1.0.0', rootKey: location.key, projectId: projectId.toLowerCase(), mounts };
+    } catch { return undefined; }
+  };
+  const persistMounts = (value: MountFile, path: string): void => {
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = path + '.' + process.pid + '.' + Date.now() + '.tmp';
+    writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    renameSync(temporary, path);
+  };
+  const currentMount = (input: { root: string; projectId: string; mountId: string }): LocalMountBinding | undefined => {
+    if (!validUuid(input.mountId)) return undefined;
+    const file = readMountFile(input.root, input.projectId);
+    const mount = file?.mounts[input.mountId.toLowerCase()];
+    if (!mount || !file) return undefined;
+    let status: LocalMountBinding['status'] = 'available';
+    try {
+      const currentReal = realpathSync.native(mount.canonicalRoot).replaceAll('\\', '/');
+      const stat = lstatSync(mount.canonicalRoot, { bigint: true });
+      if (stat.isSymbolicLink() || !stat.isDirectory() ||
+          currentReal.toLowerCase() !== mount.canonicalRoot.replaceAll('\\', '/').toLowerCase() ||
+          statIdentity(stat) !== mount.rootIdentity) status = 'root-changed';
+    } catch (error) {
+      status = error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT' ? 'root-missing' : 'root-changed';
+    }
+    return { mountId: input.mountId.toLowerCase(), projectId: input.projectId.toLowerCase(), ...mount, status };
   };
   const persist = (grant: GrantFile, path: string): void => {
     mkdirSync(dirname(path), { recursive: true });
@@ -275,6 +344,51 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
       if (!old || !known.has(input.capability)) return false;
       if (!audit({ root: input.root, projectId: input.projectId, actor: humanActor, operation: 'policy.revoke', capability: input.capability, allowed: true, reason: 'granted' })) return false;
       old.overrides[input.capability] = 'deny'; persist(old, target.path);
+      return true;
+    },
+    async approveLocalMount(input: { root: string; projectId: string; mountId: string; selectedRoot: string; permission: MountPermission }): Promise<boolean> {
+      if (process.platform !== 'win32' || !validUuid(input.projectId) || !validUuid(input.mountId) || !isMountPermission(input.permission)) return false;
+      let canonical: string; let identity: string;
+      try {
+        canonical = realpathSync.native(resolve(input.selectedRoot)).replaceAll('\\', '/');
+        if (!/^[a-z]:\//i.test(canonical) || canonical.startsWith('//')) return false;
+        const stat = lstatSync(canonical, { bigint: true });
+        if (stat.isSymbolicLink() || !stat.isDirectory() ||
+            realpathSync.native(canonical).replaceAll('\\', '/').toLowerCase() !== canonical.toLowerCase()) return false;
+        identity = statIdentity(stat);
+      } catch { return false; }
+      const capability: Capability = input.permission === 'read-write' ? 'mount.write' : 'mount.read';
+      const operation = safeOperation('mount.bind:' + input.permission);
+      let approved = false;
+      try {
+        approved = await options.confirmUserAction?.({ projectId: input.projectId, capability, operation, displayTarget: canonical }) === true;
+      } catch { /* No UI response denies. */ }
+      if (!approved) return false;
+      try {
+        const stat = lstatSync(canonical, { bigint: true });
+        if (stat.isSymbolicLink() || !stat.isDirectory() || statIdentity(stat) !== identity ||
+            realpathSync.native(canonical).replaceAll('\\', '/').toLowerCase() !== canonical.toLowerCase()) return false;
+      } catch { return false; }
+      const target = mountLocation(input.root, input.projectId);
+      const old = readMountFile(input.root, input.projectId);
+      const next: MountFile = old ?? { schemaVersion: '1.0.0', rootKey: target.key, projectId: input.projectId.toLowerCase(), mounts: {} };
+      if (!audit({ root: input.root, projectId: input.projectId, actor: humanActor, operation, capability, allowed: true, reason: 'granted' })) return false;
+      next.mounts[input.mountId.toLowerCase()] = { canonicalRoot: canonical, permission: input.permission, rootIdentity: identity };
+      persistMounts(next, target.path);
+      return true;
+    },
+    getLocalMount(input: { root: string; projectId: string; mountId: string }): LocalMountBinding | undefined {
+      try { return currentMount(input); } catch { return undefined; }
+    },
+    async revokeLocalMount(input: { root: string; projectId: string; mountId: string }): Promise<boolean> {
+      if (!validUuid(input.projectId) || !validUuid(input.mountId) || !options.confirmUserAction ||
+          !(await options.confirmUserAction({ projectId: input.projectId, capability: 'mount.read', operation: safeOperation('mount.revoke') }))) return false;
+      const target = mountLocation(input.root, input.projectId);
+      const old = readMountFile(input.root, input.projectId);
+      if (!old || !old.mounts[input.mountId.toLowerCase()]) return false;
+      if (!audit({ root: input.root, projectId: input.projectId, actor: humanActor, operation: 'mount.revoke', capability: 'mount.read', allowed: true, reason: 'granted' })) return false;
+      delete old.mounts[input.mountId.toLowerCase()];
+      persistMounts(old, target.path);
       return true;
     }
   } as ProjectCapabilityBroker;

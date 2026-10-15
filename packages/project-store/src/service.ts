@@ -1,9 +1,10 @@
 import { watch, type FSWatcher } from 'node:fs';
-import { mkdir, realpath, rename, stat, unlink } from 'node:fs/promises';
+import { lstat, mkdir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePlan, validateSnapshot, type CommandContext, type Diagnostic, type DomainRecord, type JsonValue, type PreparedPlan, type Resource, type TypeRegistry } from '@a3/domain';
 import { decodeDocument, encodeDocument, issue, serializeRecord, sha256 } from './codec.js';
+import { MountPathError, readLocalMountFile, readMountedResource, readMountedResourceDetailed, type MountActionPreview } from './mounts.js';
 import { canonicalJson, freeze, object, pointerToken } from './json.js';
 import { acquireOwnership, projectIdentity, type Ownership } from './ownership.js';
 import { jsonBytes, ProgressLog, progressProtocol, transactionRoot } from './progress.js';
@@ -14,7 +15,7 @@ import { createSnapshot, listSnapshots, readSnapshot, type SnapshotReason } from
 import { applyMigrationChain, migrationChain, type MigrationScope } from './migrations.js';
 import { completeMigration, loadPreparedMigration, prepareMigration, verifyAppliedMigration, type LoadedMigration } from './migration-store.js';
 import type { DocumentLocation, JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
-import type { AccessRequest, FaultPhase, IntentEntry, MigrationReceipt, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
+import type { AccessRequest, FaultPhase, IntentEntry, MigrationReceipt, MountActionRequest, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
 import type { Capability, CapabilityDecision } from './capabilities.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 
@@ -26,6 +27,7 @@ interface PlanData {
   nextRecords: DomainRecord[]; resources: Resource[]; requestHash: string; outcome?: StoreResult<WriteReceipt>;
   actor: string;
   requiredCapabilities: Capability[];
+  mountSource?: { resource: Resource & { kind: 'mounted-file'; path: string; mountId: string }; sha256: string; identity: string };
   preapproved?: boolean;
   maintenance?: boolean;
   allowRegisteredMigration?: boolean;
@@ -42,6 +44,21 @@ const failure = <T>(diagnostics: readonly StoreDiagnostic[]): StoreResult<T> => 
 function conflict(path: string, detail = 'external-conflict'): StoreDiagnostic {
   return issue(path, 'references', detail, 'Cambió el archivo o su revisión; conserva ambas versiones y relee antes de proponer otra escritura.',
     { code: 'REVISION_CONFLICT', recovery: 'Revisa los bytes externos y la propuesta. reload() acepta una nueva base; no mezcla ni restaura archivos.' });
+}
+function errorCode(error: unknown): unknown { return error && typeof error === 'object' && 'code' in error ? error.code : undefined; }
+async function destinationExists(root: string, path: string): Promise<boolean> {
+  const target = resolvePortablePath(root, path);
+  const parent = path.split('/').slice(0, -1).join('/');
+  if (parent) {
+    try { await checkedPath(root, parent, 'directory'); }
+    catch (error) { if (errorCode(error) === 'ENOENT') return false; throw error; }
+  }
+  try { await lstat(target); return true; }
+  catch (error) { if (errorCode(error) === 'ENOENT') return false; throw error; }
+}
+function mountError(path: string, error: unknown): StoreDiagnostic {
+  if (error instanceof MountPathError) return issue(path, 'io', error.detail, error.message, { code: error.failureCode });
+  return ioIssue(path, error);
 }
 function domainIssues(diagnostics: readonly Diagnostic[]): StoreDiagnostic[] {
   return diagnostics.map(({ instancePath, ...d }) => ({ ...d, path: 'a3.project.json', stage: 'references', ...(instancePath !== undefined ? { pointer: instancePath } : {}) }));
@@ -360,13 +377,142 @@ export class ProjectService {
         const record = getRecord(next.project.snapshot, { kind: 'resource', id: resourceId });
         if (record?.kind !== 'resource') return failure([issue('resource', 'references', 'resource-missing', 'Resource ID ausente o descriptor inválido.', { code: 'RESOURCE_MISSING' })]);
         if (!this.#authorized('read-resource', record.value.kind === 'project-file' ? [record.value.path] : [], [refOf(record)], [record.value])) return failure([this.#denied('resource')]);
-        const opened = await readProjectResource(this.root, record.value, this.#resourceLimit);
+        if (record.value.kind === 'remote-url') return failure([issue(record.value.url, 'io', 'remote-resource-unavailable',
+          'Las URLs remotas siguen deshabilitadas; no se inicia red desde el lector de proyectos.', { code: 'PERMISSION_DENIED', missingCapability: 'network.access' })]);
+        const opened = record.value.kind === 'mounted-file'
+          ? await readMountedResource({ projectRoot: this.root, projectId: this.#projectId() ?? '', actor: this.options.host.authenticatedActor,
+              broker: this.options.host.capabilities, resource: record.value, maxBytes: this.#resourceLimit })
+          : await readProjectResource(this.root, record.value, this.#resourceLimit);
         if (!opened.ok) return opened;
         const doc = next.project.documents.find((d) => d.record === record)!;
-        if (opened.value.sha256 !== next.files.get(opened.value.path)?.hash) return failure([conflict(opened.value.path)]);
-        return { ok: true, value: { ...opened.value, resourceId: record.value.id, revision: record.value.revision, descriptorHash: doc.sha256 }, diagnostics: [] };
+        if (record.value.kind === 'project-file' && opened.value.sha256 !== next.files.get(opened.value.path)?.hash) return failure([conflict(opened.value.path)]);
+        return { ok: true, value: { ...opened.value, resourceId: record.value.id, revision: record.value.revision, descriptorHash: doc.sha256,
+          source: record.value.kind, ...(record.value.kind === 'mounted-file' ? { mountId: record.value.mountId } : {}) }, diagnostics: [] };
       } catch (error) { return failure([this.#operationError('resource', error)]); }
     });
+  }
+  async #evaluateMountAction(scan: Scan, input: MountActionRequest): Promise<{
+    preview: MountActionPreview; sourceResource: Resource & { kind: 'mounted-file'; path: string; mountId: string };
+    targetResource: Resource; descriptorPath: string;
+    source?: Awaited<ReturnType<typeof readLocalMountFile>>; diagnostics: StoreDiagnostic[];
+  }> {
+    if (!['copy', 'move', 'reference'].includes(input.action) || !uuid.test(input.operationId) || !uuid.test(input.resourceId) || !uuid.test(input.mountId)) {
+      throw new MountPathError('invalid-mount-action', 'La acción, el operationId, el resourceId o el mountId no son válidos.', 'VALIDATION_FAILED');
+    }
+    const projectId = this.#projectId();
+    if (!projectId) throw new MountPathError('project-id-unavailable', 'No se puede verificar la identidad local del proyecto.', 'PERMISSION_DENIED');
+    const sourceResource: Resource & { kind: 'mounted-file'; path: string; mountId: string } = { schemaVersion: '1.0.0', id: input.resourceId, revision: 1,
+      kind: 'mounted-file', mountId: input.mountId, path: input.sourcePath, extensions: {} };
+    let targetResource: Resource;
+    if (input.action === 'reference') {
+      if (input.destinationPath) throw new MountPathError('unexpected-destination', 'Una referencia conserva la ruta relativa al montaje y no acepta destino de copia.', 'VALIDATION_FAILED');
+      targetResource = { ...sourceResource };
+    } else {
+      if (!input.destinationPath) throw new MountPathError('destination-required', 'Copy/move requiere una ruta destino dentro del proyecto.', 'VALIDATION_FAILED');
+      this.#sourcePath(input.destinationPath);
+      targetResource = { schemaVersion: '1.0.0', id: input.resourceId, revision: 1, kind: 'project-file',
+        path: input.destinationPath, extensions: {}, ...(input.mediaType ? { mediaType: input.mediaType } : {}) };
+    }
+    if (scan.project.snapshot.records.some((record) => record.kind === 'resource' && record.value.id.toLowerCase() === input.resourceId.toLowerCase())) {
+      throw new MountPathError('resource-id-exists', 'El resourceId ya existe en este proyecto.', 'REVISION_CONFLICT');
+    }
+    const descriptorPath = recordPath({ kind: 'resource', value: targetResource }, this.#catalog);
+    const destinationPaths = input.action === 'reference' ? [descriptorPath] : [descriptorPath, input.destinationPath!];
+    const destinationConflicts: string[] = [];
+    for (const path of destinationPaths) {
+      try { if (await destinationExists(this.root, path)) destinationConflicts.push(path); }
+      catch (error) { throw error instanceof MountPathError ? error : error instanceof PathError
+        ? new MountPathError(error.detail, error.message, 'PATH_UNAVAILABLE') : error; }
+    }
+    const requiredCapabilities: Capability[] = input.action === 'move'
+      ? ['mount.read', 'mount.write', 'document.edit'] : ['mount.read', 'document.edit'];
+    const editCapabilities = requiredCapabilities.filter((capability) => capability !== 'mount.read');
+    const editDecision = await this.options.host.capabilities.authorizeCapabilities(this.root, this.options.host.authenticatedActor,
+      projectId, editCapabilities, 'mount.action.prepare:' + input.operationId, 'prepare');
+    const binding = this.options.host.capabilities.getLocalMount({ root: this.root, projectId, mountId: input.mountId });
+    let source: Awaited<ReturnType<typeof readLocalMountFile>> | undefined;
+    const diagnostics: StoreDiagnostic[] = [];
+    if (!binding) diagnostics.push(issue(input.sourcePath, 'io', 'mount-approval-required',
+      'Este proyecto solo solicita el montaje. Selecciona la carpeta local y apruébala para este proyecto.',
+      { code: 'PERMISSION_DENIED', missingCapability: 'mount.read' }));
+    else if (binding.status !== 'available') diagnostics.push(issue(input.sourcePath, 'io', binding.status === 'root-missing' ? 'mount-root-missing' : 'mount-root-changed',
+      binding.status === 'root-missing' ? 'La carpeta montada desapareció o se movió; la referencia se conserva y puede recuperarse al seleccionarla de nuevo.'
+        : 'La carpeta montada fue reemplazada; la referencia se conserva hasta que vuelvas a aprobar la raíz.',
+      { code: 'PATH_UNAVAILABLE' }));
+    else if (input.action === 'move' && binding.permission !== 'read-write') diagnostics.push(issue(input.sourcePath, 'io', 'mount-write-not-approved',
+      'El permiso local de este montaje es de solo lectura.', { code: 'PERMISSION_DENIED', missingCapability: 'mount.write' }));
+    else {
+      const opened = await readMountedResourceDetailed({ projectRoot: this.root, projectId, actor: this.options.host.authenticatedActor,
+        broker: this.options.host.capabilities, resource: sourceResource, maxBytes: this.#resourceLimit });
+      if (opened.ok) source = opened.value; else diagnostics.push(...opened.diagnostics);
+    }
+    const permissionBlock = !editDecision.allowed
+      ? editDecision.reason === 'capability-unavailable'
+        ? 'capability-unavailable:' + (editDecision.missingCapability ?? editDecision.capability)
+        : 'missing-capability:' + (editDecision.missingCapability ?? 'document.edit')
+      : undefined;
+    const sourceDiagnostic = diagnostics[0];
+    const reason = sourceDiagnostic?.detail ?? permissionBlock ??
+      (destinationConflicts.length ? 'destination-conflict' : undefined);
+    return { sourceResource, targetResource, descriptorPath, ...(source ? { source } : {}), diagnostics,
+      preview: { action: input.action, mountId: input.mountId, relativePath: input.sourcePath, destinationPaths,
+        requiredCapabilities, sourceAvailable: !!source, destinationConflicts, canProceed: !!source && !destinationConflicts.length &&
+          editDecision.allowed && input.action !== 'move', ...(reason ? { reason } : input.action === 'move' ? { reason: 'capability-unavailable:mount.write' } : {}) } };
+  }
+  previewMountAction(input: MountActionRequest): Promise<StoreResult<MountActionPreview>> {
+    return this.#queue(async () => {
+      try {
+        const current = await this.#currentForWrite(); if (!current.ok) return failure(current.diagnostics);
+        const evaluated = await this.#evaluateMountAction(current.value, input);
+        return { ok: true, value: evaluated.preview, diagnostics: evaluated.diagnostics };
+      } catch (error) { return failure([mountError('mount', error)]); }
+    });
+  }
+  prepareMountAction(input: MountActionRequest): Promise<StoreResult<PreparedWrite>> {
+    return this.#queue(async () => {
+      try {
+        const current = await this.#currentForWrite(); if (!current.ok) return failure(current.diagnostics);
+        const scan = current.value;
+        const evaluated = await this.#evaluateMountAction(scan, input);
+        if (!evaluated.preview.canProceed || !evaluated.source) {
+          const blocker = evaluated.diagnostics[0] ?? issue(evaluated.preview.destinationConflicts[0] ?? 'mount', 'io',
+            evaluated.preview.reason ?? 'mount-action-denied', 'La vista previa contiene conflictos o permisos que impiden preparar esta operación.',
+            { code: evaluated.preview.reason?.startsWith('missing-capability:') || evaluated.preview.reason?.startsWith('capability-unavailable:') ? 'PERMISSION_DENIED' : 'REVISION_CONFLICT',
+              ...(evaluated.preview.reason?.includes('mount.write') ? { missingCapability: 'mount.write' } :
+                evaluated.preview.reason?.startsWith('missing-capability:') ? { missingCapability: evaluated.preview.reason.slice('missing-capability:'.length) } : {}) });
+          return failure([...evaluated.diagnostics, blocker]);
+        }
+        const record: DomainRecord = { kind: 'resource', value: evaluated.targetResource };
+        const nextRecords = [...scan.project.snapshot.records, record];
+        const referenceDiagnostics = validateSnapshot({ records: nextRecords }, this.#registry);
+        const blockingReferenceDiagnostics = referenceDiagnostics.filter((diagnostic) => diagnostic.severity === 'error');
+        if (blockingReferenceDiagnostics.length) return failure(domainIssues(blockingReferenceDiagnostics));
+        const serialized = serializeRecord({ kind: 'resource', path: evaluated.descriptorPath, expectedId: input.resourceId }, record);
+        if (!serialized.ok) return serialized;
+        const images: Image[] = [{ path: evaluated.descriptorPath, bytes: Uint8Array.from(serialized.bytes), ref: refOf(record) }];
+        if (input.action === 'copy') images.push({ path: input.destinationPath!, bytes: Uint8Array.from(evaluated.source.bytes), ref: refOf(record) });
+        const requestHash = sha256(jsonBytes({ action: input.action, operationId: input.operationId, resourceId: input.resourceId,
+          mountId: input.mountId, sourcePath: input.sourcePath, destinationPath: input.destinationPath ?? null,
+          sourceHash: evaluated.source.sha256, actor: this.options.host.authenticatedActor }));
+        return this.#makePlan(scan, input.operationId, images, nextRecords, [evaluated.sourceResource, evaluated.targetResource], requestHash,
+          { requiredCapabilities: [...evaluated.preview.requiredCapabilities] as Capability[],
+            mountSource: { resource: evaluated.sourceResource, sha256: evaluated.source.sha256, identity: evaluated.source.identity } });
+      } catch (error) { return failure([mountError('mount', error)]); }
+    });
+  }
+  async #verifyMountSource(source: NonNullable<PlanData['mountSource']>): Promise<StoreDiagnostic | undefined> {
+    const projectId = this.#projectId();
+    if (!projectId) return issue(source.resource.path, 'io', 'project-id-unavailable', 'No se puede verificar el montaje.', { code: 'PERMISSION_DENIED' });
+    const binding = this.options.host.capabilities.getLocalMount({ root: this.root, projectId, mountId: source.resource.mountId });
+    if (!binding) return issue(source.resource.path, 'io', 'mount-approval-required', 'La concesión local del montaje ya no existe.',
+      { code: 'PERMISSION_DENIED', missingCapability: 'mount.read' });
+    if (binding.status !== 'available') return issue(source.resource.path, 'io', binding.status === 'root-missing' ? 'mount-root-missing' : 'mount-root-changed',
+      'La raíz montada cambió antes de aplicar la operación; no se modificó el proyecto.', { code: 'PATH_UNAVAILABLE' });
+    try {
+      const current = await readLocalMountFile(binding, source.resource.path, this.#resourceLimit);
+      if (current.sha256 !== source.sha256 || current.identity !== source.identity) return conflict(source.resource.path, 'mounted-source-conflict');
+    } catch (error) { return mountError(source.resource.path, error); }
+    return undefined;
   }
   #context(scan: Scan): CommandContext {
     const contentHashes: Record<string, string> = {};
@@ -746,6 +892,10 @@ export class ProjectService {
           data.requiredCapabilities, `${data.maintenance ? 'project.maintenance' : 'resource.write'}:${data.snapshotOperationId ?? plan.operationId}`, 'apply');
       if (!applyDecision.allowed) return failure([this.#denied('operation', applyDecision)]);
       if (!this.#authorized('write', data.images.map((i) => i.path), plan.changes.flatMap((c) => c.ref ? [c.ref] : []), data.resources, data.requiredCapabilities, 'prepare')) return failure([this.#denied('operation')]);
+      if (data.mountSource) {
+        const sourceProblem = await this.#verifyMountSource(data.mountSource);
+        if (sourceProblem) return failure([sourceProblem]);
+      }
       if (!data.images.length) return { ok: true, value: { status: 'committed', operationId: plan.operationId, atomic: false, paths: [], transactionPath: null }, diagnostics: [] };
       snapshotId = data.snapshotId ?? plan.operationId;
       const snapshot = await createSnapshot(this.root, { snapshotId, projectId: plan.projectId, operationId: data.snapshotOperationId ?? plan.operationId,
