@@ -37,7 +37,11 @@ export interface ReadLimits {
   maxTotalBytes?: number;
   maxDocuments?: number;
 }
-export interface ReadProjectOptions extends ReadLimits { registry?: TypeRegistry; }
+export interface ReadProjectOptions extends ReadLimits {
+  registry?: TypeRegistry;
+  /** Host-only exact sources for which a registered migration authorizes reading this known layout. */
+  knownReadOnlyManifestSources?: readonly string[];
+}
 export interface ProjectReadResult {
   root: string;
   mode: 'ready' | 'degraded' | 'read-only' | 'unavailable';

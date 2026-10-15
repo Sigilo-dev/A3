@@ -146,9 +146,39 @@ export async function readProject(path: string, options: ReadProjectOptions = {}
   }
   const manifest = await load({ path: 'a3.project.json', kind: 'project' });
   if (manifest?.status !== 'valid' || manifest.record?.kind !== 'project') {
-    complete = false;
-    // An unknown format may define a different layout. Do not guess it from unvalidated fields.
-    return result(manifest?.status !== 'read-only');
+    const raw = manifest?.value && typeof manifest.value === 'object' && !Array.isArray(manifest.value) ? manifest.value : undefined;
+    const projectId = raw && 'projectId' in raw ? raw.projectId : undefined;
+    const catalogCandidate = raw && 'catalogRoot' in raw ? raw.catalogRoot : undefined;
+    const formatVersion = raw && 'formatVersion' in raw ? raw.formatVersion : undefined;
+    const knownMigrationLayout = manifest?.status === 'read-only' && typeof formatVersion === 'string' && options.knownReadOnlyManifestSources?.includes(formatVersion) === true &&
+      typeof projectId === 'string' && uuid.test(projectId) && typeof catalogCandidate === 'string';
+    if (!knownMigrationLayout) {
+      complete = false;
+      // An unknown format may define a different layout. Do not guess it from unvalidated fields.
+      return result(manifest?.status !== 'read-only');
+    }
+    try { await checkedPath(root, catalogCandidate, 'directory'); }
+    catch (error) { diagnostics.push(ioIssue(catalogCandidate, error)); complete = false; }
+    // This layout was opted into by the host for an exact migration source. The project remains
+    // read-only until a registered step transforms and validates all affected documents.
+    for (const [folder, kind] of [['entities', 'entity'], ['resources', 'resource'], ['relations', 'relation'], ['collections', 'collection']] as const) {
+      await catalog(`${catalogCandidate}/${folder}`, kind);
+    }
+    for (const workspaceId of await entries(`${catalogCandidate}/workspaces`)) {
+      if (!uuid.test(workspaceId)) { diagnostics.push(issue(`${catalogCandidate}/workspaces/${workspaceId}`, 'schema', 'invalid-workspace-folder', 'La carpeta de workspace debe usar UUID.')); complete = false; continue; }
+      const base = `${catalogCandidate}/workspaces/${workspaceId}`;
+      await load({ path: `${base}/workspace.json`, kind: 'workspace' }, workspaceId);
+      for (const [folder, kind] of [['placements', 'placement'], ['visual-edges', 'visual-edge'], ['relation-views', 'relation-view'], ['groups', 'group'], ['drawings', 'drawing']] as const) {
+        await catalog(`${base}/${folder}`, kind, workspaceId);
+      }
+    }
+    const variables = `${catalogCandidate}/variables`;
+    if ((await entries(variables)).includes('project.json')) await load({ path: `${variables}/project.json`, kind: 'variable-set' }, projectId, 'project');
+    await catalog(`${variables}/workspaces`, 'variable-set', undefined, 'workspace');
+    await catalog(`${variables}/entities`, 'variable-set', undefined, 'entity');
+    // The manifest itself is not a current DomainRecord, so reference validation is deferred to
+    // the migration output validator. Individual loaded documents have already passed schemas.
+    return result();
   }
   const catalogRoot = manifest.record.value.catalogRoot;
   try { await checkedPath(root, catalogRoot, 'directory'); }

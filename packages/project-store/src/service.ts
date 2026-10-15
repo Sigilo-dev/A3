@@ -1,16 +1,20 @@
 import { watch, type FSWatcher } from 'node:fs';
 import { mkdir, realpath, rename, stat, unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import { defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePlan, type CommandContext, type Diagnostic, type DomainRecord, type JsonValue, type PreparedPlan, type Resource, type TypeRegistry } from '@a3/domain';
-import { encodeDocument, issue, serializeRecord, sha256 } from './codec.js';
-import { canonicalJson, freeze, pointerToken } from './json.js';
+import { defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePlan, validateSnapshot, type CommandContext, type Diagnostic, type DomainRecord, type JsonValue, type PreparedPlan, type Resource, type TypeRegistry } from '@a3/domain';
+import { decodeDocument, encodeDocument, issue, serializeRecord, sha256 } from './codec.js';
+import { canonicalJson, freeze, object, pointerToken } from './json.js';
 import { acquireOwnership, projectIdentity, type Ownership } from './ownership.js';
 import { jsonBytes, ProgressLog, progressProtocol, transactionRoot } from './progress.js';
 import { recoverTransactions } from './recovery.js';
 import { checkedPath, fileBytes, ioIssue, PathError, readProject, readProjectResource, resolvePortablePath } from './reader.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
-import type { JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
-import type { AccessRequest, FaultPhase, IntentEntry, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
+import { createSnapshot, listSnapshots, readSnapshot, type SnapshotReason } from './snapshots.js';
+import { applyMigrationChain, migrationChain, type MigrationScope } from './migrations.js';
+import { completeMigration, loadPreparedMigration, prepareMigration, verifyAppliedMigration, type LoadedMigration } from './migration-store.js';
+import type { DocumentLocation, JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
+import type { AccessRequest, FaultPhase, IntentEntry, MigrationReceipt, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
 
 interface Observation { hash: string | null; identity: string | null; stamp: string; problem?: string; }
 interface Scan { project: ProjectReadResult; files: Map<string, Observation>; diagnostics: StoreDiagnostic[]; }
@@ -19,6 +23,11 @@ interface PlanData {
   scan: Scan; images: Image[]; domain?: PreparedPlan; resourceWrite?: ResourceWriteRequest;
   nextRecords: DomainRecord[]; resources: Resource[]; requestHash: string; outcome?: StoreResult<WriteReceipt>;
   actor: string;
+  maintenance?: boolean;
+  allowRegisteredMigration?: boolean;
+  snapshotId?: string;
+  snapshotOperationId?: string;
+  snapshotReason?: SnapshotReason;
 }
 const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const pool = new Map<string, { service: ProjectService; host: ServiceOptions['host']; leases: number }>();
@@ -32,6 +41,20 @@ function conflict(path: string, detail = 'external-conflict'): StoreDiagnostic {
 }
 function domainIssues(diagnostics: readonly Diagnostic[]): StoreDiagnostic[] {
   return diagnostics.map(({ instancePath, ...d }) => ({ ...d, path: 'a3.project.json', stage: 'references', ...(instancePath !== undefined ? { pointer: instancePath } : {}) }));
+}
+function diagnosticKey(diagnostic: StoreDiagnostic): string {
+  return JSON.stringify([diagnostic.path, diagnostic.stage, diagnostic.detail, diagnostic.pointer ?? '', diagnostic.code ?? '']);
+}
+function introducesErrors(baseline: readonly StoreDiagnostic[], observed: readonly StoreDiagnostic[]): boolean {
+  const remaining = new Map<string, number>();
+  for (const diagnostic of baseline) if (diagnostic.severity === 'error') {
+    const key = diagnosticKey(diagnostic); remaining.set(key, (remaining.get(key) ?? 0) + 1);
+  }
+  return observed.filter((diagnostic) => diagnostic.severity === 'error').some((diagnostic) => {
+    const key = diagnosticKey(diagnostic); const count = remaining.get(key) ?? 0;
+    if (count === 0) return true;
+    remaining.set(key, count - 1); return false;
+  });
 }
 function editsBetween(before: JsonValue, after: JsonValue, pointer = ''): JsonEdit[] {
   if (canonicalJson(before) === canonicalJson(after)) return [];
@@ -56,6 +79,28 @@ function recordPath(record: DomainRecord, catalog: string): string {
   }
   return `${catalog}/${{ entity: 'entities', resource: 'resources', relation: 'relations', collection: 'collections' }[record.kind]}/${ref.id}.json`;
 }
+function locationForPath(path: string, catalog: string, projectId: string): DocumentLocation | undefined {
+  if (path === 'a3.project.json') return { kind: 'project', path };
+  const parts = path.split('/');
+  if (parts[0] !== catalog) return undefined;
+  const top = parts[1]; const name = parts.at(-1)!; const id = name.endsWith('.json') ? name.slice(0, -5) : '';
+  if (!uuid.test(id)) return undefined;
+  const simple: Record<string, DocumentLocation['kind']> = { entities: 'entity', resources: 'resource', relations: 'relation', collections: 'collection' };
+  if (parts.length === 3 && simple[top ?? '']) return { kind: simple[top!]!, path, expectedId: id };
+  if (parts.length === 4 && top === 'workspaces' && name === 'workspace.json' && uuid.test(parts[2]!)) {
+    const workspaceId = parts[2]!; return { kind: 'workspace', path, expectedId: workspaceId };
+  }
+  if (parts.length === 5 && top === 'workspaces' && uuid.test(parts[2]!)) {
+    const folder: Record<string, DocumentLocation['kind']> = { placements: 'placement', 'visual-edges': 'visual-edge', 'relation-views': 'relation-view', groups: 'group', drawings: 'drawing' };
+    const workspaceId = parts[2]!;
+    if (folder[parts[3] ?? '']) return { kind: folder[parts[3]!]!, path, expectedId: id, workspaceId };
+  }
+  if (parts.length === 3 && top === 'variables' && name === 'project.json') return { kind: 'variable-set', path, expectedId: projectId, variableScope: 'project' };
+  if (parts.length === 4 && top === 'variables' && ['entities', 'workspaces'].includes(parts[2]!)) {
+    return { kind: 'variable-set', path, expectedId: id, variableScope: parts[2] === 'entities' ? 'entity' : 'workspace' };
+  }
+  return undefined;
+}
 
 export class ProjectService {
   #tail: Promise<unknown> = Promise.resolve();
@@ -77,15 +122,20 @@ export class ProjectService {
   #registry: TypeRegistry;
   #resourceLimit: number;
   #transactionLimit: number;
+  #snapshotRetentionDays: number;
+  #snapshotMaxBytes: number;
   #catalog = '.a3';
   private constructor(readonly root: string, private readonly options: ServiceOptions, private readonly identity: string, ownership?: Ownership, reason?: string) {
     this.#ownership = ownership; this.#reason = reason;
     this.#registry = freeze(JSON.parse(JSON.stringify(options.registry ?? defaultRegistry())) as TypeRegistry);
     this.#resourceLimit = options.maxResourceBytes ?? 128 * 1024 * 1024;
     this.#transactionLimit = options.maxTransactionBytes ?? 128 * 1024 * 1024;
-    for (const limit of [this.#resourceLimit, this.#transactionLimit, options.pollMs ?? 2000, options.debounceMs ?? 50]) {
+    this.#snapshotRetentionDays = options.snapshotRetentionDays ?? 30;
+    this.#snapshotMaxBytes = options.snapshotMaxBytes ?? 2 * 1024 * 1024 * 1024;
+    for (const limit of [this.#resourceLimit, this.#transactionLimit, options.pollMs ?? 2000, options.debounceMs ?? 50, this.#snapshotMaxBytes]) {
       if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('Los límites/intervalos deben ser enteros positivos.');
     }
+    if (!Number.isSafeInteger(this.#snapshotRetentionDays) || this.#snapshotRetentionDays < 0) throw new TypeError('Los días de retención deben ser un entero no negativo.');
   }
   static async create(root: string, options: ServiceOptions, identity: string, ownership?: Ownership, reason?: string): Promise<ProjectService> {
     const service = new ProjectService(root, options, identity, ownership, reason);
@@ -93,8 +143,14 @@ export class ProjectService {
       service.#accepted = service.#observed = await service.#scan(true);
       const project = service.#accepted.project.snapshot.records.find((r) => r.kind === 'project');
       if (project?.kind === 'project') service.#catalog = project.value.catalogRoot;
+      else {
+        const manifest = service.#accepted.project.documents.find((document) => document.location.kind === 'project');
+        const raw = manifest?.value;
+        if (raw && typeof raw === 'object' && !Array.isArray(raw) && typeof raw.catalogRoot === 'string') service.#catalog = raw.catalogRoot;
+      }
       if (ownership) {
-        const recovery = await recoverTransactions(root, { ...(project?.kind === 'project' ? { projectId: project.value.projectId } : {}), authenticatedActor: options.host.authenticatedActor,
+        const recoveredProjectId = service.#projectId();
+        const recovery = await recoverTransactions(root, { ...(recoveredProjectId ? { projectId: recoveredProjectId } : {}), authenticatedActor: options.host.authenticatedActor,
           maxBytes: service.#resourceLimit, authorizeWrite: (paths) => service.#authorized('write', [...paths]), ...(options.fault ? { fault: options.fault } : {}) });
         service.#recoveryDiagnostics = [...recovery.diagnostics];
         if (recovery.diagnostics.some((d) => d.code === 'REVISION_CONFLICT')) service.#external = true;
@@ -116,7 +172,12 @@ export class ProjectService {
   #queue<T>(work: () => Promise<T>): Promise<T> {
     const result = this.#tail.then(work); this.#tail = result.catch(() => undefined); return result;
   }
-  #projectId(): string | undefined { const p = this.#accepted?.project.snapshot.records.find((r) => r.kind === 'project'); return p?.kind === 'project' ? p.value.projectId : undefined; }
+  #projectId(): string | undefined {
+    const project = this.#accepted?.project.snapshot.records.find((record) => record.kind === 'project');
+    if (project?.kind === 'project') return project.value.projectId;
+    const manifest = this.#accepted?.project.documents.find((document) => document.location.kind === 'project')?.value;
+    return manifest && typeof manifest === 'object' && !Array.isArray(manifest) && typeof manifest.projectId === 'string' && uuid.test(manifest.projectId) ? manifest.projectId : undefined;
+  }
   #authorized(operation: AccessRequest['operation'], paths: string[], refs: AccessRequest['refs'] = [], resources: Resource[] = []): boolean {
     try { return this.options.host.authorizeAccess(freeze({ actor: JSON.parse(JSON.stringify(this.options.host.authenticatedActor)), root: this.root,
       ...(this.#projectId() ? { projectId: this.#projectId()! } : {}), operation, paths: [...paths], refs: [...refs], resources: [...resources] })) === true; }
@@ -149,7 +210,10 @@ export class ProjectService {
       throw new PathError('project-root-changed', 'Cambió la identidad de la carpeta raíz; cierra y vuelve a abrir el proyecto.');
     }
     if (!this.#authorized('open-project', ['a3.project.json'])) throw new PathError('permission-denied', 'La política de lectura fue revocada.');
-    const project = await readProject(this.root, { registry: this.#registry });
+    const migrationSteps = this.options.migrationSteps ?? [];
+    const knownReadOnlyManifestSources = [...new Set(migrationSteps.filter((step) => step.scope === 'project' || step.scope === '*').map((step) => step.fromVersion))]
+      .filter((version) => migrationChain('project', version, '1.0.0', migrationSteps).ok);
+    const project = await readProject(this.root, { registry: this.#registry, knownReadOnlyManifestSources });
     const files = new Map<string, Observation>();
     const diagnostics: StoreDiagnostic[] = [...project.diagnostics];
     for (const document of project.documents) {
@@ -191,7 +255,6 @@ export class ProjectService {
       this.#emit({ kind: 'external-change', path, change: after.problem ? 'unavailable' : after.hash === null ? 'deleted' : before.hash === null ? 'created' : before.identity !== after.identity ? 'replaced' : 'edited',
         beforeHash: before.hash, afterHash: after.hash, diagnostics: [conflict(path), ...(doc?.diagnostics ?? [])] });
     }
-    if (!next.project.catalogComplete || next.project.mode !== 'ready' || next.diagnostics.some((d) => d.severity === 'error')) this.#external = true;
     this.#observed = next;
   }
   #startWatcher(): void {
@@ -268,6 +331,40 @@ export class ProjectService {
     if (this.#external || changed.length) return failure((changed.length ? changed : ['a3.project.json']).map((path) => conflict(path)));
     return { ok: true, value: next, diagnostics: [] };
   }
+  async #currentForMaintenance(allowRegisteredMigration = false): Promise<StoreResult<Scan>> {
+    if (this.#closing || !this.#ownership?.alive() || this.#reason && this.#reason !== 'project-not-writable') {
+      return failure([issue('a3.project.json', 'io', this.#reason ?? 'writer-not-owner', 'La operación de mantenimiento requiere el escritor local.', { code: 'PERMISSION_DENIED' })]);
+    }
+    if (this.#external) return failure([conflict('a3.project.json')]);
+    const next = await this.#scan(true); this.#acceptObservation(next);
+    const changed = this.#changes(this.#accepted, next);
+    if (changed.length || this.#external) return failure((changed.length ? changed : ['a3.project.json']).map((path) => conflict(path)));
+    const manifest = next.project.documents.find((document) => document.location.kind === 'project');
+    const value = manifest?.value;
+    const raw = value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+    if (!manifest || !raw || typeof raw.projectId !== 'string' || !uuid.test(raw.projectId) || !next.project.catalogComplete || next.project.mode === 'unavailable') {
+      return failure(next.project.diagnostics.length ? next.project.diagnostics : [issue('a3.project.json', 'compatibility', 'maintenance-project-unavailable', 'El manifiesto no permite identificar un proyecto restaurable o migrable.')]);
+    }
+    if (next.project.diagnostics.some((diagnostic) => diagnostic.detail === 'unsupported-major')) {
+      return failure([issue(manifest.location.path, 'compatibility', 'unsupported-major-read-only', 'Una versión mayor desconocida bloquea cualquier reescritura del proyecto.')]);
+    }
+    if (manifest.status !== 'valid') {
+      const version = raw.formatVersion;
+      const chain = typeof version === 'string' ? migrationChain('project', version, '1.0.0', this.options.migrationSteps ?? []) : undefined;
+      if (!allowRegisteredMigration || !chain?.ok) return failure([issue(manifest.location.path, 'compatibility', 'project-format-read-only', 'El formato del proyecto requiere una cadena de migración explícita.')]);
+    }
+    for (const document of next.project.documents) {
+      if (document.status !== 'read-only' || document.location.kind === 'project' && manifest.status !== 'valid') continue;
+      if (document.diagnostics.some((diagnostic) => diagnostic.detail === 'unsupported-major')) {
+        return failure([issue(document.location.path, 'compatibility', 'unsupported-major-read-only', 'Una versión mayor desconocida bloquea cualquier reescritura del proyecto.')]);
+      }
+      const opaque = document.diagnostics.every((diagnostic) => diagnostic.detail === 'opaque-drawing');
+      const sourceVersion = document.value && typeof document.value === 'object' && !Array.isArray(document.value) ? document.value.schemaVersion : undefined;
+      const chain = typeof sourceVersion === 'string' ? migrationChain(document.location.kind, sourceVersion, '1.0.0', this.options.migrationSteps ?? [], document.location.path) : undefined;
+      if (!opaque && (!allowRegisteredMigration || !chain?.ok)) return failure([issue(document.location.path, 'compatibility', 'document-version-read-only', 'Un documento tiene una versión no migrable; el proyecto no se reescribió.')]);
+    }
+    return { ok: true, value: next, diagnostics: [] };
+  }
   #sourcePath(path: string): void {
     resolvePortablePath(this.root, path);
     const lower = path.toLowerCase();
@@ -281,7 +378,9 @@ export class ProjectService {
     const changes = images.map((image) => ({ path: image.path, ...(image.ref ? { ref: image.ref } : {}), beforeHash: scan.files.get(image.path)?.hash ?? null,
       afterHash: image.bytes === null ? null : sha256(image.bytes), bytes: image.bytes?.length ?? 0 }));
     if (!this.#authorized('write', images.map((i) => i.path), changes.flatMap((c) => c.ref ? [c.ref] : []), resources)) return failure([this.#denied('operation')]);
-    const plan: PreparedWrite = freeze({ status: 'prepared', operationId, projectId: this.#projectId()!, changes,
+    const projectId = this.#projectId();
+    if (!projectId) return failure([issue('a3.project.json', 'compatibility', 'project-id-unavailable', 'No se pudo validar la identidad del proyecto.')]);
+    const plan: PreparedWrite = freeze({ status: 'prepared', operationId, projectId, changes,
       proposedBytes: (path: string) => { const bytes = images.find((i) => i.path === path)?.bytes; return bytes ? Uint8Array.from(bytes) : null; } });
     this.#plans.set(plan, { scan, images, nextRecords, resources, requestHash, actor: JSON.stringify(this.options.host.authenticatedActor), ...extra });
     return { ok: true, value: plan, diagnostics: [] };
@@ -354,6 +453,196 @@ export class ProjectService {
       } catch (error) { return failure([ioIssue('resource', error)]); }
     });
   }
+  listSnapshots(): ReturnType<typeof listSnapshots> {
+    return listSnapshots(this.root, this.#projectId());
+  }
+  createSnapshot(operationId: string, reason: SnapshotReason, paths?: readonly string[]): Promise<StoreResult<SnapshotReceipt>> {
+    return this.#queue(async () => {
+      const current = await this.#currentForMaintenance(reason === 'migration');
+      if (!current.ok) return failure(current.diagnostics);
+      const projectId = this.#projectId();
+      if (!projectId || !uuid.test(operationId)) return failure([issue('snapshot', 'schema', 'snapshot-request-invalid', 'Se requiere projectId y operationId UUID.')]);
+      const selected = paths ? [...paths] : [...current.value.files.keys()];
+      if (new Set(selected.map((path) => path.toLowerCase())).size !== selected.length) return failure([issue('snapshot', 'schema', 'snapshot-path-duplicate', 'La solicitud repite rutas.')]);
+      if (!this.#authorized('write', selected)) return failure([this.#denied('snapshot')]);
+      const result = await createSnapshot(this.root, { snapshotId: randomUUID(), projectId, operationId, reason,
+        files: selected.map((path) => ({ path, expectedHash: current.value.files.get(path)?.hash ?? null,
+          expectedIdentity: current.value.files.get(path)?.identity ?? null })), retentionDays: this.#snapshotRetentionDays, maxBytes: this.#snapshotMaxBytes });
+      if (!result.ok) return failure(result.diagnostics);
+      return { ok: true, value: { ...result.value, status: 'created' }, diagnostics: result.diagnostics };
+    });
+  }
+  restoreSnapshot(snapshotId: string, operationId: string): Promise<StoreResult<WriteReceipt>> {
+    return this.#queue(async () => {
+      try {
+        const current = await this.#currentForMaintenance(); if (!current.ok) return current;
+        const projectId = this.#projectId();
+        if (!projectId || !uuid.test(operationId)) return failure([issue('snapshot', 'schema', 'restore-request-invalid', 'Se requiere projectId y operationId UUID.')]);
+        const saved = await readSnapshot(this.root, snapshotId, projectId); if (!saved.ok) return failure(saved.diagnostics);
+        const images: Image[] = [];
+        const nextRecords = new Map(current.value.project.snapshot.records.map((record) => [refKey(refOf(record)), record]));
+        const documentByPath = new Map(current.value.project.documents.map((document) => [document.location.path, document]));
+        for (const file of saved.value.files) {
+          const currentDocument = documentByPath.get(file.path);
+          if (file.bytes === null) {
+            images.push({ path: file.path, bytes: null, ...(currentDocument?.record ? { ref: refOf(currentDocument.record) } : {}) });
+            if (currentDocument?.record) nextRecords.delete(refKey(refOf(currentDocument.record)));
+            continue;
+          }
+          let bytes = Uint8Array.from(file.bytes);
+          let restoredRecord: DomainRecord | undefined;
+          const location = currentDocument?.location ?? locationForPath(file.path, this.#catalog, projectId);
+          if (location) {
+            if (location.kind === 'drawing') {
+              if (current.value.files.get(file.path)?.hash === file.sha256) continue;
+              return failure([issue(file.path, 'compatibility', 'opaque-drawing-restore-unavailable', 'El dibujo opaco se conserva sin reescritura automática.')]);
+            }
+            const decoded = decodeDocument(location, bytes);
+            if (decoded.status !== 'valid' || !decoded.record || !decoded.value || !object(decoded.value) || typeof decoded.value.revision !== 'number') {
+              return failure(decoded.diagnostics.length ? decoded.diagnostics : [issue(file.path, 'schema', 'snapshot-document-invalid', 'El documento guardado no pasa el esquema actual.')]);
+            }
+            const currentValue = currentDocument?.value;
+            const oldRevision = currentDocument?.record?.value.revision ?? (currentValue && object(currentValue) && typeof currentValue.revision === 'number' ? currentValue.revision : decoded.value.revision);
+            const revision = Math.max(oldRevision, decoded.value.revision) + 1;
+            if (!Number.isSafeInteger(revision)) return failure([issue(file.path, 'schema', 'revision-exhausted', 'No se puede asignar una revisión nueva al restaurar.')]);
+            bytes = Buffer.from(canonicalJson({ ...decoded.value, revision }) + '\n');
+            const validated = decodeDocument(location, bytes);
+            if (validated.status !== 'valid' || !validated.record) return failure(validated.diagnostics);
+            restoredRecord = validated.record;
+            nextRecords.delete(refKey(refOf(restoredRecord)));
+            nextRecords.set(refKey(refOf(restoredRecord)), restoredRecord);
+          }
+          images.push({ path: file.path, bytes, ...(restoredRecord ? { ref: refOf(restoredRecord) } : currentDocument?.record ? { ref: refOf(currentDocument.record) } : {}) });
+        }
+        const changedImages = images.filter((image) => {
+          const before = current.value.files.get(image.path)?.hash ?? null;
+          const after = image.bytes === null ? null : sha256(image.bytes);
+          return before !== after;
+        });
+        const records = [...nextRecords.values()];
+        const domainDiagnostics = validateSnapshot({ records }, this.#registry).filter((diagnostic) => diagnostic.severity === 'error');
+        if (domainDiagnostics.length) return failure(domainIssues(domainDiagnostics));
+        const requestEnvelope = { operationId, snapshotId, projectId, actor: { kind: this.options.host.authenticatedActor.kind, id: this.options.host.authenticatedActor.id },
+          files: changedImages.map((image) => ({ path: image.path, hash: image.bytes === null ? null : sha256(image.bytes) })) } as unknown as JsonValue;
+        const requestHash = sha256(Buffer.from(canonicalJson(requestEnvelope)));
+        const prepared = this.#makePlan(current.value, operationId, changedImages, records, [], requestHash, { maintenance: true, snapshotReason: 'restore' });
+        if (!prepared.ok) return prepared;
+        return await this.#commit(prepared.value, this.#plans.get(prepared.value)!);
+      } catch (error) { return failure([ioIssue('snapshot', error)]); }
+    });
+  }
+  migrateProject(operationId: string): Promise<StoreResult<MigrationReceipt>> {
+    return this.#queue(async () => {
+      try {
+        if (!uuid.test(operationId)) return failure([issue('migration', 'schema', 'migration-id-invalid', 'operationId debe ser UUID.')]);
+        const steps = this.options.migrationSteps ?? [];
+        if (!steps.length) return failure([issue('a3.project.json', 'compatibility', 'migration-registry-empty', 'No hay pasos de migración de confianza registrados en esta aplicación.')]);
+        const current = await this.#currentForMaintenance(true); if (!current.ok) return current;
+        const projectId = this.#projectId();
+        if (!projectId) return failure([issue('a3.project.json', 'compatibility', 'project-id-unavailable', 'No se pudo identificar el proyecto.')]);
+        const saved = await loadPreparedMigration(this.root, operationId);
+        if (!saved.ok) return failure([saved.diagnostic]);
+        let preparedMigration = saved.value;
+        let resumed = !!preparedMigration;
+        if (preparedMigration && preparedMigration.projectId !== projectId) return failure([issue('migration', 'io', 'migration-project-mismatch', 'La migración preparada pertenece a otro proyecto.')]);
+        let outputs: readonly { path: string; beforeHash: string | null; beforeIdentity: string | null; afterHash: string; bytes: Uint8Array }[];
+        let recordedSteps: readonly { id: string; scope: MigrationScope; fromVersion: string; toVersion: string }[];
+        if (preparedMigration) {
+          outputs = preparedMigration.outputs; recordedSteps = preparedMigration.steps;
+        } else {
+          const candidates = current.value.project.documents.filter((document) => document.status === 'read-only' &&
+            document.diagnostics.some((diagnostic) => diagnostic.detail === 'unsupported-version'));
+          if (!candidates.length) return failure([issue('a3.project.json', 'compatibility', 'migration-not-needed', 'No hay documentos en una versión anterior registrada que requieran migración.')]);
+          const out: { path: string; beforeHash: string | null; beforeIdentity: string | null; afterHash: string; bytes: Uint8Array }[] = [];
+          const stepRecords: { id: string; scope: MigrationScope; fromVersion: string; toVersion: string }[] = [];
+          const nextRecords = new Map(current.value.project.snapshot.records.map((record) => [refKey(refOf(record)), record]));
+          for (const document of candidates.sort((a, b) => a.location.path.localeCompare(b.location.path))) {
+            const source = document.value;
+            const scope = document.location.kind === 'project' ? 'project' : document.location.kind;
+            const versionField = scope === 'project' ? 'formatVersion' : 'schemaVersion';
+            const fromVersion = source && typeof source === 'object' && !Array.isArray(source) ? source[versionField] : undefined;
+            if (!source || typeof source !== 'object' || Array.isArray(source) || typeof fromVersion !== 'string') return failure([issue(document.location.path, 'compatibility', 'migration-source-version-missing', 'El documento no declara una versión migrable.')]);
+            const chain = migrationChain(scope, fromVersion, '1.0.0', steps, document.location.path);
+            if (!chain.ok) return failure(chain.diagnostics);
+            const migrated = applyMigrationChain(scope, document.location.path, source, fromVersion, versionField, steps);
+            if (!migrated.ok) return failure(migrated.diagnostics);
+            const bytes = Buffer.from(canonicalJson(migrated.value) + '\n');
+            const decoded = decodeDocument(document.location, bytes);
+            if (decoded.status !== 'valid' || !decoded.record) return failure(decoded.diagnostics.length ? decoded.diagnostics : [issue(document.location.path, 'compatibility', 'migration-output-invalid', 'La salida no es aceptada por el esquema activo.')]);
+            out.push({ path: document.location.path, beforeHash: current.value.files.get(document.location.path)?.hash ?? document.sha256,
+              beforeIdentity: current.value.files.get(document.location.path)?.identity ?? null,
+              afterHash: sha256(bytes), bytes });
+            const oldRef = document.record ? refKey(refOf(document.record)) : undefined;
+            if (oldRef) nextRecords.delete(oldRef);
+            nextRecords.set(refKey(refOf(decoded.record)), decoded.record);
+            stepRecords.push(...chain.value.map((step) => ({ id: step.id, scope: step.scope, fromVersion: step.fromVersion, toVersion: step.toVersion })));
+          }
+          const referenceErrors = validateSnapshot({ records: [...nextRecords.values()] }, this.#registry).filter((diagnostic) => diagnostic.severity === 'error');
+          if (referenceErrors.length) return failure(domainIssues(referenceErrors));
+          const snapshot = await createSnapshot(this.root, { snapshotId: operationId, projectId, operationId, reason: 'migration',
+            files: out.map((file) => ({ path: file.path, expectedHash: file.beforeHash, expectedIdentity: current.value.files.get(file.path)?.identity ?? null })),
+            retentionDays: this.#snapshotRetentionDays, maxBytes: this.#snapshotMaxBytes });
+          if (!snapshot.ok) return failure(snapshot.diagnostics);
+          const durable = await prepareMigration(this.root, { operationId, projectId, steps: stepRecords, outputs: out });
+          if (!durable.ok) return failure([durable.diagnostic]);
+          preparedMigration = durable.value; outputs = preparedMigration.outputs; recordedSteps = preparedMigration.steps;
+          await this.#fault('migration-after-stage', operationId);
+          // Keep the exact output records for the plan below; on retry they are reconstructed from staged bytes.
+        }
+        if (!preparedMigration) return failure([issue('migration', 'io', 'migration-stage-missing', 'No se pudo preparar la salida inmutable.')]);
+        const scan = current.value;
+        const targetStates = outputs.map((file) => scan.files.get(file.path) ?? missing);
+        const allAfter = targetStates.every((state, index) => state.hash === outputs[index]!.afterHash);
+        if (preparedMigration.completed) {
+          const identities = new Map(preparedMigration.completedIdentities?.map((entry) => [entry.path, entry.identity]) ?? []);
+          if (!allAfter || targetStates.some((state, index) => state.identity !== identities.get(outputs[index]!.path))) return failure(outputs.map((file) => conflict(file.path, 'migration-completed-state-changed')));
+          return { ok: true, value: this.#migrationReceipt(preparedMigration, null, true), diagnostics: [] };
+        }
+        if (allAfter) {
+          const identities = await verifyAppliedMigration(this.root, preparedMigration);
+          if (!identities) return failure(outputs.map((file) => conflict(file.path, 'migration-apply-not-proven')));
+          const done = await completeMigration(this.root, preparedMigration, identities);
+          return { ok: true, value: this.#migrationReceipt(preparedMigration, null, true), diagnostics: done ? [done] : [] };
+        }
+        if (!targetStates.every((state, index) => state.hash === outputs[index]!.beforeHash && state.identity === outputs[index]!.beforeIdentity)) {
+          return failure(outputs.map((file) => conflict(file.path, 'migration-source-changed')));
+        }
+        await this.#fault('migration-before-apply', operationId);
+        const nextRecords = new Map(scan.project.snapshot.records.map((record) => [refKey(refOf(record)), record]));
+        const images: Image[] = [];
+        for (const output of outputs) {
+          const document = scan.project.documents.find((candidate) => candidate.location.path === output.path);
+          if (!document) return failure([issue(output.path, 'compatibility', 'migration-document-missing', 'El documento preparado ya no pertenece al catálogo actual.')]);
+          const decoded = decodeDocument(document.location, output.bytes);
+          if (decoded.status !== 'valid' || !decoded.record) return failure(decoded.diagnostics);
+          if (document.record) nextRecords.delete(refKey(refOf(document.record)));
+          nextRecords.set(refKey(refOf(decoded.record)), decoded.record);
+          images.push({ path: output.path, bytes: Uint8Array.from(output.bytes), ref: refOf(decoded.record) });
+        }
+        const referenceErrors = validateSnapshot({ records: [...nextRecords.values()] }, this.#registry).filter((diagnostic) => diagnostic.severity === 'error');
+        if (referenceErrors.length) return failure(domainIssues(referenceErrors));
+        const transactionOperationId = randomUUID();
+        const requestHash = sha256(Buffer.from(canonicalJson({ operationId, projectId, files: outputs.map((file) => ({ path: file.path, beforeHash: file.beforeHash, afterHash: file.afterHash })),
+          steps: recordedSteps.map((step) => ({ ...step })) } as unknown as JsonValue)));
+        const prepared = this.#makePlan(scan, transactionOperationId, images, [...nextRecords.values()], [], requestHash,
+          { maintenance: true, allowRegisteredMigration: true, snapshotId: operationId, snapshotOperationId: operationId, snapshotReason: 'migration' });
+        if (!prepared.ok) return prepared;
+        const applied = await this.#commit(prepared.value, this.#plans.get(prepared.value)!);
+        if (!applied.ok) return applied;
+        await this.#fault('migration-after-apply', operationId);
+        const identities = preparedMigration.files.map((file) => ({ path: file.path, identity: this.#accepted.files.get(file.path)?.identity ?? '' }));
+        const done = await completeMigration(this.root, preparedMigration, identities);
+        const receipt = this.#migrationReceipt(preparedMigration, transactionOperationId, resumed);
+        return { ok: true, value: receipt, diagnostics: [...applied.diagnostics, ...(done ? [done] : [])] };
+      } catch (error) { return failure([ioIssue('migration', error)]); }
+    });
+  }
+  #migrationReceipt(migration: LoadedMigration,
+    transactionOperationId: string | null, resumed: boolean): MigrationReceipt {
+    return { status: 'migrated', operationId: migration.operationId, projectId: migration.projectId,
+      sourceVersions: [...new Set(migration.steps.map((step) => step.fromVersion))].sort(), targetVersion: '1.0.0',
+      paths: migration.files.map((file) => file.path), snapshotId: migration.operationId, transactionOperationId, resumed };
+  }
   async #fault(phase: FaultPhase, operationId: string, index?: number, path?: string): Promise<void> {
     await this.options.fault?.(phase, { operationId, ...(index !== undefined ? { index } : {}), ...(path ? { path } : {}) });
   }
@@ -369,14 +658,23 @@ export class ProjectService {
     let transactionPath: string | undefined;
     let log: ProgressLog | undefined;
     let activePath = 'a3.project.json';
+    let snapshotId: string | undefined;
+    let snapshotDiagnostics: readonly StoreDiagnostic[] = [];
     try {
-      const current = await this.#currentForWrite(); if (!current.ok) return current;
+      const current = data.maintenance ? await this.#currentForMaintenance(data.allowRegisteredMigration) : await this.#currentForWrite();
+      if (!current.ok) return current;
       if (data.actor !== JSON.stringify(this.options.host.authenticatedActor)) return failure([this.#denied('operation')]);
       const changed = this.#changes(data.scan, current.value);
       if (changed.length) return failure(changed.map((p) => conflict(p, 'stale-plan')));
       if (data.domain) { const valid = revalidatePlan(data.domain, current.value.project.snapshot, this.#context(current.value)); if (!valid.ok) return failure(domainIssues(valid.diagnostics)); }
       if (!this.#authorized('write', data.images.map((i) => i.path), plan.changes.flatMap((c) => c.ref ? [c.ref] : []), data.resources)) return failure([this.#denied('operation')]);
       if (!data.images.length) return { ok: true, value: { status: 'committed', operationId: plan.operationId, atomic: false, paths: [], transactionPath: null }, diagnostics: [] };
+      snapshotId = data.snapshotId ?? plan.operationId;
+      const snapshot = await createSnapshot(this.root, { snapshotId, projectId: plan.projectId, operationId: data.snapshotOperationId ?? plan.operationId,
+        reason: data.snapshotReason ?? 'batch', files: plan.changes.map((change) => ({ path: change.path, expectedHash: change.beforeHash,
+          expectedIdentity: data.scan.files.get(change.path)?.identity ?? null })), retentionDays: this.#snapshotRetentionDays, maxBytes: this.#snapshotMaxBytes });
+      if (!snapshot.ok) return failure(snapshot.diagnostics);
+      snapshotDiagnostics = snapshot.diagnostics;
       const transactions = transactionRoot;
       await ensureDirectories(this.root, transactions);
       const folder = `${transactions}/${plan.operationId}`;
@@ -422,7 +720,10 @@ export class ProjectService {
       // Recheck all catalog/source dependencies after staging and before any target mutation.
       const beforeReplace = await this.#scan(true);
       const drift = this.#changes(data.scan, beforeReplace);
-      if (drift.length || beforeReplace.diagnostics.some((d) => d.severity === 'error')) throw new PathError('external-conflict', drift[0] ?? 'a3.project.json');
+      const newErrors = introducesErrors(data.scan.diagnostics, beforeReplace.diagnostics);
+      if (drift.length || newErrors || !data.maintenance && beforeReplace.diagnostics.some((d) => d.severity === 'error')) {
+        throw new PathError('external-conflict', drift[0] ?? 'a3.project.json');
+      }
       for (const [index, entry] of entries.entries()) {
         activePath = entry.path;
         if (!this.#ownership?.alive() || !this.#authorized('write', [entry.path], entry.ref ? [entry.ref] : [], data.resources)) throw new PathError('permission-denied', entry.path);
@@ -464,15 +765,30 @@ export class ProjectService {
       const expected = new Map(data.scan.files);
       for (const entry of entries) if (entry.afterHash === null) expected.delete(entry.path); else expected.set(entry.path, this.#own.get(entry.path)!);
       const mismatches = this.#changes({ ...data.scan, files: expected }, final);
-      if (mismatches.length || final.project.mode !== 'ready' || final.diagnostics.some((d) => d.severity === 'error')) throw new PathError('external-conflict', mismatches[0] ?? 'a3.project.json');
-      if (!equal(final.project.snapshot.records.map((r) => refKey(refOf(r))).sort(), data.nextRecords.map((r) => refKey(refOf(r))).sort())) throw new PathError('catalog-changed', 'a3.project.json');
+      if (mismatches.length || !final.project.catalogComplete || final.project.mode === 'unavailable' ||
+          !data.maintenance && (final.project.mode !== 'ready' || final.diagnostics.some((d) => d.severity === 'error')) ||
+          data.maintenance && introducesErrors(data.scan.diagnostics, final.diagnostics)) throw new PathError('external-conflict', mismatches[0] ?? 'a3.project.json');
+      if (data.maintenance) {
+        for (const image of data.images) {
+          if (image.bytes === null) continue;
+          const document = final.project.documents.find((candidate) => candidate.location.path === image.path);
+          if (document && (document.sha256 !== sha256(image.bytes) || document.status === 'invalid' ||
+              document.status === 'read-only' && !document.diagnostics.every((diagnostic) => diagnostic.detail === 'opaque-drawing'))) {
+            throw new PathError('maintenance-output-invalid', image.path);
+          }
+        }
+      } else if (!equal(final.project.snapshot.records.map((r) => refKey(refOf(r))).sort(), data.nextRecords.map((r) => refKey(refOf(r))).sort())) {
+        throw new PathError('catalog-changed', 'a3.project.json');
+      }
       await log.append('verified'); await log.append('committed');
       this.#accepted = this.#observed = final; this.#external = false; this.#own.clear();
-      const receipt: WriteReceipt = freeze({ status: 'committed', operationId: plan.operationId, atomic: false, paths: entries.map((e) => e.path), transactionPath: folder });
+      this.#reason = data.maintenance && (final.project.mode !== 'ready' || final.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) ? 'project-not-writable' : undefined;
+      const receipt: WriteReceipt = freeze({ status: 'committed', operationId: plan.operationId, atomic: false, paths: entries.map((e) => e.path), transactionPath: folder,
+        ...(snapshotId ? { snapshotId } : {}) });
       // Post-commit injection represents process death only. A throwing hook cannot undo a confirmed receipt.
       try { await this.#fault('after-commit', plan.operationId); } catch { /* Already confirmed, never report rollback. */ }
       this.#emit({ kind: 'committed', receipt });
-      return { ok: true, value: receipt, diagnostics: [] };
+      return { ok: true, value: receipt, diagnostics: snapshotDiagnostics };
     } catch (error) {
       const detail = error instanceof PathError ? error.detail : 'write-failed';
       const diagnostics = [detail === 'external-conflict' || detail === 'destination-exists' || error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST'

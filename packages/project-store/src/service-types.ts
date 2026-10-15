@@ -1,5 +1,7 @@
 import type { Actor, AuthorizationPort, DocumentRef, Resource, TypeRegistry } from '@a3/domain';
 import type { ProjectReadResult, ResourceBytes, StoreDiagnostic } from './types.js';
+import type { MigrationStep } from './migrations.js';
+import type { SnapshotSummary } from './snapshots.js';
 
 export interface AccessRequest {
   actor: Actor;
@@ -18,6 +20,7 @@ export interface StoreHost {
 }
 export type FaultPhase = 'after-intent' | 'after-staging' | 'before-detach' | 'after-detach' |
   'before-install' | 'after-install' | 'before-commit' | 'after-commit' |
+  'migration-after-stage' | 'migration-before-apply' | 'migration-after-apply' |
   'recovery-after-decision' | 'recovery-after-backup-check' | 'recovery-after-entry' |
   'recovery-before-finalize' | 'recovery-after-finalize' | 'recovery-before-conflict' |
   'recovery-after-conflict' | 'recovery-before-quarantine' | 'recovery-after-quarantine';
@@ -28,6 +31,10 @@ export interface ServiceOptions {
   debounceMs?: number;
   maxResourceBytes?: number;
   maxTransactionBytes?: number;
+  snapshotRetentionDays?: number;
+  snapshotMaxBytes?: number;
+  /** Trusted application migrations only; never loaded from project/package data. */
+  migrationSteps?: readonly MigrationStep[];
   /** Host-only fault injection. Never accepted from a project/plugin payload. */
   fault?: (phase: FaultPhase, event: { operationId: string; index?: number; path?: string }) => void | Promise<void>;
 }
@@ -51,7 +58,20 @@ export interface WriteReceipt {
   atomic: false;
   paths: readonly string[];
   transactionPath: string | null;
+  snapshotId?: string;
 }
+export interface MigrationReceipt {
+  status: 'migrated';
+  operationId: string;
+  projectId: string;
+  sourceVersions: readonly string[];
+  targetVersion: string;
+  paths: readonly string[];
+  snapshotId: string;
+  transactionOperationId: string | null;
+  resumed: boolean;
+}
+export interface SnapshotReceipt extends SnapshotSummary { status: 'created' | 'reused'; }
 export type StoreResult<T> = { ok: true; value: T; diagnostics: readonly StoreDiagnostic[] } |
   { ok: false; diagnostics: readonly StoreDiagnostic[]; recoveryRequired?: boolean; transactionPath?: string };
 export interface ResourceWriteRequest {
