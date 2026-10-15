@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { revisionsOf } from '@a3/domain';
 import { openProjectService, sha256 } from '../dist/index.js';
-import { E1, P1, W1, entityPath, id, scratch } from './fixture.mjs';
+import { E1, P1, W1, entityPath, fixtureHost, id, scratch } from './fixture.mjs';
 
 const windows = { skip: process.platform !== 'win32' };
 const worker = fileURLToPath(new URL('./writer-worker.mjs', import.meta.url));
@@ -17,7 +17,7 @@ async function setup(t, extra = {}) {
   const leases = [];
   t.after(async () => { for (const lease of leases) await lease.close(); });
   const dirs = await scratch(t);
-  const host = { authenticatedActor: { kind: 'user', id: 'test-user' }, domain: { authorize: () => true }, authorizeAccess: () => true };
+  const host = await fixtureHost(dirs.root, 'test-user');
   const options = { host, pollMs: 5000, debounceMs: 20, ...extra };
   const open = async () => { const lease = ok(await openProjectService(dirs.root, options)); leases.push(lease); return lease; };
   const lease = await open();
@@ -92,12 +92,12 @@ test('stale source revision/hash and revoked permissions never change bytes', wi
   const original = await readFile(join(root, opened.path));
   rejects(await service.prepareResourceWrite({ ...request, expectedRevision: 9 }), 'REVISION_CONFLICT');
   rejects(await service.prepareResourceWrite({ ...request, expectedHash: '0'.repeat(64) }), 'REVISION_CONFLICT');
-  host.authorizeAccess = (r) => r.operation !== 'write';
-  rejects(await service.commit(plan), 'PERMISSION_DENIED');
+  await host.capabilities.revoke({ root, projectId: host.projectId, capability: 'document.edit' });
+  const deniedCommit = rejects(await service.commit(plan), 'PERMISSION_DENIED');
+  assert.equal(deniedCommit.diagnostics[0].missingCapability, 'document.edit');
   assert.deepEqual(await readFile(join(root, opened.path)), original);
-  host.authorizeAccess = () => true;
-  host.domain.authorize = () => false;
-  rejects(await service.prepare(command(service, host, 'a3.core.update-entity', { title: 'denied' }, 12, { scope: { entityIds: [E1] } })), 'PERMISSION_DENIED');
+  const deniedProposal = rejects(await service.prepare(command(service, host, 'a3.core.update-entity', { title: 'denied' }, 12, { scope: { entityIds: [E1] } })), 'PERMISSION_DENIED');
+  assert.equal(deniedProposal.diagnostics[0].missingCapability, 'document.edit');
 });
 test('same-process windows reuse the service until the final lease closes', windows, async (t) => {
   const { lease, open } = await setup(t);
@@ -181,6 +181,7 @@ test('external recreation between detach/install is never overwritten; restart r
 });
 test('domain removal quarantines documents, preserving shared source content', windows, async (t) => {
   const { root, service, host } = await setup(t);
+  await host.capabilities.setGrant({ root, projectId: host.projectId, capability: 'delete', mode: 'direct' });
   const source = await readFile(join(root, 'pages/readme.md'));
   const plan = ok(await service.prepare(command(service, host, 'a3.core.delete', { ref: { kind: 'placement', id: P1, workspaceId: W1 } }, 21)));
   ok(await service.commit(plan));
@@ -191,6 +192,7 @@ test('domain removal quarantines documents, preserving shared source content', w
 test('A3-046: an interrupted deletion with every destination applied is confirmed from detached copies', windows, async (t) => {
   const setupResult = await setup(t);
   const { root, service, host, lease, open, options } = setupResult;
+  await host.capabilities.setGrant({ root, projectId: host.projectId, capability: 'delete', mode: 'direct' });
   const placementPath = service.state.project.documents.find((d) => d.record?.kind === 'placement' && d.record.value.id === P1).location.path;
   const placementBytes = await readFile(join(root, placementPath));
   options.fault = async (phase) => { if (phase === 'before-commit') throw new Error('injected interruption after all delete effects'); };
@@ -222,6 +224,7 @@ test('domain resource move stages source and descriptor without overwriting an e
 });
 test('removing an unused resource descriptor retains its bytes without a false deletion conflict', windows, async (t) => {
   const { root, service, host } = await setup(t);
+  await host.capabilities.setGrant({ root, projectId: host.projectId, capability: 'delete', mode: 'direct' });
   const resource = service.state.project.snapshot.records.find((r) => r.kind === 'resource');
   const source = await readFile(join(root, resource.value.path));
   ok(await service.commit(ok(await service.prepare(command(service, host, 'a3.core.delete', { ref: { kind: 'entity', id: E1 } }, 31)))));

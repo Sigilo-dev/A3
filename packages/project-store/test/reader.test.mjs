@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readProject, readProjectResource, resolvePortablePath, encodeDocument, sha256 } from '../dist/index.js';
+import { readProject, readProjectResource, resolvePortablePath } from '../dist/reader.js';
+import { encodeDocument, sha256 } from '../dist/index.js';
 import { E1, W1, P1, entityPath, id, scratch } from './fixture.mjs';
 
 const json = (value) => JSON.stringify(value, null, 2) + '\n';

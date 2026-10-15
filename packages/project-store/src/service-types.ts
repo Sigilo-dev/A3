@@ -1,4 +1,5 @@
-import type { Actor, AuthorizationPort, DocumentRef, Resource, TypeRegistry } from '@a3/domain';
+import type { Actor, DocumentRef, Resource, TypeRegistry } from '@a3/domain';
+import type { Capability, ProjectCapabilityBroker } from './capabilities.js';
 import type { ProjectReadResult, ResourceBytes, StoreDiagnostic } from './types.js';
 import type { MigrationStep } from './migrations.js';
 import type { SnapshotSummary } from './snapshots.js';
@@ -11,12 +12,13 @@ export interface AccessRequest {
   paths: readonly string[];
   refs: readonly DocumentRef[];
   resources: readonly Resource[];
+  requiredCapabilities?: readonly Capability[];
+  stage?: 'prepare' | 'apply';
 }
 /** Trusted host adapters, never read from project files or a renderer payload. */
 export interface StoreHost {
   authenticatedActor: Actor;
-  domain: AuthorizationPort;
-  authorizeAccess(request: AccessRequest): boolean;
+  capabilities: ProjectCapabilityBroker;
 }
 export type FaultPhase = 'after-intent' | 'after-staging' | 'before-detach' | 'after-detach' |
   'before-install' | 'after-install' | 'before-commit' | 'after-commit' |
@@ -113,6 +115,8 @@ export interface WriteIntent {
   projectId: string;
   /** Stable non-secret principal identity; absent only in legacy E1-C2 journals. */
   actor?: Pick<Actor, 'kind' | 'id'>;
+  /** Exact capabilities required to finish/roll back this operation after interruption. */
+  requiredCapabilities?: Capability[];
   requestHash: string;
   readSet: { path: string; hash: string | null; identity: string | null }[];
   entries: IntentEntry[];

@@ -5,9 +5,10 @@ import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { listSnapshots, openProjectService, readSnapshot, sha256 } from '../dist/index.js';
+import { openProjectService, sha256 } from '../dist/index.js';
+import { listSnapshots, readSnapshot } from '../dist/snapshots.js';
 import { createSnapshot, enforceSnapshotRetention } from '../dist/snapshots.js';
-import { entityPath, id, scratch } from './fixture.mjs';
+import { entityPath, fixtureHost, id, scratch } from './fixture.mjs';
 
 const windows = { skip: process.platform !== 'win32' };
 const worker = fileURLToPath(new URL('./migration-worker.mjs', import.meta.url));
@@ -16,11 +17,8 @@ const migrationSteps = [
   { id: 'fixture.project.0.9.0-to-1.0.0', scope: 'project', fromVersion: '0.9.0', toVersion: '1.0.0', allowedPointers: [], validateInput: (value) => value.formatVersion === '0.9.0' && Number.isSafeInteger(value.revision), transform: (value) => value },
   { id: 'fixture.entity.0.9.0-to-1.0.0', scope: 'entity', fromVersion: '0.9.0', toVersion: '1.0.0', allowedPointers: [], validateInput: (value) => value.schemaVersion === '0.9.0' && typeof value.title === 'string', transform: (value) => value }
 ];
-function host(idValue = 'maintenance-fixture-user') {
-  return { authenticatedActor: { kind: 'user', id: idValue }, domain: { authorize: () => true }, authorizeAccess: () => true };
-}
 async function open(root, extra = {}) {
-  const result = await openProjectService(root, { host: host(), pollMs: 5000, debounceMs: 20, ...extra });
+  const result = await openProjectService(root, { host: await fixtureHost(root, 'maintenance-fixture-user'), pollMs: 5000, debounceMs: 20, ...extra });
   assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
   return result.value;
 }
@@ -67,7 +65,7 @@ test('snapshots preserve exact preimages; retention removes oldest first and cat
 
 test('an interrupted write keeps its over-budget snapshot while the D1 transaction is pending', windows, async (t) => {
   const { root } = await scratch(t);
-  const lease = ok(await openProjectService(root, { host: host('quota-user'), pollMs: 5000, snapshotMaxBytes: 1,
+  const lease = ok(await openProjectService(root, { host: await fixtureHost(root, 'quota-user'), pollMs: 5000, snapshotMaxBytes: 1,
     fault: (phase) => { if (phase === 'after-intent') throw new Error('fixture interruption'); } }));
   t.after(() => lease.close());
   const service = lease.service;

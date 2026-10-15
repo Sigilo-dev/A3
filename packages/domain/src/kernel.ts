@@ -408,13 +408,20 @@ export function prepareCommand(snapshot: DomainSnapshot, input: unknown, context
     if (!context || !isJson(context.authenticatedActor) || canonical(request.actor) !== canonical(context.authenticatedActor)) fail('actor-mismatch', 'El actor no coincide con la identidad autenticada.', undefined, 'PERMISSION_DENIED');
     const registryWrite = request.command === 'a3.core.register-node-type' || request.command === 'a3.core.unregister-node-type';
     const authorize = (refs: DocumentRef[], entities: string[], effects: ContentEffect[], changes: RecordChange[] = [], nodeTypeChanges: NodeTypeChange[] = []): void => {
+      const authorizationRequest = freeze(copy({ actor: context.authenticatedActor, projectId: request.projectId,
+        operationId: request.operationId, command: request.command, entityIds: entities, refs, contentEffects: effects, registryWrite, changes, nodeTypeChanges }));
       try {
-        if (context.authorization.authorize(freeze(copy({ actor: context.authenticatedActor, projectId: request.projectId,
-          command: request.command, entityIds: entities, refs, contentEffects: effects, registryWrite, changes, nodeTypeChanges }))) === true) return;
-      } catch { /* An unavailable authorization adapter fails closed. */ }
+        const detailed = context.authorization.authorizeDetailed?.(authorizationRequest);
+        if (detailed) {
+          if (detailed.allowed) return;
+          const denied = diagnostic('permission-denied', `La operación requiere ${detailed.missingCapability ?? 'una capacidad no disponible'} (${detailed.reason ?? 'denegada'}).`, undefined, 'PERMISSION_DENIED');
+          if (detailed.missingCapability) denied.missingCapability = detailed.missingCapability;
+          throw new DomainFault(denied);
+        }
+        if (context.authorization.authorize(authorizationRequest) === true) return;
+      } catch (error) { if (error instanceof DomainFault) throw error; /* An unavailable authorization adapter fails closed. */ }
       fail('permission-denied', 'La política del host no autoriza esta operación.', undefined, 'PERMISSION_DENIED');
     };
-    authorize([], request.scope.entityIds, []);
     if (!isJson(snapshot) || !Array.isArray(snapshot.records)) fail('invalid-snapshot', 'El snapshot no es válido.');
     const structural = [...snapshot.records.flatMap(validateRecord), ...validateRegistry(context.registry)];
     if (structural.length) return { ok: false, diagnostics: structural };

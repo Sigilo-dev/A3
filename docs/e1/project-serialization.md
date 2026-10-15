@@ -4,30 +4,28 @@ Base comprobada: E1-B `c141918`, rama `codex/e1-base`, origin `https://github.co
 
 ## API del paquete
 
-`packages/project-store` exporta `@a3/project-store` para el host Node. No importa React, React Flow ni Electron. Reutiliza `@a3/domain@0.1.0-dev.0`; TypeScript 7.0.2 y tipos Node 24.19.2 son pins existentes. El lock añade únicamente este workspace; no hay nuevas bibliotecas externas ni actualizaciones masivas. Código original MIT; las licencias de dependencias existentes siguen en E1-A/B.
+`packages/project-store` exporta `@a3/project-store` para el host Node. No importa React, React Flow ni Electron. Reutiliza `@a3/domain@0.1.0-dev.0`; TypeScript 7.0.2 y tipos Node 24.19.2 son pins existentes. El lock añade únicamente este workspace; no hay nuevas bibliotecas externas ni actualizaciones masivas. Código original MIT; las licencias de dependencias existentes siguen en E1-A/B. Desde E1-E1, los lectores que reciben una ruta raíz son internos al paquete y no se exportan como vías de acceso de la aplicación; la app debe leer mediante el servicio autorizado con broker.
 
 | API | Resultado y garantía |
 |---|---|
 | `decodeDocument(location, bytes)` | Retiene una copia de los bytes, SHA-256 y diagnóstico. Estado valid/invalid/read-only; árbol de inspección si es representable sin pérdida, registro tipado solo si valida. `originalBytes()` devuelve una copia nueva. |
 | `encodeDocument(document, edits?)` | No-op exacto o bytes JSON canónicos. Los edits por JSON Pointer preservan lo no mencionado; un cambio exige siguiente revisión e identidad constante. Rechaza documentos inválidos, futuros y dibujos opacos. No escribe. |
 | `serializeRecord(location, record)` | Bytes canónicos para un registro completo nuevo. Valida shape, versión y ubicación; no autoriza creación ni reemplazo de un archivo existente. |
-| `readProject(root, options?)` | Catálogo conocido, documentos originales, snapshot tipado y diagnósticos separados. `writable` siempre false; ready indica lectura validada, no permiso de guardado. |
-| `readProjectResource(root, resource, maxBytes?)` | Bytes originales y SHA-256 de un project-file válido. Rechaza montajes y URLs; no interpreta texto. |
-| `resolvePortablePath(root, path)` | Validación lógica de ruta relativa y aliases Windows. No es permiso ni guarda suficiente por sí sola; las lecturas además comprueban componentes reales. |
+| `reader.ts: readProject/readProjectResource` | Funciones internas de catálogo, documentos originales y bytes. No se exportan en el punto de entrada público; el broker sigue siendo obligatorio para la aplicación. |
+| `resolvePortablePath(root, path)` | Validación lógica interna de ruta relativa y aliases Windows. No equivale a permiso ni se exporta como autorización de acceso. |
 
 Ejemplo después de compilar los workspaces:
 
 ```ts
-import { readProject, encodeDocument } from '@a3/project-store';
+import { decodeDocument, encodeDocument } from '@a3/project-store';
 
-const project = await readProject('C:/projects/demo');
-const entity = project.documents.find((d) => d.location.kind === 'entity');
-if (entity?.status === 'valid' && entity.record) {
+const entity = decodeDocument(location, bytesReadByTheAuthorizedService);
+if (entity.status === 'valid' && entity.record) {
   const preview = encodeDocument(entity, [
     { op: 'set', pointer: '/title', value: 'Nuevo título' },
     { op: 'set', pointer: '/revision', value: entity.record.value.revision + 1 }
   ]);
-  // preview contiene bytes propuestos. No equivale a comando autorizado ni guardado.
+  // El codec es puro; solo ProjectService puede validar permisos y guardar.
 }
 ```
 

@@ -7,6 +7,7 @@ import { absentPath, ensureDirectories, installExclusive, writeExclusive } from 
 import type { FaultPhase, ProgressEvent, ServiceOptions, WriteIntent } from './service-types.js';
 import type { Actor, ErrorCode, JsonValue } from '@a3/domain';
 import type { StoreDiagnostic } from './types.js';
+import type { Capability } from './capabilities.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const hashPattern = /^[0-9a-f]{64}$/;
@@ -29,7 +30,7 @@ interface RecoveryOptions {
   projectId?: string;
   authenticatedActor: Actor;
   maxBytes: number;
-  authorizeWrite(paths: readonly string[]): boolean;
+  authorizeWrite(paths: readonly string[], capabilities: readonly Capability[] | undefined, operationId: string): boolean | { allowed: boolean; missingCapability?: string } | Promise<boolean | { allowed: boolean; missingCapability?: string }>;
   fault?: ServiceOptions['fault'];
 }
 export interface RecoveryResult {
@@ -121,6 +122,11 @@ function validateIntent(value: unknown, folderName: string, folder: string, root
       !uuid.test(folderName) || typeof intent.projectId !== 'string' || !uuid.test(intent.projectId) || !validHash(intent.requestHash) ||
       !Array.isArray(intent.readSet) || !Array.isArray(intent.entries) || intent.entries.length === 0 ||
       !jsonObject(intent.extensions) || !intent.extensions || intent.readSet.length > 10000 || intent.entries.length > 10000) return undefined;
+  const validCapabilities = new Set(['project.read', 'mount.read', 'document.edit', 'diagram.edit', 'task.edit', 'delete', 'project.recover', 'process.run',
+    'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push', 'git.branch', 'git.restore', 'export']);
+  if (intent.requiredCapabilities !== undefined && (!Array.isArray(intent.requiredCapabilities) || intent.requiredCapabilities.length === 0 ||
+      intent.requiredCapabilities.some((value) => typeof value !== 'string' || !validCapabilities.has(value)) ||
+      new Set(intent.requiredCapabilities).size !== intent.requiredCapabilities.length)) return undefined;
   if (intent.actor !== undefined) {
     const actor = jsonObject(intent.actor);
     if (!actor || !['user', 'agent', 'extension', 'importer'].includes(String(actor.kind)) || typeof actor.id !== 'string' || actor.id.length === 0 || actor.id.length > 256) return undefined;
@@ -316,12 +322,15 @@ async function recoverOne(root: string, journal: Journal, options: RecoveryOptio
   if (journal.intent.actor && (journal.intent.actor.kind !== options.authenticatedActor.kind || journal.intent.actor.id !== options.authenticatedActor.id)) {
     return { resolved: false, blocked: true, diagnostic: diagnostic('a3.project.json', 'recovery-actor-mismatch', 'La operación fue preparada por otra identidad; inicia esa identidad o revisa el conflicto.', 'PERMISSION_DENIED') };
   }
-  let allowed = false;
-  try { allowed = options.authorizeWrite(paths); } catch { allowed = false; }
-  if (!allowed) return { resolved: false, blocked: true, diagnostic: diagnostic('a3.project.json', 'recovery-permission-denied', 'El host no autorizó recuperar las rutas de esta operación.', 'PERMISSION_DENIED') };
   if (journal.terminal === 'conflict') return { resolved: false, blocked: true,
     diagnostic: diagnostic('a3.project.json', 'recovery-conflict-persisted', 'Esta operación quedó en conflicto; sus bytes y copias siguen disponibles para revisión.') };
   if (journal.terminal === 'committed' || journal.terminal === 'rolled-back') return { resolved: true, blocked: false };
+  let authorization: boolean | { allowed: boolean; missingCapability?: string } = false;
+  try { authorization = await options.authorizeWrite(paths, journal.intent.requiredCapabilities, journal.intent.operationId); } catch { authorization = false; }
+  const allowed = typeof authorization === 'boolean' ? authorization : authorization.allowed;
+  if (!allowed) return { resolved: false, blocked: true, diagnostic: issue('a3.project.json', 'io', 'recovery-permission-denied',
+    'El broker del host no autorizó recuperar esta operación.', { code: 'PERMISSION_DENIED', severity: 'error',
+      ...(typeof authorization === 'object' && authorization.missingCapability ? { missingCapability: authorization.missingCapability } : {}) }) };
   if (journal.decision === 'conflict') {
     const log = new ProgressLog(root, journal.folder, journal.seq, journal.lastHash);
     return { resolved: false, blocked: true, diagnostic: await logConflict(root, journal, log, options, 'a3.project.json', 'recovery-conflict-resume') };

@@ -15,6 +15,8 @@ import { applyMigrationChain, migrationChain, type MigrationScope } from './migr
 import { completeMigration, loadPreparedMigration, prepareMigration, verifyAppliedMigration, type LoadedMigration } from './migration-store.js';
 import type { DocumentLocation, JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
 import type { AccessRequest, FaultPhase, IntentEntry, MigrationReceipt, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
+import type { Capability, CapabilityDecision } from './capabilities.js';
+import { isProjectCapabilityBroker } from './capabilities.js';
 
 interface Observation { hash: string | null; identity: string | null; stamp: string; problem?: string; }
 interface Scan { project: ProjectReadResult; files: Map<string, Observation>; diagnostics: StoreDiagnostic[]; }
@@ -23,6 +25,8 @@ interface PlanData {
   scan: Scan; images: Image[]; domain?: PreparedPlan; resourceWrite?: ResourceWriteRequest;
   nextRecords: DomainRecord[]; resources: Resource[]; requestHash: string; outcome?: StoreResult<WriteReceipt>;
   actor: string;
+  requiredCapabilities: Capability[];
+  preapproved?: boolean;
   maintenance?: boolean;
   allowRegisteredMigration?: boolean;
   snapshotId?: string;
@@ -41,6 +45,19 @@ function conflict(path: string, detail = 'external-conflict'): StoreDiagnostic {
 }
 function domainIssues(diagnostics: readonly Diagnostic[]): StoreDiagnostic[] {
   return diagnostics.map(({ instancePath, ...d }) => ({ ...d, path: 'a3.project.json', stage: 'references', ...(instancePath !== undefined ? { pointer: instancePath } : {}) }));
+}
+const diagramRefKinds = new Set(['workspace', 'placement', 'visual-edge', 'relation-view', 'group', 'drawing', 'relation']);
+function domainCapabilities(plan: PreparedPlan): Capability[] {
+  const command = plan.request.command;
+  if (command === 'a3.core.register-node-type' || command === 'a3.core.unregister-node-type') return ['package.install'];
+  const caps = new Set<Capability>();
+  if (command === 'a3.core.delete') caps.add('delete');
+  const refs = plan.changes.map((change) => change.ref);
+  if (refs.some((ref) => diagramRefKinds.has(ref.kind))) caps.add('diagram.edit');
+  if (refs.some((ref) => !diagramRefKinds.has(ref.kind))) caps.add('document.edit');
+  if (!caps.has('diagram.edit') && !caps.has('document.edit')) caps.add('document.edit');
+  if (command === 'a3.core.set-collection-members') { caps.delete('document.edit'); caps.add('task.edit'); }
+  return [...caps];
 }
 function diagnosticKey(diagnostic: StoreDiagnostic): string {
   return JSON.stringify([diagnostic.path, diagnostic.stage, diagnostic.detail, diagnostic.pointer ?? '', diagnostic.code ?? '']);
@@ -119,6 +136,7 @@ export class ProjectService {
   #own = new Map<string, Observation>();
   #recoveryDiagnostics: StoreDiagnostic[] = [];
   #sourceRefs = new Map<string, Resource>();
+  #knownProjectId: string | undefined;
   #registry: TypeRegistry;
   #resourceLimit: number;
   #transactionLimit: number;
@@ -137,8 +155,10 @@ export class ProjectService {
     }
     if (!Number.isSafeInteger(this.#snapshotRetentionDays) || this.#snapshotRetentionDays < 0) throw new TypeError('Los días de retención deben ser un entero no negativo.');
   }
-  static async create(root: string, options: ServiceOptions, identity: string, ownership?: Ownership, reason?: string): Promise<ProjectService> {
+  static async create(root: string, projectId: string, options: ServiceOptions, identity: string, ownership?: Ownership, reason?: string): Promise<ProjectService> {
+    if (!options?.host || !isProjectCapabilityBroker(options.host.capabilities)) throw new TypeError('ProjectService requiere el broker sellado del host.');
     const service = new ProjectService(root, options, identity, ownership, reason);
+    service.#knownProjectId = projectId;
     try {
       service.#accepted = service.#observed = await service.#scan(true);
       const project = service.#accepted.project.snapshot.records.find((r) => r.kind === 'project');
@@ -151,7 +171,12 @@ export class ProjectService {
       if (ownership) {
         const recoveredProjectId = service.#projectId();
         const recovery = await recoverTransactions(root, { ...(recoveredProjectId ? { projectId: recoveredProjectId } : {}), authenticatedActor: options.host.authenticatedActor,
-          maxBytes: service.#resourceLimit, authorizeWrite: (paths) => service.#authorized('write', [...paths]), ...(options.fault ? { fault: options.fault } : {}) });
+          maxBytes: service.#resourceLimit, authorizeWrite: async (_paths, capabilities, operationId) => {
+            if (!recoveredProjectId) return { allowed: false, missingCapability: 'project.read' };
+            const required = ['project.recover' as Capability, ...(capabilities ?? [])];
+            return options.host.capabilities.authorizeCapabilities(root, options.host.authenticatedActor, recoveredProjectId, required,
+              `journal.recovery:${operationId}`, 'apply');
+          }, ...(options.fault ? { fault: options.fault } : {}) });
         service.#recoveryDiagnostics = [...recovery.diagnostics];
         if (recovery.diagnostics.some((d) => d.code === 'REVISION_CONFLICT')) service.#external = true;
         if (recovery.blocked) service.#reason = 'recovery-required';
@@ -163,6 +188,11 @@ export class ProjectService {
     } catch (error) { await ownership?.close(); throw error; }
   }
   get state(): ServiceState {
+    if (!this.#authorized('open-project', ['a3.project.json'])) {
+      const denied = this.#denied('a3.project.json');
+      return { mode: 'read-only', reason: 'permission-denied', project: { root: this.root, mode: 'unavailable', writable: false,
+        catalogComplete: false, documents: [], snapshot: { records: [] }, diagnostics: [denied] }, externalConflict: false, recoveryDiagnostics: [] };
+    }
     return { mode: this.#ownership?.alive() && !this.#reason && !this.#closing ? 'writer' : 'read-only',
       ...(this.#reason ? { reason: this.#reason } : {}), project: this.#observed.project, externalConflict: this.#external,
       recoveryDiagnostics: this.#recoveryDiagnostics };
@@ -173,17 +203,31 @@ export class ProjectService {
     const result = this.#tail.then(work); this.#tail = result.catch(() => undefined); return result;
   }
   #projectId(): string | undefined {
+    if (this.#knownProjectId) return this.#knownProjectId;
     const project = this.#accepted?.project.snapshot.records.find((record) => record.kind === 'project');
     if (project?.kind === 'project') return project.value.projectId;
     const manifest = this.#accepted?.project.documents.find((document) => document.location.kind === 'project')?.value;
     return manifest && typeof manifest === 'object' && !Array.isArray(manifest) && typeof manifest.projectId === 'string' && uuid.test(manifest.projectId) ? manifest.projectId : undefined;
   }
-  #authorized(operation: AccessRequest['operation'], paths: string[], refs: AccessRequest['refs'] = [], resources: Resource[] = []): boolean {
-    try { return this.options.host.authorizeAccess(freeze({ actor: JSON.parse(JSON.stringify(this.options.host.authenticatedActor)), root: this.root,
-      ...(this.#projectId() ? { projectId: this.#projectId()! } : {}), operation, paths: [...paths], refs: [...refs], resources: [...resources] })) === true; }
-    catch { return false; }
+  #lastDecision: CapabilityDecision | undefined;
+  #authorized(operation: AccessRequest['operation'], paths: string[], refs: AccessRequest['refs'] = [], resources: Resource[] = [], requiredCapabilities?: Capability[], stage: 'prepare' | 'apply' = 'prepare'): boolean {
+    try {
+      const result = this.options.host.capabilities.authorizeAccess(freeze({ actor: JSON.parse(JSON.stringify(this.options.host.authenticatedActor)), root: this.root,
+        ...(this.#projectId() ? { projectId: this.#projectId()! } : {}), operation, paths: [...paths], refs: [...refs], resources: [...resources],
+        ...(requiredCapabilities ? { requiredCapabilities } : {}), stage }));
+      this.#lastDecision = result;
+      return result.allowed;
+    } catch { this.#lastDecision = undefined; return false; }
   }
-  #denied(path: string): StoreDiagnostic { return issue(path, 'io', 'permission-denied', 'La política del host no autoriza esta acción.', { code: 'PERMISSION_DENIED' }); }
+  #denied(path: string, explicit?: CapabilityDecision): StoreDiagnostic {
+    const result = explicit ?? this.#lastDecision;
+    this.#lastDecision = undefined;
+    return issue(path, 'io', 'permission-denied', result?.reason === 'approval-required' ? 'La persona debe aprobar esta operación.' : 'El broker del host denegó esta acción.',
+      { code: 'PERMISSION_DENIED', ...(result?.missingCapability ? { missingCapability: result.missingCapability } : {}), recovery: result?.reason ?? 'Revisa la concesión local del proyecto.' });
+  }
+  #operationError(path: string, error: unknown): StoreDiagnostic {
+    return error instanceof PathError && error.detail === 'permission-denied' ? this.#denied(path) : ioIssue(path, error);
+  }
   #gate(): StoreDiagnostic[] {
     if (this.#closing || this.#reason || !this.#ownership?.alive()) return [issue('a3.project.json', 'io', this.#reason ?? 'writer-not-owner',
       'Este servicio está en solo lectura; no acepta escrituras.', { code: 'PERMISSION_DENIED' })];
@@ -214,6 +258,13 @@ export class ProjectService {
     const knownReadOnlyManifestSources = [...new Set(migrationSteps.filter((step) => step.scope === 'project' || step.scope === '*').map((step) => step.fromVersion))]
       .filter((version) => migrationChain('project', version, '1.0.0', migrationSteps).ok);
     const project = await readProject(this.root, { registry: this.#registry, knownReadOnlyManifestSources });
+    const manifestRecord = project.snapshot.records.find((record) => record.kind === 'project');
+    const manifestValue = manifestRecord?.kind === 'project' ? manifestRecord.value : project.documents.find((document) => document.location.kind === 'project')?.value;
+    const observedProjectId = manifestValue && typeof manifestValue === 'object' && !Array.isArray(manifestValue) && typeof manifestValue.projectId === 'string' && uuid.test(manifestValue.projectId)
+      ? manifestValue.projectId : undefined;
+    if (!observedProjectId || observedProjectId.toLowerCase() !== this.#knownProjectId?.toLowerCase()) {
+      throw new PathError('project-id-mismatch', 'La identidad del manifiesto cambió respecto a la concesión local.');
+    }
     const files = new Map<string, Observation>();
     const diagnostics: StoreDiagnostic[] = [...project.diagnostics];
     for (const document of project.documents) {
@@ -298,7 +349,7 @@ export class ProjectService {
         if (newProject?.kind !== 'project' || newProject.value.projectId !== oldProject || newProject.value.catalogRoot !== this.#catalog) return failure([conflict('a3.project.json', 'project-layout-changed')]);
         this.#accepted = this.#observed = next; this.#external = false;
         return { ok: true, value: next.project, diagnostics: next.diagnostics };
-      } catch (error) { return failure([ioIssue('a3.project.json', error)]); }
+      } catch (error) { return failure([this.#operationError('a3.project.json', error)]); }
     });
   }
   openResource(resourceId: string): Promise<StoreResult<OpenResource>> {
@@ -314,7 +365,7 @@ export class ProjectService {
         const doc = next.project.documents.find((d) => d.record === record)!;
         if (opened.value.sha256 !== next.files.get(opened.value.path)?.hash) return failure([conflict(opened.value.path)]);
         return { ok: true, value: { ...opened.value, resourceId: record.value.id, revision: record.value.revision, descriptorHash: doc.sha256 }, diagnostics: [] };
-      } catch (error) { return failure([ioIssue('resource', error)]); }
+      } catch (error) { return failure([this.#operationError('resource', error)]); }
     });
   }
   #context(scan: Scan): CommandContext {
@@ -322,7 +373,12 @@ export class ProjectService {
     for (const r of scan.project.snapshot.records) if (r.kind === 'resource' && r.value.kind === 'project-file') {
       const hash = scan.files.get(r.value.path)?.hash; if (hash) contentHashes[r.value.id] = hash;
     }
-    return { authenticatedActor: this.options.host.authenticatedActor, authorization: this.options.host.domain, registry: this.#registry, contentHashes };
+    const actor = this.options.host.authenticatedActor;
+    const broker = this.options.host.capabilities;
+    return { authenticatedActor: actor, authorization: {
+      authorize: (request) => broker.authorizeDomain(this.root, actor, request).allowed,
+      authorizeDetailed: (request) => broker.authorizeDomain(this.root, actor, request)
+    }, registry: this.#registry, contentHashes };
   }
   async #currentForWrite(): Promise<StoreResult<Scan>> {
     const gate = this.#gate(); if (gate.length) return failure(gate);
@@ -377,12 +433,14 @@ export class ProjectService {
     if (images.reduce((n, i) => n + (i.bytes?.length ?? 0), 0) > this.#transactionLimit) return failure([issue('operation', 'io', 'write-limit', 'La propuesta supera el presupuesto de escritura.')]);
     const changes = images.map((image) => ({ path: image.path, ...(image.ref ? { ref: image.ref } : {}), beforeHash: scan.files.get(image.path)?.hash ?? null,
       afterHash: image.bytes === null ? null : sha256(image.bytes), bytes: image.bytes?.length ?? 0 }));
-    if (!this.#authorized('write', images.map((i) => i.path), changes.flatMap((c) => c.ref ? [c.ref] : []), resources)) return failure([this.#denied('operation')]);
+    const requiredCapabilities: Capability[] = extra.requiredCapabilities ?? (extra.domain ? domainCapabilities(extra.domain) : ['document.edit']);
+    if (extra.maintenance && images.some((image) => image.bytes === null) && !requiredCapabilities.includes('delete')) requiredCapabilities.push('delete');
+    if (!this.#authorized('write', images.map((i) => i.path), changes.flatMap((c) => c.ref ? [c.ref] : []), resources, requiredCapabilities, 'prepare')) return failure([this.#denied('operation')]);
     const projectId = this.#projectId();
     if (!projectId) return failure([issue('a3.project.json', 'compatibility', 'project-id-unavailable', 'No se pudo validar la identidad del proyecto.')]);
     const plan: PreparedWrite = freeze({ status: 'prepared', operationId, projectId, changes,
       proposedBytes: (path: string) => { const bytes = images.find((i) => i.path === path)?.bytes; return bytes ? Uint8Array.from(bytes) : null; } });
-    this.#plans.set(plan, { scan, images, nextRecords, resources, requestHash, actor: JSON.stringify(this.options.host.authenticatedActor), ...extra });
+    this.#plans.set(plan, { scan, images, nextRecords, resources, requestHash, actor: JSON.stringify(this.options.host.authenticatedActor), requiredCapabilities, ...extra });
     return { ok: true, value: plan, diagnostics: [] };
   }
   prepare(input: unknown): Promise<StoreResult<PreparedWrite>> {
@@ -423,7 +481,7 @@ export class ProjectService {
         }
         return this.#makePlan(scan, domain.operationId, images, domain.nextSnapshot.records, resources,
           sha256(Buffer.from(domain.requestFingerprint)), { domain });
-      } catch (error) { return failure([ioIssue('operation', error)]); }
+      } catch (error) { return failure([this.#operationError('operation', error)]); }
     });
   }
   prepareResourceWrite(input: ResourceWriteRequest): Promise<StoreResult<PreparedWrite>> {
@@ -450,10 +508,11 @@ export class ProjectService {
         const nextRecords = scan.project.snapshot.records.map((r) => r === record ? after : r);
         const requestHash = sha256(jsonBytes({ resourceId: request.resourceId, expectedRevision: request.expectedRevision, expectedHash: request.expectedHash, afterHash: sha256(request.bytes), actor: this.options.host.authenticatedActor }));
         return this.#makePlan(scan, request.operationId, images, nextRecords, [record.value], requestHash, { resourceWrite: request });
-      } catch (error) { return failure([ioIssue('resource', error)]); }
+      } catch (error) { return failure([this.#operationError('resource', error)]); }
     });
   }
   listSnapshots(): ReturnType<typeof listSnapshots> {
+    if (!this.#authorized('read-resource', [])) return Promise.resolve(failure([this.#denied('snapshot')]));
     return listSnapshots(this.root, this.#projectId());
   }
   createSnapshot(operationId: string, reason: SnapshotReason, paths?: readonly string[]): Promise<StoreResult<SnapshotReceipt>> {
@@ -464,7 +523,9 @@ export class ProjectService {
       if (!projectId || !uuid.test(operationId)) return failure([issue('snapshot', 'schema', 'snapshot-request-invalid', 'Se requiere projectId y operationId UUID.')]);
       const selected = paths ? [...paths] : [...current.value.files.keys()];
       if (new Set(selected.map((path) => path.toLowerCase())).size !== selected.length) return failure([issue('snapshot', 'schema', 'snapshot-path-duplicate', 'La solicitud repite rutas.')]);
-      if (!this.#authorized('write', selected)) return failure([this.#denied('snapshot')]);
+      const decision = await this.options.host.capabilities.authorizeCapabilities(this.root, this.options.host.authenticatedActor, projectId,
+        ['document.edit'], `snapshot.create:${operationId}`, 'apply');
+      if (!decision.allowed) return failure([this.#denied('snapshot', decision)]);
       const result = await createSnapshot(this.root, { snapshotId: randomUUID(), projectId, operationId, reason,
         files: selected.map((path) => ({ path, expectedHash: current.value.files.get(path)?.hash ?? null,
           expectedIdentity: current.value.files.get(path)?.identity ?? null })), retentionDays: this.#snapshotRetentionDays, maxBytes: this.#snapshotMaxBytes });
@@ -478,6 +539,7 @@ export class ProjectService {
         const current = await this.#currentForMaintenance(); if (!current.ok) return current;
         const projectId = this.#projectId();
         if (!projectId || !uuid.test(operationId)) return failure([issue('snapshot', 'schema', 'restore-request-invalid', 'Se requiere projectId y operationId UUID.')]);
+        if (!this.#authorized('read-resource', [])) return failure([this.#denied('snapshot')]);
         const saved = await readSnapshot(this.root, snapshotId, projectId); if (!saved.ok) return failure(saved.diagnostics);
         const images: Image[] = [];
         const nextRecords = new Map(current.value.project.snapshot.records.map((record) => [refKey(refOf(record)), record]));
@@ -528,7 +590,7 @@ export class ProjectService {
         const prepared = this.#makePlan(current.value, operationId, changedImages, records, [], requestHash, { maintenance: true, snapshotReason: 'restore' });
         if (!prepared.ok) return prepared;
         return await this.#commit(prepared.value, this.#plans.get(prepared.value)!);
-      } catch (error) { return failure([ioIssue('snapshot', error)]); }
+      } catch (error) { return failure([this.#operationError('snapshot', error)]); }
     });
   }
   migrateProject(operationId: string): Promise<StoreResult<MigrationReceipt>> {
@@ -540,6 +602,9 @@ export class ProjectService {
         const current = await this.#currentForMaintenance(true); if (!current.ok) return current;
         const projectId = this.#projectId();
         if (!projectId) return failure([issue('a3.project.json', 'compatibility', 'project-id-unavailable', 'No se pudo identificar el proyecto.')]);
+        const authorization = await this.options.host.capabilities.authorizeCapabilities(this.root, this.options.host.authenticatedActor, projectId,
+          ['document.edit'], `project.maintenance:${operationId}`, 'apply');
+        if (!authorization.allowed) return failure([this.#denied('migration', authorization)]);
         const saved = await loadPreparedMigration(this.root, operationId);
         if (!saved.ok) return failure([saved.diagnostic]);
         let preparedMigration = saved.value;
@@ -625,7 +690,7 @@ export class ProjectService {
         const requestHash = sha256(Buffer.from(canonicalJson({ operationId, projectId, files: outputs.map((file) => ({ path: file.path, beforeHash: file.beforeHash, afterHash: file.afterHash })),
           steps: recordedSteps.map((step) => ({ ...step })) } as unknown as JsonValue)));
         const prepared = this.#makePlan(scan, transactionOperationId, images, [...nextRecords.values()], [], requestHash,
-          { maintenance: true, allowRegisteredMigration: true, snapshotId: operationId, snapshotOperationId: operationId, snapshotReason: 'migration' });
+          { maintenance: true, preapproved: true, allowRegisteredMigration: true, snapshotId: operationId, snapshotOperationId: operationId, snapshotReason: 'migration' });
         if (!prepared.ok) return prepared;
         const applied = await this.#commit(prepared.value, this.#plans.get(prepared.value)!);
         if (!applied.ok) return applied;
@@ -634,7 +699,7 @@ export class ProjectService {
         const done = await completeMigration(this.root, preparedMigration, identities);
         const receipt = this.#migrationReceipt(preparedMigration, transactionOperationId, resumed);
         return { ok: true, value: receipt, diagnostics: [...applied.diagnostics, ...(done ? [done] : [])] };
-      } catch (error) { return failure([ioIssue('migration', error)]); }
+      } catch (error) { return failure([this.#operationError('migration', error)]); }
     });
   }
   #migrationReceipt(migration: LoadedMigration,
@@ -667,7 +732,20 @@ export class ProjectService {
       const changed = this.#changes(data.scan, current.value);
       if (changed.length) return failure(changed.map((p) => conflict(p, 'stale-plan')));
       if (data.domain) { const valid = revalidatePlan(data.domain, current.value.project.snapshot, this.#context(current.value)); if (!valid.ok) return failure(domainIssues(valid.diagnostics)); }
-      if (!this.#authorized('write', data.images.map((i) => i.path), plan.changes.flatMap((c) => c.ref ? [c.ref] : []), data.resources)) return failure([this.#denied('operation')]);
+      const applyDecision = data.preapproved
+        ? await this.options.host.capabilities.authorizeCapabilities(this.root, this.options.host.authenticatedActor, plan.projectId,
+          data.requiredCapabilities, `${data.maintenance ? 'project.maintenance' : 'resource.write'}:${data.snapshotOperationId ?? plan.operationId}`, 'prepare')
+        : data.domain
+        ? await this.options.host.capabilities.authorizeApply(this.root, this.options.host.authenticatedActor, {
+          actor: this.options.host.authenticatedActor, projectId: data.domain.projectId, operationId: data.domain.operationId, command: data.domain.request.command,
+          entityIds: data.domain.request.scope.entityIds, refs: data.domain.changes.map((change) => change.ref),
+          contentEffects: data.domain.contentEffects, registryWrite: data.domain.nodeTypeChanges.length > 0,
+          changes: data.domain.changes, nodeTypeChanges: data.domain.nodeTypeChanges
+        })
+        : await this.options.host.capabilities.authorizeCapabilities(this.root, this.options.host.authenticatedActor, plan.projectId,
+          data.requiredCapabilities, `${data.maintenance ? 'project.maintenance' : 'resource.write'}:${data.snapshotOperationId ?? plan.operationId}`, 'apply');
+      if (!applyDecision.allowed) return failure([this.#denied('operation', applyDecision)]);
+      if (!this.#authorized('write', data.images.map((i) => i.path), plan.changes.flatMap((c) => c.ref ? [c.ref] : []), data.resources, data.requiredCapabilities, 'prepare')) return failure([this.#denied('operation')]);
       if (!data.images.length) return { ok: true, value: { status: 'committed', operationId: plan.operationId, atomic: false, paths: [], transactionPath: null }, diagnostics: [] };
       snapshotId = data.snapshotId ?? plan.operationId;
       const snapshot = await createSnapshot(this.root, { snapshotId, projectId: plan.projectId, operationId: data.snapshotOperationId ?? plan.operationId,
@@ -689,7 +767,7 @@ export class ProjectService {
       });
       const intent: WriteIntent = { schemaVersion: '1.0.0', protocol: progressProtocol, operationId: plan.operationId, projectId: plan.projectId,
         actor: { kind: this.options.host.authenticatedActor.kind, id: this.options.host.authenticatedActor.id }, requestHash: data.requestHash,
-        readSet: [...data.scan.files].map(([path, value]) => ({ path, hash: value.hash, identity: value.identity })), entries, extensions: {} };
+        requiredCapabilities: [...data.requiredCapabilities], readSet: [...data.scan.files].map(([path, value]) => ({ path, hash: value.hash, identity: value.identity })), entries, extensions: {} };
       log = new ProgressLog(this.root, folder); await log.intent(intent);
       await this.#fault('after-intent', plan.operationId);
       for (const image of data.images) {
@@ -726,7 +804,7 @@ export class ProjectService {
       }
       for (const [index, entry] of entries.entries()) {
         activePath = entry.path;
-        if (!this.#ownership?.alive() || !this.#authorized('write', [entry.path], entry.ref ? [entry.ref] : [], data.resources)) throw new PathError('permission-denied', entry.path);
+        if (!this.#ownership?.alive() || !this.#authorized('write', [entry.path], entry.ref ? [entry.ref] : [], data.resources, data.requiredCapabilities, 'prepare')) throw new PathError('permission-denied', entry.path);
         if (entry.beforeHash !== null) {
           await log.append('detach-start', { index });
           await this.#fault('before-detach', plan.operationId, index, entry.path);
@@ -755,7 +833,7 @@ export class ProjectService {
         if (actual.hash !== entry.afterHash || actual.problem) throw new PathError('external-conflict', entry.path);
       }
       await this.#fault('before-commit', plan.operationId);
-      if (!this.#ownership?.alive() || !this.#authorized('write', data.images.map((i) => i.path), plan.changes.flatMap((c) => c.ref ? [c.ref] : []), data.resources)) throw new PathError('permission-denied', 'operation');
+      if (!this.#ownership?.alive() || !this.#authorized('write', data.images.map((i) => i.path), plan.changes.flatMap((c) => c.ref ? [c.ref] : []), data.resources, data.requiredCapabilities, 'prepare')) throw new PathError('permission-denied', 'operation');
       for (const entry of entries) {
         if (entry.beforeHash !== null && sha256(await fileBytes(this.root, entry.backupPath, this.#resourceLimit)) !== entry.beforeHash) throw new PathError('backup-changed', entry.path);
         if (entry.beforeHash !== null && sha256(await fileBytes(this.root, entry.detachedPath, this.#resourceLimit)) !== entry.beforeHash) throw new PathError('external-conflict', entry.path);
@@ -817,10 +895,20 @@ export function openProjectService(path: string, options: ServiceOptions): Promi
 async function openService(path: string, options: ServiceOptions): Promise<StoreResult<ProjectLease>> {
   let ownership: Ownership | undefined;
   try {
+    if (!options?.host || !isProjectCapabilityBroker(options.host.capabilities)) {
+      return failure([issue('a3.project.json', 'io', 'capability-broker-required', 'El host debe proporcionar un broker de capacidades emitido por la aplicación.', { code: 'PERMISSION_DENIED', missingCapability: 'project.read' })]);
+    }
     const root = await realpath(resolve(path));
-    let permitted = false;
-    try { permitted = options.host.authorizeAccess({ actor: options.host.authenticatedActor, root, operation: 'open-project', paths: ['a3.project.json'], refs: [], resources: [] }) === true; } catch { /* Fail closed. */ }
-    if (!permitted) return failure([issue('a3.project.json', 'io', 'permission-denied', 'El host no autoriza abrir el proyecto.', { code: 'PERMISSION_DENIED' })]);
+    const manifestBytes = await fileBytes(root, 'a3.project.json', 16 * 1024 * 1024);
+    const manifest = decodeDocument({ kind: 'project', path: 'a3.project.json' }, manifestBytes);
+    const rawManifest = manifest.value;
+    const projectId = rawManifest && typeof rawManifest === 'object' && !Array.isArray(rawManifest) && typeof rawManifest.projectId === 'string' && uuid.test(rawManifest.projectId)
+      ? rawManifest.projectId : undefined;
+    if (!projectId) return failure([issue('a3.project.json', 'compatibility', 'project-id-unavailable', 'No se pudo leer un UUID de proyecto para verificar la concesión local.', { code: 'PERMISSION_DENIED', missingCapability: 'project.read' })]);
+    let openDecision: CapabilityDecision | undefined;
+    try { openDecision = options.host.capabilities.authorizeAccess({ actor: options.host.authenticatedActor, root, projectId, operation: 'open-project', paths: ['a3.project.json'], refs: [], resources: [] }); } catch { /* Fail closed. */ }
+    if (!openDecision?.allowed) return failure([issue('a3.project.json', 'io', 'permission-denied', 'El broker del host no autoriza abrir el proyecto.', {
+      code: 'PERMISSION_DENIED', ...(openDecision?.missingCapability ? { missingCapability: openDecision.missingCapability } : {}) })]);
     const identity = await projectIdentity(root);
     const existing = pool.get(identity);
     if (existing && existing.leases > 0 && existing.host === options.host) {
@@ -831,7 +919,7 @@ async function openService(path: string, options: ServiceOptions): Promise<Store
       } }, diagnostics: [] };
     }
     ownership = await acquireOwnership(identity);
-    const service = await ProjectService.create(root, options, identity, ownership, !ownership ? process.platform === 'win32' ? 'writer-busy' : 'windows-writer-required' : undefined);
+    const service = await ProjectService.create(root, projectId, options, identity, ownership, !ownership ? process.platform === 'win32' ? 'writer-busy' : 'windows-writer-required' : undefined);
     const entry = { service, host: options.host, leases: 1 };
     if (ownership) pool.set(identity, entry);
     let closed = false;

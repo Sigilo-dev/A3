@@ -90,7 +90,7 @@ export type ErrorCode = 'VALIDATION_FAILED' | 'REVISION_CONFLICT' | 'PERMISSION_
 export interface Diagnostic {
   instancePath?: string;
   code: ErrorCode; detail: string; severity: 'error' | 'warning'; message: string;
-  recovery: string; ref?: DocumentRef;
+  recovery: string; ref?: DocumentRef; missingCapability?: string;
 }
 export type Outcome<T> = { ok: true; value: T; diagnostics: Diagnostic[] } | { ok: false; diagnostics: Diagnostic[] };
 
@@ -131,11 +131,17 @@ export type ContentEffect =
 export interface RecordChange { ref: DocumentRef; before: DomainRecord | null; after: DomainRecord | null; }
 export interface NodeTypeChange { before: NodeType | null; after: NodeType | null; }
 export interface AuthorizationRequest {
+  operationId?: UUID;
   actor: Actor; projectId: UUID; command: CommandName; entityIds: UUID[];
   refs: DocumentRef[]; contentEffects: ContentEffect[]; registryWrite: boolean;
   changes: RecordChange[]; nodeTypeChanges: NodeTypeChange[];
 }
-export interface AuthorizationPort { authorize(request: AuthorizationRequest): boolean; }
+export interface AuthorizationDecision { allowed: boolean; missingCapability?: string; reason?: string; }
+export interface AuthorizationPort {
+  authorize(request: AuthorizationRequest): boolean;
+  /** Optional structured host decision; pure-domain tests may keep using the boolean port. */
+  authorizeDetailed?(request: AuthorizationRequest): AuthorizationDecision;
+}
 export interface CommandContext {
   authenticatedActor: Actor; authorization: AuthorizationPort; registry: TypeRegistry;
   // Observations already collected by the host; no file reads in the kernel.

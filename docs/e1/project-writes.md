@@ -1,13 +1,17 @@
 # E1-C2 — Servicio escritor y cambios externos
 
+Actualización E1-E1: el host debe crear un `ProjectCapabilityBroker` y aprobar un perfil local antes de abrir el proyecto. Los callbacks directos de autorización ya no forman parte de `StoreHost`; `openProjectService` rechaza objetos que no procedan de `createProjectCapabilityBroker`.
+
 Base: E1-C1 `276cdb8`, origin `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base`, limpia al iniciar. Fecha de cierre: 2026-10-15, America/Lima. La [ADR 0004](../adr/0004-project-writer.md) y los tipos de `packages/project-store/src/service-types.ts` fijan el contrato de intención/avance que debe consumir E1-D1.
 
 ## API del host
 
-Se exporta desde `@a3/project-store`, sin conectarlo aún a UI o IPC. No hay nuevas dependencias ni cambios al lock. Node, TypeScript y Ajv conservan los pins anteriores.
+Se exporta desde `@a3/project-store`, sin conectarlo aún a UI o IPC. El host crea el broker en el proceso principal; los módulos de lectura/bytes y snapshots quedan como dependencias internas y no forman parte del punto de entrada público. No hay nuevas dependencias ni cambios al lock.
 
 | API | Comportamiento |
 |---|---|
+| `createProjectCapabilityBroker(options)` | Emite el objeto de host sellado, ligado a actor autenticado y directorio local. Solo se aceptan estos brokers en el escritor. |
+| `broker.setProfile(...)` / `setGrant(...)` / `revoke(...)` | Requiere callback de confirmación humana del proceso principal. La solicitud de política del proyecto no se consulta. |
 | `openProjectService(root, {host, ...options})` | Devuelve lease writer o read-only. Otro proceso activo produce `writer-busy`; al abrir, un journal pendiente se recupera antes de habilitar escritura. Un conflicto o journal aislado produce `recovery-required`. Mismo StoreHost/proyecto comparte servicio y cola. |
 | `lease.close()` | Libera esa ventana; el último cierre espera la cola, detiene watcher y libera propiedad. No invocar dispose desde una ventana individual. |
 | `service.state` | Proyecto observado, modo/razón, conflicto externo y `recoveryDiagnostics`. `ProjectReadResult.writable` de C1 sigue false; no es el modo del servicio. |
@@ -22,13 +26,15 @@ Se exporta desde `@a3/project-store`, sin conectarlo aún a UI o IPC. No hay nue
 Ejemplo host, después de instalar/compilar desde la raíz:
 
 ```ts
-const opened = await openProjectService(root, {
-  host: {
-    authenticatedActor,
-    domain: domainAuthorization,
-    authorizeAccess: (request) => projectPolicy.allows(request)
-  }
+import { createProjectCapabilityBroker, openProjectService } from '@a3/project-store';
+
+const capabilities = createProjectCapabilityBroker({
+  stateDirectory: app.getPath('userData'), // host-local; fuera de cualquier proyecto
+  authenticatedActor,
+  confirmUserAction: async (request) => showPermissionDialog(request)
 });
+await capabilities.setProfile({ root, projectId, profile: 'proponer' }); // acción iniciada por la persona
+const opened = await openProjectService(root, { host: { authenticatedActor, capabilities } });
 if (!opened.ok) return showDiagnostics(opened.diagnostics);
 const lease = opened.value;
 const resource = await lease.service.openResource(resourceId);

@@ -1,6 +1,7 @@
 import { openProjectService } from '../dist/index.js';
+import { fixtureHost } from './fixture.mjs';
 const [root, mode, phase] = process.argv.slice(2);
-const host = { authenticatedActor: { kind: 'user', id: 'test-user' }, domain: { authorize: () => true }, authorizeAccess: () => true };
+const host = await fixtureHost(root, 'test-user');
 const result = await openProjectService(root, { host, pollMs: 5000, fault: (point) => {
   if (point === phase) process.exit(86);
 } });

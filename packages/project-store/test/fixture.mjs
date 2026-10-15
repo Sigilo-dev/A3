@@ -2,6 +2,7 @@ import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { createProjectCapabilityBroker } from '../dist/index.js';
 
 export const fixtureRoot = fileURLToPath(new URL('../../../fixtures/e0/project/', import.meta.url));
 export const E1 = '00000000-0000-4000-8000-000000000002';
@@ -22,4 +23,11 @@ export async function scratch(t) {
     await rm(target, { recursive: true, force: true });
   });
   return { root, tempRoot };
+}
+export async function fixtureHost(root, actorId = 'test-user', profile = 'trabajar', confirmation = () => true) {
+  const actor = { kind: 'user', id: actorId };
+  const project = JSON.parse(await readFile(join(root, 'a3.project.json'), 'utf8'));
+  const capabilities = createProjectCapabilityBroker({ stateDirectory: join(resolve(root, '..'), 'a3-host-data'), authenticatedActor: actor, confirmUserAction: confirmation });
+  await capabilities.setProfile({ root, projectId: project.projectId, profile });
+  return { authenticatedActor: actor, capabilities, projectId: project.projectId };
 }
