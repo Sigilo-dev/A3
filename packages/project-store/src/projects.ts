@@ -1,4 +1,4 @@
-import { access, lstat, mkdir, open, readdir, realpath, rename } from 'node:fs/promises';
+import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -11,7 +11,8 @@ import { acquireOwnership, projectIdentity, type Ownership } from './ownership.j
 import { jsonBytes, ProgressLog, progressProtocol, transactionRoot } from './progress.js';
 import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
-import type { IntentEntry, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
+import { inspectLocalMountFile, validateMountRelativePath } from './mounts.js';
+import type { ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export class LocalProjectError extends Error {
@@ -32,6 +33,15 @@ export interface LocalProjectsState {
   recents: (RecentProject & { available: boolean })[];
   preview: ProjectInitializationPreview | null;
 }
+export interface LocalExplorerEntry extends Omit<ExplorerDirectoryPage['entries'][number], 'path' | 'identity'> { id: string; path: string; }
+export interface LocalExplorerMount extends Omit<ExplorerMountEntry, 'resourceId'> { id: string; }
+export interface LocalExplorerListing { sessionId: string; directoryId: string; entries: readonly LocalExplorerEntry[]; nextCursor: string | null; mounts: readonly LocalExplorerMount[]; }
+export interface LocalExplorerOpen extends Omit<ExplorerOpenResult, 'path'> { relativePath: string; }
+export interface LocalExplorerDeletePreview extends Omit<ExplorerDeletePreview, 'path'> { token: string; name: string; }
+interface ExplorerItemBinding { sessionId: string; path: string; identity: string; kind: 'file' | 'directory' | 'blocked-link'; resourceId?: string; }
+interface ExplorerPageBinding { sessionId: string; path: string; offset: number; }
+interface ExplorerDeleteBinding { sessionId: string; itemId: string; path: string; identity: string; }
+interface ActiveProjectBinding { lease: ProjectLease; sessionId: string; projectId: string; name: string; }
 interface Initialization {
   root: string; rootIdentity: string; project: Project; workspace: Workspace;
 }
@@ -76,6 +86,17 @@ const directories = (workspaceId: string): string[] => [
   ...['recovery', 'conflicts', 'trash', 'cache', 'logs', 'exports'].map((part) => `.a3/local/${part}`),
   'pages', 'stories', 'tasks', 'prompts', 'memory', 'diagrams', 'assets/images', 'assets/video', 'assets/audio', 'assets/files'
 ];
+async function removeEmptyDirectoryTree(root: string, relativePath: string): Promise<void> {
+  try {
+    const target = await checkedPath(root, relativePath, 'directory');
+    for (const name of await readdir(target)) {
+      const child = `${relativePath}/${name}`;
+      const info = await lstat(join(target, name));
+      if (!info.isSymbolicLink() && info.isDirectory()) await removeEmptyDirectoryTree(root, child);
+    }
+    if ((await readdir(target)).length === 0) await rmdir(target);
+  } catch { /* Cleanup removes empty folders only; any changed or nonempty path remains recoverable. */ }
+}
 function initialFiles(value: Initialization): { path: string; bytes: Uint8Array; record?: DomainRecord }[] {
   const records: DomainRecord[] = [{ kind: 'project', value: value.project }, { kind: 'workspace', value: value.workspace }];
   demand(!validateSnapshot({ records }, defaultRegistry()).some((d) => d.severity === 'error'), 'INVALID_INITIAL_PROJECT', 'Los metadatos iniciales no cumplen el contrato A3.');
@@ -94,13 +115,18 @@ export class LocalProjectManager {
   #tail: Promise<unknown> = Promise.resolve();
   #catalog: Catalog = { version: 1, recents: [], pending: [] };
   #loaded = false;
-  #active: { lease: ProjectLease; sessionId: string; projectId: string; name: string } | undefined;
+  #active: ActiveProjectBinding | undefined;
   #preview: PreviewData | undefined;
   #disposed = false;
   #nameDraft: string | undefined;
   #catalogOwnership: Ownership | undefined;
   #stateRoot = '';
   #sequence = 0;
+  #explorerSessionId = '';
+  #explorerItems = new Map<string, ExplorerItemBinding>();
+  #explorerPaths = new Map<string, { id: string; identity: string }>();
+  #explorerPages = new Map<string, ExplorerPageBinding>();
+  #explorerDeletes = new Map<string, ExplorerDeleteBinding>();
   constructor(private readonly options: LocalProjectsOptions) {
     demand(isProjectCapabilityBroker(options.host.capabilities), 'BROKER_REQUIRED', 'Se requiere el broker de permisos del host.');
   }
@@ -300,7 +326,142 @@ export class LocalProjectManager {
   }); }
   closeActive(sessionId: string): Promise<LocalProjectsState> { return this.#queue(async () => {
     demand(this.#active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión ya cambió.'); await this.#allowSwitch();
-    await this.#active.lease.close(); this.#active = undefined; this.#preview = undefined; this.#nameDraft = undefined; return this.#state();
+    await this.#active.lease.close(); this.#active = undefined; this.#preview = undefined; this.#nameDraft = undefined; this.#clearExplorer(); return this.#state();
+  }); }
+  #clearExplorer(): void {
+    this.#explorerSessionId = ''; this.#explorerItems.clear(); this.#explorerPaths.clear(); this.#explorerPages.clear(); this.#explorerDeletes.clear();
+  }
+  #explorerContext(sessionId?: string): ActiveProjectBinding {
+    demand(this.#active && (!sessionId || this.#active.sessionId === sessionId), 'STALE_SESSION', 'La sesión del proyecto cambió; vuelve a abrir Archivos.');
+    if (this.#explorerSessionId !== this.#active.sessionId) { this.#clearExplorer(); this.#explorerSessionId = this.#active.sessionId; }
+    return this.#active;
+  }
+  #explorerPath(id: string, sessionId: string): ExplorerItemBinding {
+    const binding = this.#explorerItems.get(id);
+    demand(binding && binding.sessionId === sessionId, 'STALE_FILE_ID', 'El elemento cambió o pertenece a otro proyecto; actualiza el explorador.');
+    return binding;
+  }
+  listExplorer(sessionId?: string, directoryId = 'project-root', cursor?: string): Promise<LocalExplorerListing> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    let path = '';
+    let offset = 0;
+    if (cursor) {
+      const page = this.#explorerPages.get(cursor);
+      demand(page && page.sessionId === active.sessionId && page.path === (directoryId === 'project-root' ? '' : this.#explorerPath(directoryId, active.sessionId).path), 'STALE_PAGE', 'La página del explorador ya no está vigente.');
+      path = page.path; offset = page.offset;
+    } else if (directoryId !== 'project-root') {
+      const item = this.#explorerPath(directoryId, active.sessionId);
+      demand(item.kind === 'directory', 'NOT_DIRECTORY', 'Selecciona una carpeta para navegar.'); path = item.path;
+    }
+    const result = await active.lease.service.listExplorerDirectory(path, offset);
+    demand(result.ok, 'EXPLORER_READ_FAILED', result.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+    const entries = result.value.entries.map((entry) => {
+      const key = entry.path.toLowerCase(); const prior = this.#explorerPaths.get(key);
+      const id = prior?.identity === entry.identity ? prior.id : randomUUID();
+      this.#explorerPaths.set(key, { id, identity: entry.identity });
+      const binding: ExplorerItemBinding = { sessionId: active.sessionId, path: entry.path, identity: entry.identity, kind: entry.kind,
+        ...(entry.resourceId ? { resourceId: entry.resourceId } : {}) };
+      this.#explorerItems.set(id, binding);
+      const { path: _path, identity: _identity, ...publicEntry } = entry;
+      return { ...publicEntry, id, path: entry.path };
+    });
+    const nextCursor = result.value.nextOffset === null ? null : randomUUID();
+    if (nextCursor) this.#explorerPages.set(nextCursor, { sessionId: active.sessionId, path, offset: result.value.nextOffset! });
+    const mounts = result.value.mounts.map(({ resourceId, ...mount }) => ({ ...mount, id: resourceId }));
+    return { sessionId: active.sessionId, directoryId, entries, nextCursor, mounts };
+  }); }
+  openExplorerItem(itemId: string, sessionId?: string): Promise<LocalExplorerOpen> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId); const item = this.#explorerPath(itemId, active.sessionId);
+    demand(item.kind === 'file', 'ITEM_NOT_OPENABLE', 'Este elemento no es un archivo regular o es un enlace bloqueado.');
+    const result = await active.lease.service.openExplorerFile(item.path, item.identity);
+    demand(result.ok, 'FILE_OPEN_FAILED', result.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+    return { ...result.value, relativePath: result.value.path };
+  }); }
+  async #commitExplorer(active: ActiveProjectBinding, action: 'create-file' | 'create-folder' | 'rename' | 'duplicate' | 'trash', input: { sourcePath?: string; targetPath?: string; identity?: string; parentIdentity?: string; content?: string; cleanupDirectory?: boolean }): Promise<void> {
+    const prepared = await active.lease.service.prepareExplorerOperation({ operationId: randomUUID(), action,
+      ...(input.sourcePath ? { sourcePath: input.sourcePath } : {}), ...(input.targetPath ? { targetPath: input.targetPath } : {}),
+      ...(input.identity ? { expectedSourceIdentity: input.identity } : {}), ...(input.parentIdentity ? { targetParentIdentity: input.parentIdentity } : {}),
+      ...(input.content !== undefined ? { content: input.content } : {}) });
+    demand(prepared.ok, 'FILE_OPERATION_REJECTED', prepared.diagnostics.map((diagnostic) => `${diagnostic.detail}: ${diagnostic.message}`).join('\n'));
+    const committed = await active.lease.service.commit(prepared.value);
+    demand(committed.ok, 'FILE_OPERATION_FAILED', committed.diagnostics.map((diagnostic) => `${diagnostic.detail}: ${diagnostic.message}`).join('\n'));
+    if (input.cleanupDirectory && input.sourcePath) await removeEmptyDirectoryTree(active.lease.service.root, input.sourcePath);
+    this.#explorerPages.clear();
+  }
+  createExplorerItem(parentId: string, name: string, kind: 'file' | 'directory', sessionId?: string): Promise<void> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId); let parent = ''; let parentIdentity: string | undefined;
+    if (parentId !== 'project-root') { const item = this.#explorerPath(parentId, active.sessionId); demand(item.kind === 'directory', 'NOT_DIRECTORY', 'Selecciona una carpeta para crear el elemento.'); parent = item.path; parentIdentity = item.identity; }
+    demand(typeof name === 'string' && name.length <= 255, 'INVALID_NAME', 'El nombre no es válido.');
+    await this.#commitExplorer(active, kind === 'file' ? 'create-file' : 'create-folder', { targetPath: parent ? `${parent}/${name}` : name, ...(parentIdentity ? { parentIdentity } : {}) });
+  }); }
+  renameExplorerItem(itemId: string, name: string, sessionId?: string): Promise<void> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId); const item = this.#explorerPath(itemId, active.sessionId);
+    demand(item.kind !== 'blocked-link', 'LINK_BLOCKED', 'Los enlaces no se renombran desde el explorador.');
+    const parent = item.path.split('/').slice(0, -1).join('/');
+    await this.#commitExplorer(active, 'rename', { sourcePath: item.path, targetPath: parent ? `${parent}/${name}` : name, identity: item.identity, cleanupDirectory: item.kind === 'directory' });
+    this.#explorerItems.delete(itemId); this.#explorerPaths.delete(item.path.toLowerCase());
+  }); }
+  duplicateExplorerItem(itemId: string, name: string | undefined, sessionId?: string): Promise<void> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId); const item = this.#explorerPath(itemId, active.sessionId);
+    demand(item.kind !== 'blocked-link', 'LINK_BLOCKED', 'Los enlaces no se duplican desde el explorador.');
+    const originalName = item.path.split('/').at(-1)!;
+    const targetName = name?.trim() || `${originalName} copia`;
+    const parent = item.path.split('/').slice(0, -1).join('/');
+    await this.#commitExplorer(active, 'duplicate', { sourcePath: item.path, targetPath: parent ? `${parent}/${targetName}` : targetName, identity: item.identity });
+  }); }
+  previewExplorerDelete(itemId: string, sessionId?: string): Promise<LocalExplorerDeletePreview> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId); const item = this.#explorerPath(itemId, active.sessionId);
+    demand(item.kind !== 'blocked-link', 'LINK_BLOCKED', 'Los enlaces no se envían a la papelera desde el explorador.');
+    const result = await active.lease.service.previewExplorerDelete(item.path, item.identity);
+    demand(result.ok, 'DELETE_PREVIEW_FAILED', result.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+    const token = randomUUID(); this.#explorerDeletes.set(token, { sessionId: active.sessionId, itemId, path: item.path, identity: item.identity });
+    return { token, name: item.path.split('/').at(-1)!, uses: result.value.uses, deletable: result.value.deletable, ...(result.value.reason ? { reason: result.value.reason } : {}) };
+  }); }
+  cancelExplorerDelete(token: string, sessionId?: string): Promise<void> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId); const pending = this.#explorerDeletes.get(token);
+    demand(pending?.sessionId === active.sessionId, 'STALE_DELETE', 'La confirmación de borrado ya no está vigente.'); this.#explorerDeletes.delete(token);
+  }); }
+  confirmExplorerDelete(token: string, sessionId?: string): Promise<void> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId); const pending = this.#explorerDeletes.get(token);
+    demand(pending?.sessionId === active.sessionId, 'STALE_DELETE', 'La confirmación de borrado ya no está vigente.');
+    const item = this.#explorerPath(pending.itemId, active.sessionId);
+    const preview = await active.lease.service.previewExplorerDelete(pending.path, pending.identity);
+    demand(preview.ok, 'DELETE_PREVIEW_FAILED', preview.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+    demand(preview.value.deletable, preview.value.uses.length ? 'RESOURCE_IN_USE' : 'PERMISSION_DENIED', preview.value.reason ?? 'El borrado no está autorizado.');
+    await this.#commitExplorer(active, 'trash', { sourcePath: pending.path, identity: item.identity, cleanupDirectory: item.kind === 'directory' }); this.#explorerDeletes.delete(token);
+    this.#explorerItems.delete(pending.itemId); this.#explorerPaths.delete(pending.path.toLowerCase());
+  }); }
+  copyExplorerPath(itemId: string, kind: 'absolute' | 'relative', sessionId?: string): Promise<string> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId); const item = this.#explorerPath(itemId, active.sessionId);
+    demand(item.kind !== 'blocked-link', 'LINK_BLOCKED', 'No se copia la ruta de un enlace bloqueado.');
+    const result = await active.lease.service.validateExplorerEntry(item.path, item.identity, item.kind === 'directory' ? 'directory' : 'file');
+    demand(result.ok, result.diagnostics[0]?.code ?? 'FILE_PATH_UNAVAILABLE', result.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+    return kind === 'relative' ? item.path : resolve(active.lease.service.root, ...item.path.split('/'));
+  }); }
+  openMountedExplorerResource(resourceId: string, sessionId?: string): Promise<LocalExplorerOpen> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    const record = active.lease.service.state.project.snapshot.records.find((candidate) => candidate.kind === 'resource' && candidate.value.id.toLowerCase() === resourceId.toLowerCase());
+    demand(record?.kind === 'resource' && record.value.kind === 'mounted-file', 'MOUNT_MISSING', 'La referencia montada ya no existe.');
+    const result = await active.lease.service.openResource(resourceId);
+    demand(result.ok, 'MOUNT_OPEN_FAILED', result.diagnostics.map((diagnostic) => `${diagnostic.detail}: ${diagnostic.message}`).join('\n'));
+    if (result.value.bytes.length > 2 * 1024 * 1024) throw new LocalProjectError('PREVIEW_SIZE_LIMIT', 'El archivo montado supera el límite de vista previa de 2 MiB.');
+    let text: string | null = null; try { text = new TextDecoder('utf-8', { fatal: true }).decode(result.value.bytes); } catch { /* Binary reference. */ }
+    return { name: record.value.path.split('/').at(-1) ?? record.value.path, relativePath: record.value.path, text, size: result.value.bytes.length,
+      mediaType: record.value.mediaType ?? 'application/octet-stream' };
+  }); }
+  copyMountedExplorerPath(resourceId: string, kind: 'absolute' | 'relative', sessionId?: string): Promise<string> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    const record = active.lease.service.state.project.snapshot.records.find((candidate) => candidate.kind === 'resource' && candidate.value.id.toLowerCase() === resourceId.toLowerCase());
+    demand(record?.kind === 'resource' && record.value.kind === 'mounted-file', 'MOUNT_MISSING', 'La referencia montada ya no existe.');
+    const access = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+      projectId: active.projectId, operation: 'read-resource', paths: [], refs: [{ kind: 'resource', id: record.value.id }], resources: [record.value] });
+    demand(access.allowed, 'PERMISSION_DENIED', 'El broker denegó el acceso a la ruta montada.');
+    const binding = this.options.host.capabilities.getLocalMount({ root: active.lease.service.root, projectId: active.projectId, mountId: record.value.mountId });
+    demand(binding?.status === 'available', 'MOUNT_UNAVAILABLE', 'El montaje no está disponible; vuelve a localizar su carpeta.');
+    validateMountRelativePath(record.value.path);
+    demand(await inspectLocalMountFile(binding, record.value.path) === 'available', 'MOUNT_UNAVAILABLE', 'El archivo montado ya no está disponible o su ruta cambió; la referencia se conserva.');
+    if (kind === 'relative') return record.value.path;
+    return resolve(binding.canonicalRoot, ...record.value.path.split('/'));
   }); }
   /** Interactive app shutdown must flush the draft; unlike getState it can exit with a damaged local catalog. */
   shutdown(): Promise<void> {

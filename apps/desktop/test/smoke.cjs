@@ -40,7 +40,7 @@ async function healthy() {
   assert.equal(probe.process, 'undefined');
   assert.equal(probe.require, 'undefined');
   assert.equal(probe.ipcRenderer, 'undefined');
-  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects']);
+  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'files']);
   assert.equal(probe.url, expectedURL);
   const preferences = win.webContents.getLastWebPreferences();
   for (const [name, value] of Object.entries({ nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, webSecurity: true })) {
@@ -62,7 +62,7 @@ async function healthy() {
     return { title, active, panel, cspBlocked: !window.inlineScriptRan,
       popupDenied: window.open('https://example.com') === null };
   })()`);
-  assert.equal(navigation.title, 'Archivos');
+  assert.equal(navigation.title, 'Archivos.');
   assert.equal(navigation.active, 'files');
   assert.equal(navigation.panel, true);
   assert.equal(navigation.cspBlocked, !development);
@@ -84,7 +84,8 @@ async function healthy() {
     for (let attempt = 0; attempt < 160; attempt++) {
       if (await js(condition)) return;
       const failure = await js("document.querySelector('[data-project-error]')?.textContent");
-      if (failure) throw new Error(failure);
+      const fileFailure = await js("document.querySelector('[data-file-error]')?.textContent");
+      if (failure || fileFailure) throw new Error(failure || fileFailure);
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error('UI timed out: ' + condition);
@@ -120,6 +121,34 @@ async function healthy() {
   assert.equal(invalid.error.code, 'INVALID_REQUEST');
   assert.equal((await js("window.a3.projects({ action: 'constructor', name: 'x' })")).error.code, 'INVALID_REQUEST');
 
+  await click('[data-section="files"]'); await waitFor("Boolean(document.querySelector('[role=tree][aria-label=\"Archivos del proyecto\"]'))");
+  await waitFor("document.querySelector('.files-panel')?.getAttribute('aria-busy') === 'false'");
+  await input('#new-file-name', 'keyboard-note.md'); await waitFor("document.querySelector('[data-create-file]') && !document.querySelector('[data-create-file]').disabled"); await click('[data-create-file]');
+  await waitFor("Boolean([...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('keyboard-note.md'))?.dataset.resourceId)");
+  const resourceId = await js("[...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('keyboard-note.md')).dataset.resourceId");
+  await js("window.prompt = () => 'renamed-note.md'; undefined");
+  const noteRow = "[...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('keyboard-note.md'))";
+  await js(`(() => { const row = ${noteRow}; row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true })); })()`);
+  await waitFor("Boolean([...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('renamed-note.md')))");
+  assert.equal(await js("[...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('renamed-note.md')).dataset.resourceId"), resourceId);
+  const renamedPath = join(existing, 'renamed-note.md');
+  assert.deepEqual(await readFile(renamedPath), Buffer.alloc(0));
+  await js("(() => { const rows = [...document.querySelectorAll('[data-file-entry]')]; const row = rows.find((item) => item.textContent.includes('renamed-note.md')); row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()");
+  await waitFor("Boolean(document.querySelector('.file-preview'))");
+  await click('[data-cancel-file-preview]');
+  await waitFor("!document.querySelector('.file-preview')");
+  await js("(() => { const rows = [...document.querySelectorAll('[data-file-entry]')]; rows[0].focus(); rows[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); })()");
+  assert.equal(await js("document.activeElement?.matches('[data-file-entry]')"), true);
+  assert.equal(await js("document.activeElement?.dataset.fileItemId !== [...document.querySelectorAll('[data-file-entry]')][0]?.dataset.fileItemId"), true);
+  await js("(() => { const row = [...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('renamed-note.md')); row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, bubbles: true })); })()");
+  await waitFor("Boolean([...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('renamed-note.md copia')))");
+  const copyPath = join(existing, 'renamed-note.md copia');
+  assert.deepEqual(await readFile(copyPath), Buffer.alloc(0));
+  await js("(() => { const row = [...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('renamed-note.md')); row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true })); })()");
+  await waitFor("Boolean(document.querySelector('[role=alertdialog]'))");
+  await click('[data-cancel-file-delete]'); await waitFor("!document.querySelector('[role=alertdialog]')");
+  assert.deepEqual(await readFile(renamedPath), Buffer.alloc(0), 'cancel leaves file bytes unchanged');
+
   const extra = new BrowserWindow({ show: false, webPreferences: {
     session: win.webContents.session, preload: join(dirname(entry), '../preload/index.cjs'),
     contextIsolation: true, sandbox: true, nodeIntegration: false
@@ -141,7 +170,7 @@ async function healthy() {
   await mkdir(dirname(screenshot), { recursive: true });
   await writeFile(screenshot, (await win.webContents.capturePage()).toPNG());
   console.log('A3_SMOKE=' + JSON.stringify({ mode, passed: true, electron: probe.result.value.electron,
-    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'stale sessions', 'window close'] }));
+    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'explorer create and rename', 'resource identity preserved', 'keyboard open/rename/duplicate/delete-cancel', 'incremental tree navigation', 'stale sessions', 'window close'] }));
   win.close();
 }
 

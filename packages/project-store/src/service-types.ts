@@ -101,6 +101,45 @@ export interface OpenResource extends ResourceBytes {
   source: 'project-file' | 'mounted-file';
   mountId?: string;
 }
+export interface ExplorerFileEntry {
+  path: string;
+  name: string;
+  kind: 'file' | 'directory' | 'blocked-link';
+  identity: string;
+  size: number | null;
+  modifiedAt: number;
+  readOnly: boolean;
+  resourceId?: string;
+}
+export interface ExplorerMountEntry {
+  resourceId: string;
+  name: string;
+  relativePath: string;
+  status: 'available' | 'missing' | 'changed' | 'approval-required';
+  readOnly: true;
+}
+export interface ExplorerDirectoryPage {
+  path: string;
+  entries: readonly ExplorerFileEntry[];
+  nextOffset: number | null;
+  mounts: readonly ExplorerMountEntry[];
+}
+export interface ExplorerOpenResult { path: string; name: string; text: string | null; size: number; mediaType?: string; }
+export interface ExplorerOperationRequest {
+  operationId: string;
+  action: 'create-file' | 'create-folder' | 'rename' | 'duplicate' | 'trash';
+  sourcePath?: string;
+  targetPath?: string;
+  expectedSourceIdentity?: string;
+  targetParentIdentity?: string;
+  content?: string;
+}
+export interface ExplorerDeletePreview {
+  path: string;
+  uses: readonly { entityId: string; title: string }[];
+  deletable: boolean;
+  reason?: string;
+}
 export type ServiceEvent =
   | { kind: 'external-change'; path: string; change: 'created' | 'deleted' | 'edited' | 'replaced' | 'unavailable'; beforeHash: string | null; afterHash: string | null; diagnostics: readonly StoreDiagnostic[] }
   | { kind: 'committed'; receipt: WriteReceipt }

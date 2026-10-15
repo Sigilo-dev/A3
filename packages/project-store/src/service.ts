@@ -1,10 +1,10 @@
 import { watch, type FSWatcher } from 'node:fs';
-import { lstat, mkdir, realpath, rename, stat, unlink } from 'node:fs/promises';
+import { lstat, mkdir, readdir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePlan, validateSnapshot, type CommandContext, type Diagnostic, type DomainRecord, type JsonValue, type PreparedPlan, type Resource, type TypeRegistry } from '@a3/domain';
 import { decodeDocument, encodeDocument, issue, serializeRecord, sha256 } from './codec.js';
-import { MountPathError, readLocalMountFile, readMountedResource, readMountedResourceDetailed, type MountActionPreview } from './mounts.js';
+import { MountPathError, inspectLocalMountFile, readLocalMountFile, readMountedResource, readMountedResourceDetailed, type MountActionPreview } from './mounts.js';
 import { canonicalJson, freeze, object, pointerToken } from './json.js';
 import { acquireOwnership, projectIdentity, type Ownership } from './ownership.js';
 import { jsonBytes, ProgressLog, progressProtocol, transactionRoot } from './progress.js';
@@ -15,11 +15,12 @@ import { createSnapshot, listSnapshots, readSnapshot, type SnapshotReason } from
 import { applyMigrationChain, migrationChain, type MigrationScope } from './migrations.js';
 import { completeMigration, loadPreparedMigration, prepareMigration, verifyAppliedMigration, type LoadedMigration } from './migration-store.js';
 import type { DocumentLocation, JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
-import type { AccessRequest, FaultPhase, IntentEntry, MigrationReceipt, MountActionRequest, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
+import type { AccessRequest, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerFileEntry, ExplorerMountEntry, ExplorerOpenResult, ExplorerOperationRequest, FaultPhase, IntentEntry, MigrationReceipt, MountActionRequest, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
 import type { Capability, CapabilityDecision } from './capabilities.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 
 interface Observation { hash: string | null; identity: string | null; stamp: string; problem?: string; }
+interface DirectoryObservation { path: string; identity: string; entriesHash: string; }
 interface Scan { project: ProjectReadResult; files: Map<string, Observation>; diagnostics: StoreDiagnostic[]; }
 interface Image { path: string; bytes: Uint8Array | null; ref?: ReturnType<typeof refOf>; }
 interface PlanData {
@@ -34,6 +35,8 @@ interface PlanData {
   snapshotId?: string;
   snapshotOperationId?: string;
   snapshotReason?: SnapshotReason;
+  externalPaths?: readonly string[];
+  externalDirectories?: readonly DirectoryObservation[];
 }
 const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const pool = new Map<string, { service: ProjectService; host: ServiceOptions['host']; leases: number }>();
@@ -62,6 +65,63 @@ function mountError(path: string, error: unknown): StoreDiagnostic {
 }
 function domainIssues(diagnostics: readonly Diagnostic[]): StoreDiagnostic[] {
   return diagnostics.map(({ instancePath, ...d }) => ({ ...d, path: 'a3.project.json', stage: 'references', ...(instancePath !== undefined ? { pointer: instancePath } : {}) }));
+}
+const explorerPageSize = 100;
+const folderMarker = '.a3-folder.json';
+const forbiddenExplorerName = /^(?:\.a3|\.git|node_modules|\.env(?:\..*)?|credentials?|secrets?|id_(?:rsa|ed25519)(?:\.pub)?|[^/]*\.(?:pem|p12|pfx|key))$/i;
+function explorerIdentity(statValue: { dev: bigint; ino: bigint; mode: bigint }): string {
+  return `${statValue.dev.toString(16)}:${statValue.ino.toString(16)}:${(statValue.mode & 0o170000n).toString(16)}`;
+}
+function explorerName(value: string): boolean {
+  return value.length > 0 && value.length <= 255 && value !== '.' && value !== '..' && !/[\\/:<>"|?*\x00-\x1f]/.test(value) &&
+    !/[. ]$/.test(value) && !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(value) && !forbiddenExplorerName.test(value);
+}
+function mediaTypeForPath(path: string): string {
+  const extension = path.split('.').at(-1)?.toLowerCase();
+  const types: Record<string, string> = { md: 'text/markdown', txt: 'text/plain', json: 'application/json', toml: 'application/toml', yaml: 'application/yaml', yml: 'application/yaml',
+    ts: 'text/typescript', tsx: 'text/typescript', js: 'text/javascript', jsx: 'text/javascript', py: 'text/x-python', rs: 'text/x-rust', html: 'text/html', css: 'text/css', svg: 'image/svg+xml',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf' };
+  return types[extension ?? ''] ?? 'application/octet-stream';
+}
+function gitIgnoreRegex(glob: string): RegExp {
+  let out = '^';
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i]!;
+    if (char === '*') {
+      if (glob[i + 1] === '*') { i++; if (glob[i + 1] === '/') { i++; out += '(?:.*/)?'; } else out += '.*'; }
+      else out += '[^/]*';
+    }
+    else if (char === '?') out += '[^/]';
+    else out += char.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+  }
+  return new RegExp(out + '(?:/.*)?$', 'i');
+}
+interface IgnoreRule { base: string; expression: RegExp; negated: boolean; directoryOnly: boolean; }
+function parseIgnoreRules(text: string, base: string): IgnoreRule[] {
+  return text.split(/\r?\n/).flatMap((raw) => {
+    let value = raw.trim();
+    if (!value || value.startsWith('#')) return [];
+    const negated = value.startsWith('!'); if (negated) value = value.slice(1);
+    if (value.startsWith('\\#') || value.startsWith('\\!')) value = value.slice(1);
+    const directoryOnly = value.endsWith('/'); value = value.replace(/^\//, '').replace(/\/$/, '');
+    if (!value) return [];
+    const anchored = raw.trim().replace(/^!/, '').startsWith('/') || value.includes('/');
+    return [{ base, expression: gitIgnoreRegex(anchored ? value : `**/${value}`), negated, directoryOnly }];
+  });
+}
+function gitIgnored(path: string, isDirectory: boolean, rules: readonly IgnoreRule[]): boolean {
+  let ignored = false;
+  for (const rule of rules) {
+    const parts = path.split('/');
+    for (let length = 1; length <= parts.length; length++) {
+      const prefix = parts.slice(0, length).join('/');
+      const prefixIsDirectory = length < parts.length || isDirectory;
+      const rel = rule.base ? prefix.startsWith(rule.base + '/') ? prefix.slice(rule.base.length + 1) : prefix === rule.base ? '' : undefined : prefix;
+      if (rel === undefined || rule.directoryOnly && !prefixIsDirectory) continue;
+      if (rule.expression.test(rel)) ignored = !rule.negated;
+    }
+  }
+  return ignored;
 }
 const diagramRefKinds = new Set(['workspace', 'placement', 'visual-edge', 'relation-view', 'group', 'drawing', 'relation']);
 function domainCapabilities(plan: PreparedPlan): Capability[] {
@@ -243,6 +303,7 @@ export class ProjectService {
       { code: 'PERMISSION_DENIED', ...(result?.missingCapability ? { missingCapability: result.missingCapability } : {}), recovery: result?.reason ?? 'Revisa la concesión local del proyecto.' });
   }
   #operationError(path: string, error: unknown): StoreDiagnostic {
+    if (error instanceof PathError && ['file-identity-changed', 'external-conflict', 'destination-exists'].includes(error.detail)) return conflict(path, error.detail);
     return error instanceof PathError && error.detail === 'permission-denied' ? this.#denied(path) : ioIssue(path, error);
   }
   #gate(): StoreDiagnostic[] {
@@ -368,6 +429,369 @@ export class ProjectService {
         return { ok: true, value: next.project, diagnostics: next.diagnostics };
       } catch (error) { return failure([this.#operationError('a3.project.json', error)]); }
     });
+  }
+  async #ignoreRulesFor(directoryPath: string): Promise<IgnoreRule[]> {
+    const folders = [''];
+    let current = '';
+    for (const part of directoryPath.split('/').filter(Boolean)) { current = current ? `${current}/${part}` : part; folders.push(current); }
+    const rules: IgnoreRule[] = [];
+    for (const base of folders) {
+      const path = base ? `${base}/.gitignore` : '.gitignore';
+      try {
+        const bytes = await fileBytes(this.root, path, 1024 * 1024);
+        rules.push(...parseIgnoreRules(new TextDecoder('utf-8', { fatal: true }).decode(bytes), base));
+      } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
+    }
+    return rules;
+  }
+  async #isHiddenExplorerPath(path: string, directory: boolean, rules: readonly IgnoreRule[]): Promise<boolean> {
+    const parts = path.split('/');
+    if (parts.some((part) => part === '.a3' || part === '.git' || part === 'node_modules' || part === folderMarker || forbiddenExplorerName.test(part)) ||
+        path.split('/').some((_, index, all) => all.slice(0, index + 1).join('/') === '.a3/local')) return true;
+    return gitIgnored(path, directory, rules);
+  }
+  listExplorerDirectory(directoryPath = '', offset = 0): Promise<StoreResult<ExplorerDirectoryPage>> {
+    return this.#queue(async () => {
+      try {
+        if (!Number.isSafeInteger(offset) || offset < 0 || offset % explorerPageSize !== 0) return failure([issue('files', 'schema', 'invalid-page', 'El desplazamiento de la página no es válido.')]);
+        if (!this.#authorized('read-resource', directoryPath ? [directoryPath] : [], [], [])) return failure([this.#denied(directoryPath || 'project')]);
+        if (directoryPath) resolvePortablePath(this.root, directoryPath);
+        const directory = directoryPath ? await checkedPath(this.root, directoryPath, 'directory') : this.root;
+        const rules = await this.#ignoreRulesFor(directoryPath);
+        const editable = this.#authorized('write', directoryPath ? [directoryPath] : [], [], [], ['document.edit'], 'prepare');
+        const names = await readdir(directory);
+        const visible: ExplorerFileEntry[] = [];
+        for (const name of names) {
+          const path = directoryPath ? `${directoryPath}/${name}` : name;
+          let info;
+          try { info = await lstat(resolvePortablePath(this.root, path), { bigint: true }); }
+          catch { continue; }
+          const isDirectory = info.isDirectory();
+          if (await this.#isHiddenExplorerPath(path, isDirectory, rules)) continue;
+          const kind = info.isSymbolicLink() ? 'blocked-link' : isDirectory ? 'directory' : info.isFile() ? 'file' : undefined;
+          if (!kind) continue;
+          const resource = this.#observed.project.snapshot.records.find((record) => record.kind === 'resource' && record.value.kind === 'project-file' && record.value.path.toLowerCase() === path.toLowerCase());
+          visible.push({ path, name, kind, identity: explorerIdentity(info), size: kind === 'file' ? Number(info.size) : null,
+            modifiedAt: Number(info.mtimeMs), readOnly: this.state.mode !== 'writer' || !editable || kind === 'blocked-link', ...(resource?.kind === 'resource' ? { resourceId: resource.value.id } : {}) });
+        }
+        visible.sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+        const page = visible.slice(offset, offset + explorerPageSize);
+        const mounts: ExplorerMountEntry[] = [];
+        if (!directoryPath) for (const record of this.#observed.project.snapshot.records) {
+          if (record.kind !== 'resource' || record.value.kind !== 'mounted-file') continue;
+          let status: ExplorerMountEntry['status'] = 'approval-required';
+          const binding = this.options.host.capabilities.getLocalMount({ root: this.root, projectId: this.#projectId() ?? '', mountId: record.value.mountId });
+          const approved = this.#authorized('read-resource', [], [refOf(record)], [record.value]);
+          if (approved && binding) status = binding.status === 'root-missing' ? 'missing' : binding.status === 'root-changed' ? 'changed' : await inspectLocalMountFile(binding, record.value.path);
+          mounts.push({ resourceId: record.value.id, name: record.value.path.split('/').at(-1) ?? record.value.path,
+            relativePath: record.value.path, status, readOnly: true });
+        }
+        return { ok: true, value: { path: directoryPath, entries: page, nextOffset: offset + page.length < visible.length ? offset + page.length : null, mounts }, diagnostics: [] };
+      } catch (error) { return failure([this.#operationError(directoryPath || 'project', error)]); }
+    });
+  }
+  openExplorerFile(path: string, expectedIdentity?: string): Promise<StoreResult<ExplorerOpenResult>> {
+    return this.#queue(async () => {
+      try {
+        if (!this.#authorized('read-resource', [path], [], [])) return failure([this.#denied(path)]);
+        const target = await checkedPath(this.root, path, 'file');
+        const info = await lstat(target, { bigint: true });
+        if (expectedIdentity && explorerIdentity(info) !== expectedIdentity) return failure([conflict(path, 'file-identity-changed')]);
+        const size = Number(info.size);
+        if (size > 2 * 1024 * 1024) return failure([issue(path, 'io', 'preview-size-limit', 'El archivo supera el límite de vista previa de 2 MiB; los bytes siguen intactos.')]);
+        const bytes = await fileBytes(this.root, path, 2 * 1024 * 1024);
+        let text: string | null = null;
+        try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { /* Binary files open as metadata only. */ }
+        return { ok: true, value: { path, name: path.split('/').at(-1) ?? path, text, size, ...(this.#observed.project.snapshot.records.find((record) => record.kind === 'resource' && record.value.kind === 'project-file' && record.value.path === path)?.kind === 'resource' ? { mediaType: (this.#observed.project.snapshot.records.find((record) => record.kind === 'resource' && record.value.kind === 'project-file' && record.value.path === path) as Extract<DomainRecord, { kind: 'resource' }>).value.mediaType } : {}) }, diagnostics: [] };
+      } catch (error) { return failure([this.#operationError(path, error)]); }
+    });
+  }
+  validateExplorerEntry(path: string, expectedIdentity: string, kind: 'file' | 'directory'): Promise<StoreResult<{ valid: true }>> {
+    return this.#queue(async () => {
+      try {
+        const resource = this.#observed.project.snapshot.records.find((record) => record.kind === 'resource' && record.value.kind === 'project-file' && record.value.path.toLowerCase() === path.toLowerCase());
+        if (!this.#authorized('read-resource', [path], resource?.kind === 'resource' ? [refOf(resource)] : [], resource?.kind === 'resource' ? [resource.value] : [])) {
+          return failure([this.#denied(path)]);
+        }
+        resolvePortablePath(this.root, path);
+        if (await this.#isHiddenExplorerPath(path, kind === 'directory', await this.#ignoreRulesFor(path.split('/').slice(0, -1).join('/')))) {
+          return failure([issue(path, 'io', 'hidden-path', 'El elemento quedó oculto o excluido de la vista normal.')]);
+        }
+        const target = await checkedPath(this.root, path, kind);
+        const info = await lstat(target, { bigint: true });
+        if (explorerIdentity(info) !== expectedIdentity) return failure([conflict(path, 'file-identity-changed')]);
+        return { ok: true, value: { valid: true }, diagnostics: [] };
+      } catch (error) { return failure([this.#operationError(path, error)]); }
+    });
+  }
+  previewExplorerDelete(path: string, expectedIdentity?: string): Promise<StoreResult<ExplorerDeletePreview>> {
+    return this.#queue(async () => {
+      try {
+        resolvePortablePath(this.root, path);
+        const native = resolvePortablePath(this.root, path); const rawInfo = await lstat(native, { bigint: true });
+        if (rawInfo.isSymbolicLink() || !rawInfo.isFile() && !rawInfo.isDirectory()) throw new PathError('linked-path', 'No se envían enlaces ni archivos especiales a la papelera.');
+        const target = rawInfo.isDirectory() ? await checkedPath(this.root, path, 'directory') : await checkedPath(this.root, path, 'file');
+        const info = await lstat(target, { bigint: true });
+        if (expectedIdentity && explorerIdentity(info) !== expectedIdentity) return failure([conflict(path, 'file-identity-changed')]);
+        if (!this.#authorized('read-resource', [path], [], [])) return failure([this.#denied(path)]);
+        const sourcePaths = new Set<string>();
+        const collect = async (current: string): Promise<void> => {
+          const currentPath = resolvePortablePath(this.root, current); const statValue = await lstat(currentPath, { bigint: true });
+          if (statValue.isSymbolicLink()) throw new PathError('linked-path', 'No se siguen enlaces dentro de la carpeta que se va a revisar.');
+          if (statValue.isFile()) { if (!current.endsWith('/' + folderMarker)) sourcePaths.add(current.toLowerCase()); return; }
+          for (const name of await readdir(await checkedPath(this.root, current, 'directory'))) {
+            if (name === folderMarker) continue;
+            const child = `${current}/${name}`; const childStat = await lstat(resolvePortablePath(this.root, child), { bigint: true });
+            if (await this.#isHiddenExplorerPath(child, childStat.isDirectory(), await this.#ignoreRulesFor(current))) {
+              throw new PathError('hidden-content-present', 'La carpeta contiene datos ocultos o ignorados; no se ofrece su eliminación conjunta.');
+            }
+            await collect(child);
+          }
+        };
+        await collect(path);
+        const resources = this.#observed.project.snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'resource' }> =>
+          record.kind === 'resource' && record.value.kind === 'project-file' && sourcePaths.has(record.value.path.toLowerCase()));
+        const uses = resources.flatMap((resource) => this.#observed.project.snapshot.records.flatMap((record) =>
+          record.kind === 'entity' && record.value.contentResourceId?.toLowerCase() === resource.value.id.toLowerCase()
+            ? [{ entityId: record.value.id, title: record.value.title }] : []));
+        const permission = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: this.root,
+          ...(this.#projectId() ? { projectId: this.#projectId()! } : {}), operation: 'write', paths: [path], refs: resources.map(refOf), resources: resources.map((resource) => resource.value),
+          requiredCapabilities: ['document.edit', 'delete'], stage: 'prepare' });
+        const reason = uses.length ? 'Este recurso tiene usos en entidades; desvincula esos usos antes de enviarlo a la papelera.' : !permission.allowed
+          ? 'El perfil del proyecto no concede el permiso de eliminación. Cambia su concesión local antes de continuar.' : undefined;
+        return { ok: true, value: { path, uses, deletable: uses.length === 0 && permission.allowed, ...(reason ? { reason } : {}) }, diagnostics: [] };
+      } catch (error) { return failure([this.#operationError(path, error)]); }
+    });
+  }
+  #resourceDocumentImages(before: readonly DomainRecord[], after: readonly DomainRecord[], documents: ProjectReadResult['documents']): { images: Image[]; refs: ReturnType<typeof refOf>[] } | StoreDiagnostic {
+    const old = new Map(before.filter((record) => record.kind === 'resource').map((record) => [refKey(refOf(record)), record]));
+    const next = new Map(after.filter((record) => record.kind === 'resource').map((record) => [refKey(refOf(record)), record]));
+    const images: Image[] = []; const refs: ReturnType<typeof refOf>[] = [];
+    for (const key of new Set([...old.keys(), ...next.keys()])) {
+      const was = old.get(key); const now = next.get(key);
+      if (equal(was, now)) continue;
+      const record = now ?? was!; const path = recordPath(record, this.#catalog); refs.push(refOf(record));
+      if (!now) { images.push({ path, bytes: null, ref: refOf(record) }); continue; }
+      if (was) {
+        const document = documents.find((candidate) => refKey(refOf(candidate.record!)) === key);
+        if (!document) return issue(path, 'schema', 'resource-document-missing', 'No se pudo localizar el documento de recurso para actualizarlo.');
+        const previous = was.value as Extract<DomainRecord, { kind: 'resource' }>['value'];
+        const current = now.value as Extract<DomainRecord, { kind: 'resource' }>['value'];
+        const edits: JsonEdit[] = [];
+        if (previous.kind === 'project-file' && current.kind === 'project-file' && previous.path !== current.path) edits.push({ op: 'set', pointer: '/path', value: current.path });
+        edits.push({ op: 'set', pointer: '/revision', value: current.revision });
+        const encoded = encodeDocument(document, edits);
+        if (!encoded.ok) return encoded.diagnostics[0] ?? issue(path, 'schema', 'resource-serialization-failed', 'No se pudo serializar el recurso.');
+        images.push({ path, bytes: Uint8Array.from(encoded.bytes), ref: refOf(record) });
+      } else {
+        const encoded = serializeRecord({ kind: 'resource', path }, now);
+        if (!encoded.ok) return encoded.diagnostics[0] ?? issue(path, 'schema', 'resource-serialization-failed', 'No se pudo serializar el recurso.');
+        images.push({ path, bytes: Uint8Array.from(encoded.bytes), ref: refOf(record) });
+      }
+    }
+    return { images, refs };
+  }
+  prepareExplorerOperation(request: ExplorerOperationRequest): Promise<StoreResult<PreparedWrite>> {
+    return this.#queue(async () => {
+      try {
+        const current = await this.#currentForWrite(); if (!current.ok) return current;
+        if (!uuid.test(request.operationId) || !['create-file', 'create-folder', 'rename', 'duplicate', 'trash'].includes(request.action)) return failure([issue('files', 'schema', 'invalid-file-operation', 'La operación de archivos no es válida.')]);
+        const records = structuredClone(current.value.project.snapshot.records) as DomainRecord[];
+        const originalRecords = current.value.project.snapshot.records;
+        const fileImages: Image[] = [];
+        const extPaths = new Set<string>();
+        const sourceFiles: { path: string; bytes: Uint8Array; identity: string }[] = [];
+        const sourceDirectories: string[] = [];
+        let sourceIsDirectory = false;
+        const checkPath = (path: string): void => {
+          resolvePortablePath(this.root, path);
+          if (path.split('/').some((part) => forbiddenExplorerName.test(part) || part === folderMarker)) throw new PathError('hidden-path', 'La ruta está oculta o reservada al sistema A3.');
+        };
+        const hiddenRules = await this.#ignoreRulesFor(request.sourcePath?.split('/').slice(0, -1).join('/') ?? '');
+        const ensureSource = async (): Promise<void> => {
+          if (!request.sourcePath) throw new PathError('source-required', 'Selecciona un elemento del explorador.');
+          checkPath(request.sourcePath);
+          if (await this.#isHiddenExplorerPath(request.sourcePath, false, hiddenRules)) throw new PathError('ignored-path', 'El elemento está excluido de la vista normal.');
+          const rootPath = await checkedPath(this.root, request.sourcePath, (await lstat(resolvePortablePath(this.root, request.sourcePath))).isDirectory() ? 'directory' : 'file');
+          const rootStat = await lstat(rootPath, { bigint: true });
+          if (request.expectedSourceIdentity && explorerIdentity(rootStat) !== request.expectedSourceIdentity) throw new PathError('file-identity-changed', 'El elemento cambió desde que se mostró en el explorador.');
+          sourceIsDirectory = rootStat.isDirectory();
+          const visit = async (path: string): Promise<void> => {
+            const info = await lstat(resolvePortablePath(this.root, path), { bigint: true });
+            if (info.isSymbolicLink()) throw new PathError('linked-path', 'No se siguen enlaces simbólicos ni junctions desde el explorador.');
+            if (info.isDirectory()) {
+              sourceDirectories.push(path);
+              const children = await readdir(await checkedPath(this.root, path, 'directory'));
+              const childRules = await this.#ignoreRulesFor(path);
+              for (const name of children) {
+                if (name === folderMarker) continue;
+                const child = `${path}/${name}`;
+                const childInfo = await lstat(resolvePortablePath(this.root, child), { bigint: true });
+                if (await this.#isHiddenExplorerPath(child, childInfo.isDirectory(), childRules)) throw new PathError('hidden-content-present', 'La carpeta contiene archivos ignorados u ocultos. Desplaza esos archivos explícitamente antes de modificar la carpeta.');
+                await visit(child);
+              }
+            } else if (info.isFile()) {
+              extPaths.add(path);
+              sourceFiles.push({ path, bytes: await fileBytes(this.root, path, this.#resourceLimit), identity: explorerIdentity(info) });
+            } else throw new PathError('unexpected-file-kind', 'El elemento no es un archivo regular ni una carpeta.');
+          };
+          await visit(request.sourcePath);
+          if (sourceDirectories.length) sourceIsDirectory = true;
+        };
+        const resourceByPath = new Map<string, Extract<DomainRecord, { kind: 'resource' }>[] >();
+        for (const record of records) if (record.kind === 'resource' && record.value.kind === 'project-file') {
+          const bucket = resourceByPath.get(record.value.path.toLowerCase()) ?? []; bucket.push(record); resourceByPath.set(record.value.path.toLowerCase(), bucket);
+        }
+        const nextRecords = records;
+        const targetDirectoryObservations: DirectoryObservation[] = [];
+        if (request.action === 'create-file' || request.action === 'create-folder') {
+          const target = request.targetPath; if (!target) throw new PathError('target-required', 'Indica la ubicación nueva.'); checkPath(target);
+          if (!explorerName(target.split('/').at(-1) ?? '')) throw new PathError('invalid-name', 'El nombre del archivo o carpeta no es válido.');
+          const parent = target.split('/').slice(0, -1).join('/'); if (parent) {
+            await checkedPath(this.root, parent, 'directory');
+            const parentObservation = await this.#directoryObservation(parent);
+            if (request.targetParentIdentity && parentObservation.identity !== request.targetParentIdentity) throw new PathError('file-identity-changed', 'La carpeta de destino cambió desde que se mostró.');
+            targetDirectoryObservations.push(parentObservation);
+          }
+          if (await this.#isHiddenExplorerPath(target, request.action === 'create-folder', await this.#ignoreRulesFor(parent))) throw new PathError('ignored-path', 'El nombre quedaría oculto por las exclusiones del proyecto.');
+          await absentPath(this.root, target);
+          if (request.action === 'create-folder') {
+            const marker = `${target}/${folderMarker}`;
+            const markerBytes = Buffer.from(JSON.stringify({ schemaVersion: '1.0.0', folderId: randomUUID() }) + '\n');
+            fileImages.push({ path: marker, bytes: markerBytes }); extPaths.add(marker);
+          } else {
+            const bytes = Buffer.from(request.content ?? '', 'utf8');
+            const id = randomUUID(); const resource: DomainRecord = { kind: 'resource', value: { schemaVersion: '1.0.0', id, revision: 1,
+              kind: 'project-file', path: target, mediaType: mediaTypeForPath(target), extensions: {} } };
+            nextRecords.push(resource);
+            fileImages.push({ path: target, bytes }); extPaths.add(target);
+          }
+        } else {
+          await ensureSource();
+          if (request.action === 'trash') {
+            const tracked = resourceByPath;
+            for (const source of sourceFiles) for (const resource of tracked.get(source.path.toLowerCase()) ?? []) {
+              const used = originalRecords.some((record) => record.kind === 'entity' && record.value.contentResourceId?.toLowerCase() === resource.value.id.toLowerCase());
+              if (used) return failure([issue(source.path, 'references', 'resource-in-use', 'El archivo se conserva porque entidades del proyecto todavía lo utilizan; revisa los usos antes de quitar esas referencias.')]);
+            }
+            const targetRoot = `.a3/local/trash/${request.operationId}`;
+            const markers = sourceIsDirectory ? await this.#folderMarkers(request.sourcePath!) : [];
+            const markerDirectories = new Set(markers.map((marker) => marker.slice(0, -1 * (folderMarker.length + 1)).toLowerCase()));
+            for (const source of sourceFiles) {
+              const sourceResource = resourceByPath.get(source.path.toLowerCase())?.[0];
+              fileImages.push({ path: `${targetRoot}/${source.path}`, bytes: source.bytes, ...(sourceResource ? { ref: refOf(sourceResource) } : {}) });
+              fileImages.push({ path: source.path, bytes: null, ...(sourceResource ? { ref: refOf(sourceResource) } : {}) });
+              extPaths.add(source.path); extPaths.add(`${targetRoot}/${source.path}`);
+              for (const resource of resourceByPath.get(source.path.toLowerCase()) ?? []) {
+                nextRecords.splice(nextRecords.findIndex((record) => record.kind === 'resource' && record.value.id.toLowerCase() === resource.value.id.toLowerCase()), 1);
+              }
+            }
+            for (const marker of markers) {
+              const bytes = await fileBytes(this.root, marker, 4096);
+              fileImages.push({ path: `${targetRoot}/${marker}`, bytes }, { path: marker, bytes: null });
+              extPaths.add(marker); extPaths.add(`${targetRoot}/${marker}`);
+            }
+            for (const directory of sourceDirectories) {
+              if (sourceFiles.some((file) => file.path.toLowerCase().startsWith(directory.toLowerCase() + '/')) || markerDirectories.has(directory.toLowerCase())) continue;
+              const suffix = directory.slice(request.sourcePath!.length).replace(/^\//, '');
+              const targetDirectory = suffix ? `${targetRoot}/${request.sourcePath}/${suffix}` : `${targetRoot}/${request.sourcePath}`;
+              const marker = `${targetDirectory}/${folderMarker}`;
+              fileImages.push({ path: marker, bytes: Buffer.from(JSON.stringify({ schemaVersion: '1.0.0', folderId: randomUUID() }) + '\n') });
+              extPaths.add(marker);
+            }
+          } else {
+            const target = request.targetPath; if (!target) throw new PathError('target-required', 'Indica el destino del elemento.'); checkPath(target);
+            if (!explorerName(target.split('/').at(-1) ?? '')) throw new PathError('invalid-name', 'El nombre nuevo no es válido.');
+            const parent = target.split('/').slice(0, -1).join('/'); if (parent) {
+              await checkedPath(this.root, parent, 'directory');
+              targetDirectoryObservations.push(await this.#directoryObservation(parent));
+            }
+            if (await this.#isHiddenExplorerPath(target, sourceIsDirectory, await this.#ignoreRulesFor(parent))) throw new PathError('ignored-path', 'El nombre nuevo quedaría oculto por las exclusiones del proyecto.');
+            if (target.toLowerCase() === request.sourcePath!.toLowerCase() || target.toLowerCase().startsWith(request.sourcePath!.toLowerCase() + '/')) throw new PathError('nested-target', 'El destino no puede estar dentro del elemento de origen.');
+            await absentPath(this.root, target);
+            const moving = request.action === 'rename';
+            if (sourceIsDirectory) {
+              for (const source of sourceFiles) {
+                const suffix = source.path.slice(request.sourcePath!.length).replace(/^\//, '');
+                const dest = `${target}/${suffix}`;
+                fileImages.push({ path: dest, bytes: source.bytes });
+                if (moving) fileImages.push({ path: source.path, bytes: null });
+                extPaths.add(source.path); extPaths.add(dest);
+              }
+              for (const markerPath of await this.#folderMarkers(request.sourcePath!)) {
+                const suffix = markerPath.slice(request.sourcePath!.length).replace(/^\//, '');
+                const dest = `${target}/${suffix}`;
+                const bytes = await fileBytes(this.root, markerPath, 4096);
+                const replacement = moving ? bytes : Buffer.from(JSON.stringify({ schemaVersion: '1.0.0', folderId: randomUUID() }) + '\n');
+                fileImages.push({ path: dest, bytes: replacement }); if (moving) fileImages.push({ path: markerPath, bytes: null });
+                extPaths.add(markerPath); extPaths.add(dest);
+              }
+              const markers = await this.#folderMarkers(request.sourcePath!);
+              const markerDirectories = new Set(markers.map((marker) => marker.slice(0, -1 * (folderMarker.length + 1)).toLowerCase()));
+              for (const directory of sourceDirectories) {
+                if (sourceFiles.some((file) => file.path.toLowerCase().startsWith(directory.toLowerCase() + '/')) || markerDirectories.has(directory.toLowerCase())) continue;
+                const suffix = directory.slice(request.sourcePath!.length).replace(/^\//, '');
+                const targetDirectory = suffix ? `${target}/${suffix}` : target;
+                fileImages.push({ path: `${targetDirectory}/${folderMarker}`, bytes: Buffer.from(JSON.stringify({ schemaVersion: '1.0.0', folderId: randomUUID() }) + '\n') });
+                extPaths.add(`${targetDirectory}/${folderMarker}`);
+              }
+            } else {
+              const source = sourceFiles[0]!;
+              fileImages.push({ path: target, bytes: source.bytes }); if (moving) fileImages.push({ path: source.path, bytes: null });
+              extPaths.add(source.path); extPaths.add(target);
+            }
+            for (const source of sourceFiles) for (const oldResource of resourceByPath.get(source.path.toLowerCase()) ?? []) {
+              const id = moving ? oldResource.value.id : randomUUID();
+              const destinationPath = sourceIsDirectory ? `${target}/${source.path.slice(request.sourcePath!.length).replace(/^\//, '')}` : target;
+              const value = { ...structuredClone(oldResource.value), id, revision: moving ? oldResource.value.revision + 1 : 1, path: destinationPath };
+              const key = refKey({ kind: 'resource', id: oldResource.value.id });
+              const index = nextRecords.findIndex((record) => refKey(refOf(record)) === key);
+              if (moving) nextRecords[index] = { kind: 'resource', value };
+              else nextRecords.push({ kind: 'resource', value });
+            }
+            if (request.action === 'duplicate') {
+              // A copied file receives a catalog identity even when the original was an ordinary untracked file.
+              for (const source of sourceFiles) if (!(resourceByPath.get(source.path.toLowerCase())?.length)) {
+                const id = randomUUID();
+                nextRecords.push({ kind: 'resource', value: { schemaVersion: '1.0.0', id, revision: 1, kind: 'project-file',
+                  path: sourceIsDirectory ? `${target}/${source.path.slice(request.sourcePath!.length).replace(/^\//, '')}` : target,
+                  mediaType: mediaTypeForPath(source.path), extensions: {} } });
+              }
+            }
+          }
+        }
+        const encodedResources = this.#resourceDocumentImages(originalRecords, nextRecords, current.value.project.documents);
+        if ('detail' in encodedResources) return failure([encodedResources]);
+        const allImages = [...fileImages, ...encodedResources.images];
+        const finalScan: Scan = { ...current.value, files: new Map(current.value.files) };
+        for (const path of extPaths) if (!finalScan.files.has(path)) finalScan.files.set(path, await this.#observe(path, true));
+        const externalDirectories = [...await Promise.all(sourceDirectories.map((path) => this.#directoryObservation(path))), ...targetDirectoryObservations]
+          .filter((value, index, all) => all.findIndex((candidate) => candidate.path.toLowerCase() === value.path.toLowerCase()) === index);
+        if (allImages.length === 0) return failure([issue(request.sourcePath ?? request.targetPath ?? 'files', 'io', 'empty-operation', 'No hay archivos que modificar.')]);
+        const invalid = validateSnapshot({ records: nextRecords }, this.#registry);
+        if (invalid.some((diagnostic) => diagnostic.severity === 'error')) return failure(domainIssues(invalid));
+        const required: Capability[] = request.action === 'trash' ? ['document.edit', 'delete'] : ['document.edit'];
+        const resources = nextRecords.flatMap((record) => record.kind === 'resource' ? [record.value] : []);
+        return this.#makePlan(finalScan, request.operationId, allImages, nextRecords, resources,
+          sha256(jsonBytes({ action: request.action, source: request.sourcePath ?? null, target: request.targetPath ?? null,
+            hashes: sourceFiles.map((file) => sha256(file.bytes)), actor: this.options.host.authenticatedActor })),
+          { requiredCapabilities: required, externalPaths: [...extPaths], externalDirectories });
+      } catch (error) { return failure([this.#operationError(request.sourcePath ?? request.targetPath ?? 'files', error)]); }
+    });
+  }
+  async #folderMarkers(rootPath: string): Promise<string[]> {
+    const found: string[] = [];
+    const visit = async (path: string): Promise<void> => {
+      const entries = await readdir(await checkedPath(this.root, path, 'directory'));
+      if (entries.includes(folderMarker)) found.push(`${path}/${folderMarker}`);
+      for (const name of entries) {
+        if (name === folderMarker) continue;
+        const child = `${path}/${name}`; const info = await lstat(resolvePortablePath(this.root, child));
+        if (info.isSymbolicLink()) throw new PathError('linked-path', 'No se copian ni mueven enlaces de carpeta.');
+        if (info.isDirectory()) await visit(child);
+      }
+    };
+    await visit(rootPath); return found;
   }
   openResource(resourceId: string): Promise<StoreResult<OpenResource>> {
     return this.#queue(async () => {
@@ -571,6 +995,30 @@ export class ProjectService {
     resolvePortablePath(this.root, path);
     const lower = path.toLowerCase();
     if (lower === 'a3.project.json' || lower === this.#catalog.toLowerCase() || lower.startsWith(this.#catalog.toLowerCase() + '/') || lower === '.a3' || lower.startsWith('.a3/') || lower === '.git' || lower.startsWith('.git/')) throw new PathError('managed-source-path', 'Los bytes fuente no pueden reemplazar metadatos administrados, sesiones o Git.');
+  }
+  async #withExtraPaths(scan: Scan, paths: readonly string[]): Promise<Scan> {
+    const files = new Map(scan.files);
+    for (const path of paths) if (!files.has(path)) files.set(path, await this.#observe(path, true));
+    return { ...scan, files };
+  }
+  async #directoryObservation(path: string): Promise<DirectoryObservation> {
+    const native = await checkedPath(this.root, path, 'directory');
+    const directoryStat = await lstat(native, { bigint: true });
+    const children = await readdir(native);
+    const entries = [];
+    for (const name of children.sort((a, b) => a.localeCompare(b))) {
+      const info = await lstat(resolvePortablePath(this.root, `${path}/${name}`), { bigint: true });
+      entries.push([name, explorerIdentity(info), info.isSymbolicLink() ? 'link' : info.isDirectory() ? 'directory' : info.isFile() ? 'file' : 'other']);
+    }
+    return { path, identity: explorerIdentity(directoryStat), entriesHash: sha256(Buffer.from(JSON.stringify(entries))) };
+  }
+  async #verifyDirectories(expected: readonly DirectoryObservation[]): Promise<void> {
+    for (const before of expected) {
+      let after: DirectoryObservation;
+      try { after = await this.#directoryObservation(before.path); }
+      catch { throw new PathError('external-conflict', before.path); }
+      if (after.identity !== before.identity || after.entriesHash !== before.entriesHash) throw new PathError('external-conflict', before.path);
+    }
   }
   #makePlan(scan: Scan, operationId: string, images: Image[], nextRecords: DomainRecord[], resources: Resource[], requestHash: string, extra: Partial<PlanData> = {}): StoreResult<PreparedWrite> {
     if (!uuid.test(operationId)) return failure([issue('operation', 'schema', 'invalid-operation-id', 'operationId debe ser UUID.')]);
@@ -875,8 +1323,10 @@ export class ProjectService {
       const current = data.maintenance ? await this.#currentForMaintenance(data.allowRegisteredMigration) : await this.#currentForWrite();
       if (!current.ok) return current;
       if (data.actor !== JSON.stringify(this.options.host.authenticatedActor)) return failure([this.#denied('operation')]);
-      const changed = this.#changes(data.scan, current.value);
+      const currentObserved = await this.#withExtraPaths(current.value, data.externalPaths ?? []);
+      const changed = this.#changes(data.scan, currentObserved);
       if (changed.length) return failure(changed.map((p) => conflict(p, 'stale-plan')));
+      await this.#verifyDirectories(data.externalDirectories ?? []);
       if (data.domain) { const valid = revalidatePlan(data.domain, current.value.project.snapshot, this.#context(current.value)); if (!valid.ok) return failure(domainIssues(valid.diagnostics)); }
       const applyDecision = data.preapproved
         ? await this.options.host.capabilities.authorizeCapabilities(this.root, this.options.host.authenticatedActor, plan.projectId,
@@ -898,8 +1348,9 @@ export class ProjectService {
       }
       if (!data.images.length) return { ok: true, value: { status: 'committed', operationId: plan.operationId, atomic: false, paths: [], transactionPath: null }, diagnostics: [] };
       snapshotId = data.snapshotId ?? plan.operationId;
+      const snapshotChanges = plan.changes.filter((change) => !change.path.toLowerCase().startsWith('.a3/local/'));
       const snapshot = await createSnapshot(this.root, { snapshotId, projectId: plan.projectId, operationId: data.snapshotOperationId ?? plan.operationId,
-        reason: data.snapshotReason ?? 'batch', files: plan.changes.map((change) => ({ path: change.path, expectedHash: change.beforeHash,
+        reason: data.snapshotReason ?? 'batch', files: snapshotChanges.map((change) => ({ path: change.path, expectedHash: change.beforeHash,
           expectedIdentity: data.scan.files.get(change.path)?.identity ?? null })), retentionDays: this.#snapshotRetentionDays, maxBytes: this.#snapshotMaxBytes });
       if (!snapshot.ok) return failure(snapshot.diagnostics);
       snapshotDiagnostics = snapshot.diagnostics;
@@ -946,7 +1397,8 @@ export class ProjectService {
       }
       await this.#fault('after-staging', plan.operationId);
       // Recheck all catalog/source dependencies after staging and before any target mutation.
-      const beforeReplace = await this.#scan(true);
+      const beforeReplace = await this.#withExtraPaths(await this.#scan(true), data.externalPaths ?? []);
+      await this.#verifyDirectories(data.externalDirectories ?? []);
       const drift = this.#changes(data.scan, beforeReplace);
       const newErrors = introducesErrors(data.scan.diagnostics, beforeReplace.diagnostics);
       if (drift.length || newErrors || !data.maintenance && beforeReplace.diagnostics.some((d) => d.severity === 'error')) {
@@ -992,7 +1444,8 @@ export class ProjectService {
       const final = await this.#scan(true);
       const expected = new Map(data.scan.files);
       for (const entry of entries) if (entry.afterHash === null) expected.delete(entry.path); else expected.set(entry.path, this.#own.get(entry.path)!);
-      const mismatches = this.#changes({ ...data.scan, files: expected }, final);
+      const finalObserved = await this.#withExtraPaths(final, data.externalPaths ?? []);
+      const mismatches = this.#changes({ ...data.scan, files: expected }, finalObserved);
       if (mismatches.length || !final.project.catalogComplete || final.project.mode === 'unavailable' ||
           !data.maintenance && (final.project.mode !== 'ready' || final.diagnostics.some((d) => d.severity === 'error')) ||
           data.maintenance && introducesErrors(data.scan.diagnostics, final.diagnostics)) throw new PathError('external-conflict', mismatches[0] ?? 'a3.project.json');

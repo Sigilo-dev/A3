@@ -1,8 +1,9 @@
-import type { LocalProjectsState } from '@a3/project-store';
-export type { LocalProjectsState, LocalProjectSession } from '@a3/project-store';
+import type { LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
+export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
 export const PROJECTS_CHANNEL = 'a3.projects:command';
+export const FILES_CHANNEL = 'a3.files:command';
 export type ProjectsRequest =
   | { action: 'list' | 'open' }
   | { action: 'create'; name: string }
@@ -11,6 +12,19 @@ export type ProjectsRequest =
   | { action: 'close'; sessionId: string }
   | { action: 'rename' | 'draft-name'; sessionId: string; name: string };
 export type ProjectsResult = { ok: true; value: LocalProjectsState } | { ok: false; error: { code: string; message: string; recovery: string } };
+export type FilesRequest =
+  | { action: 'list'; sessionId: string; directoryId?: string; cursor?: string }
+  | { action: 'open'; sessionId: string; itemId: string }
+  | { action: 'open-mount'; sessionId: string; resourceId: string }
+  | { action: 'create-file' | 'create-folder'; sessionId: string; parentId: string; name: string }
+  | { action: 'rename'; sessionId: string; itemId: string; name: string }
+  | { action: 'duplicate'; sessionId: string; itemId: string; name?: string }
+  | { action: 'preview-delete'; sessionId: string; itemId: string }
+  | { action: 'cancel-delete' | 'confirm-delete'; sessionId: string; token: string }
+  | { action: 'copy-path'; sessionId: string; itemId: string; kind: 'absolute' | 'relative' }
+  | { action: 'copy-mount-path'; sessionId: string; resourceId: string; kind: 'absolute' | 'relative' };
+export type FilesValue = LocalExplorerListing | LocalExplorerOpen | LocalExplorerDeletePreview | { copied: true } | { changed: true } | { cancelled: true };
+export type FilesResult = { ok: true; value: FilesValue } | { ok: false; error: { code: string; message: string; recovery: string } };
 
 export interface AppInfo {
   name: string;
@@ -28,4 +42,5 @@ export type ShellResult<T> =
 export interface DesktopAPI {
   getAppInfo(): Promise<ShellResult<AppInfo>>;
   projects(request: ProjectsRequest): Promise<ProjectsResult>;
+  files(request: FilesRequest): Promise<FilesResult>;
 }

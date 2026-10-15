@@ -99,6 +99,16 @@ async function observePath(binding: LocalMountBinding, path: string): Promise<Ob
   return { target, identities };
 }
 
+/** Checks a mounted file's current path and identity without returning or reading its contents. */
+export async function inspectLocalMountFile(binding: LocalMountBinding, path: string): Promise<'available' | 'missing' | 'changed'> {
+  try { await observePath(binding, path); return 'available'; }
+  catch (error) {
+    if (!(error instanceof MountPathError)) return 'changed';
+    if (error.detail === 'mount-resource-missing' || error.detail === 'mount-root-missing') return 'missing';
+    return 'changed';
+  }
+}
+
 function samePath(left: ObservedPath, right: ObservedPath): boolean {
   return normalize(left.target) === normalize(right.target) && left.identities.length === right.identities.length &&
     left.identities.every((identity, index) => identity === right.identities[index]);

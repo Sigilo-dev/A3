@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { AppInfo, LocalProjectsState } from '../../shared/desktop-api';
 import { ProjectsPanel } from './ProjectsPanel';
+import { FileExplorerPanel } from './FileExplorerPanel';
 
 const sections = [
   ['projects', 'Proyectos', 'Inicio y selección de proyectos locales.'],
@@ -72,7 +73,7 @@ export function App(): React.JSX.Element {
     </aside>
     <main id="content" className="content" tabIndex={-1}>
       <div className="breadcrumb">A3 <span>/</span> {section[1]}</div>
-      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} /> : <><section className="intro" aria-labelledby="section-title">
+      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} /> : active === 'files' ? <FileExplorerPanel active={projects?.active} /> : <><section className="intro" aria-labelledby="section-title">
         <p className="eyebrow">Un lugar para tus ideas</p>
         <h1 id="section-title">{section[1]}</h1>
         <p className="lead">{section[2]}</p>
