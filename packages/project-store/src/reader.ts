@@ -8,7 +8,7 @@ import type { DecodedDocument, DocumentLocation, ProjectReadResult, ReadProjectO
 const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const portable = /^(?!\/)(?!.*[\\:\x00-\x1f])(?!.*(?:^|\/)\.{1,2}(?:\/|$))(?!.*\/\/).*(?<!\/)$/;
 const reserved = /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i;
-class PathError extends Error { constructor(readonly detail: string, message: string) { super(message); } }
+export class PathError extends Error { constructor(readonly detail: string, message: string) { super(message); } }
 function contained(root: string, target: string): boolean {
   const rel = relative(root, target);
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith('..' + sep));
@@ -28,7 +28,7 @@ export function resolvePortablePath(root: string, path: string): string {
   if (!contained(root, target)) throw new PathError('path-outside-root', 'La ruta sale del proyecto.');
   return target;
 }
-async function checkedPath(root: string, path: string, kind: 'file' | 'directory'): Promise<string> {
+export async function checkedPath(root: string, path: string, kind: 'file' | 'directory'): Promise<string> {
   const target = resolvePortablePath(root, path);
   let current = root;
   const parts = portableSegments(path);
@@ -42,7 +42,7 @@ async function checkedPath(root: string, path: string, kind: 'file' | 'directory
   }
   return target;
 }
-function ioIssue(path: string, error: unknown): StoreDiagnostic {
+export function ioIssue(path: string, error: unknown): StoreDiagnostic {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
   return issue(path, 'io', error instanceof PathError ? error.detail : code === 'ENOENT' ? 'file-missing' : 'read-failed',
     error instanceof PathError ? error.message : code === 'ENOENT' ? 'Archivo o carpeta ausente.' : `No se pudo leer (${typeof code === 'string' ? code : 'IO_FAILED'}).`,
@@ -53,7 +53,7 @@ function positiveLimit(value: number | undefined, fallback: number): number {
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new TypeError('Los límites de lectura deben ser enteros positivos seguros.');
   return limit;
 }
-async function fileBytes(root: string, path: string, maxBytes: number): Promise<Uint8Array> {
+export async function fileBytes(root: string, path: string, maxBytes: number): Promise<Uint8Array> {
   const target = await checkedPath(root, path, 'file');
   const handle = await open(target, 'r');
   try {

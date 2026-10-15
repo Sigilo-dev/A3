@@ -1,5 +1,28 @@
 # Registro de trabajo y correcciones
 
+## 2026-10-15 — E1-C2
+
+Se verificó raíz Git, origin `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base`, árbol inicialmente limpio y base/remoto E1-C1 `276cdb8`. Se leyeron contratos E0-A, resumen/decisiones E0, evidencia Windows E0-C1, especificación local §§7–8/18/28 y codecs/dominio actuales. No se actualizan dependencias, lock, schemas/fixtures E0 ni UI/IPC.
+
+Se implementó servicio host con leases compartidos, cola de lectura/preparación/commit, arbitraje Windows por named pipe asociado a identidad real del directorio y modo read-only/writer-busy para competidores. No hay reclamación por PID ni transferencia implícita. Se comprueba nuevamente la identidad de root. El host aporta actor/políticas de dominio y acceso a archivos; no hay autorización por campos del proyecto. Preparación y commit validan permisos y observaciones, rechazan revisiones/hashes obsoletos y conservan preview propio. Fuentes se abren por Resource UUID y se escriben como bytes exactos, coordinadas con la siguiente revisión del descriptor.
+
+Los codecs C1 siguen preservando campos desconocidos. Se persisten comandos de documentos y copy/move de fuentes locales mediante intención/progreso sincronizados, copias independientes previas/propuestas, temporales del mismo volumen, separación del destino anterior y creación exclusiva de nombre mediante hardlink. Esto conserva bytes externos capturados o nombres recreados en carrera, sin overwrite. No se presenta como operación atómica: existe una ventana de nombre ausente y un fallo puede dejar un conjunto parcial. El marcador committed solo se escribe tras verificación de destinos, dependencias, backups, staging y objetos capturados. Un error posterior a intención bloquea más escrituras y conserva artefactos.
+
+El registro versionado permanece en `.a3/local/transactions` incluso con catalogRoot personalizado, excluido de Git y descubrible sin manifiesto válido. Tiene intent/readSet, SHA de solicitud, rutas/hashes por entrada y NDJSON con secuencia/cadena hash. El arranque solo clasifica cadenas cerradas completas; ausencias, versiones desconocidas y truncamientos quedan recovery-required. No se ejecuta recovery, rollback global, migración, limpieza de backups ni ledger durable de reintentos. La ADR 0004 publica el contrato para E1-D1 y delimita garantías de OS/energía.
+
+Watcher recursivo con debounce y sondeo compara hashes/identidades de documentos y fuentes conocidas. Detecta edición, borrado, reemplazo y JSON inválido. Observaciones no actualizan automáticamente la base aceptada; reload explícito exige una nueva base válida. Own writes se reconocen por su imagen esperada, sin ocultar ediciones por timeout. Borrar un descriptor no se informa como borrado de su archivo, ni invalida por sí mismo la lectura de una fuente conservada. Fallos del watcher se informan y no deshabilitan las precondiciones del commit.
+
+Verificación Windows 10 x64 build 19045, Node host 24.13.1/npm 11.10.0:
+
+- `npm test`: 34 E0, 44 dominio, 68 store = 146 pruebas aprobadas. Casos C2: ID/bytes exactos, permisos/revocación, revisiones/hashes, planes concurrentes, ventanas compartidas, segundo proceso real, muerte del dueño, watcher nativo, captura de carrera externa, eliminación de documentos conservando fuentes y mudanza local.
+- Seis procesos terminaron con exit 86 en fases after-intent, after-staging, after-detach, after-install, before-commit y after-commit. Sin marcador completo se reabre solo lectura; con marcador validado se permite nuevo writer. No se prueba recuperación completa ni corte físico de energía.
+- `npm run typecheck` y `npm run build`: exit 0; store y desktop compilan y los bundles del renderer E1-A no cambian. No se genera instalador ni se repiten spikes ajenos al cambio.
+- Sin cambios en package-lock ni pins externos. Revisión de diff/whitespace antes de commit. La carpeta ajena no rastreada `pkr-site/` apareció durante el trabajo; se conserva y no se incluye.
+
+Correcciones realizadas: se quitaron imports sin uso detectados por tipos. Una prueba de caída después de separar el primer JSON devolvía project-not-writable en lugar de recovery-required; se priorizó comprobar el registro pendiente incluso con catálogo incompleto. Se fijó root local para poder descubrirlo con manifiesto separado y no publicar backups cuando catalogRoot cambia. Se serializó apertura inicial para compartir servicio en ventanas concurrentes, se invalidan propuestas al cambiar actor, se verifican nuevamente permisos/copias antes del marcador y se conserva la observación de fuentes cuyos descriptores desaparecen. La recuperación completa permanece sin implementar, como exige el corte.
+
+A3-046 tiene registro/rechazo de estado pendiente y evidencia de caída de proceso, pendiente completar/revertir en E1-D1. A3-047 tiene detección/conservación de versiones en el servicio, pendiente UI diff/merge. NodeType/paquetes, eliminación de carpetas completas de workspace, mounts/URLs y Linux writer se rechazan explícitamente en vez de confirmar efectos parciales. Commit solicitado: `feat(store): add transactional project writes`, solo en `codex/e1-base` sin force push.
+
 ## 2026-10-14 — E1-C1
 
 Se verificó raíz Git `C:/Users/VR/Documents/ChatGPT/A3`, origin `https://github.com/Sigilo-dev/A3.git`, árbol limpio y HEAD/remoto `c141918` en `codex/e1-base`. Se continuó sobre E1-B; no se cambió la base, main, schemas/fixtures E0/E1, locks de spikes ni documentos de planificación locales ignorados. No había cambios ajenos al iniciar.
