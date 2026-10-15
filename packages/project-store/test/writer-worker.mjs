@@ -13,6 +13,9 @@ if (mode === 'probe') {
 if (mode === 'hold') {
   process.send?.({ mode: lease.service.state.mode });
   process.on('message', async () => { await lease.close(); process.exit(0); });
+} else if (mode === 'recover') {
+  process.send?.({ mode: lease.service.state.mode, reason: lease.service.state.reason, diagnostics: lease.service.state.recoveryDiagnostics });
+  await lease.close(); process.exit(0);
 } else {
   const resource = lease.service.state.project.snapshot.records.find((r) => r.kind === 'resource');
   const opened = await lease.service.openResource(resource.value.id);

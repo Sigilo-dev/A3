@@ -1,5 +1,26 @@
 # Registro de trabajo y correcciones
 
+## 2026-10-15 — E1-D1
+
+Se verificaron raíz Git `C:/Users/VR/Documents/ChatGPT/A3`, origin fetch/push `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base`, base E1-C2 `f8d85af` y remoto. El único elemento ajeno al inicio fue el directorio no rastreado `pkr-site/`; se conserva intacto y fuera del commit. Se leyeron la especificación maestra §§7–8/28, contratos/evidencia E0-C1, ADR 0004, API y pruebas del writer.
+
+Antes de programar quedó fijada la máquina de estados en `docs/e1/transaction-recovery.md`: preparar, respaldar, aplicar, confirmar, revertir y conflicto. Se mantiene el protocolo C2 y su cadena hash; nuevas intenciones guardan la identidad principal `{kind,id}` sin credenciales y las revisiones antes/después. El journal permanece en `.a3/local/transactions`, fuera de datos portables y excluido de Git.
+
+Al abrir con el writer adquirido, el store valida intent, eventos, hashes, identidades, copias y read set. Si todos los destinos coinciden con la propuesta y las dependencias siguen iguales, completa el marcador de confirmación sin reescribir. Si el lote está en estado anterior/aplicado/intermedio reconocible y no hay cambios externos, revierte en orden inverso desde copias independientes. Guarda la salida apartada en `.recovery-applied`, prepara `.recovery-restore` como copia independiente y verifica cada paso exclusivo antes de avanzar. Decisión y avance quedan en el mismo journal para poder retomar el proceso. Una tercera versión, permiso revocado o evidencia ambigua produce conflicto sin tocar el contenido externo; permanecen el archivo actual y copias `.before`/`.staged`. Truncamientos, UTF-8/JSON ambiguos, versiones desconocidas o hash-chain inválido mueven íntegra la carpeta a `transactions/quarantine/`, la diagnostican y mantienen solo lectura.
+
+La distinción de atomicidad queda explícita: cada ruta tiene efectos separados y el lote conserva `atomic: false`. El protocolo detach + hardlink también deja un intervalo sin nombre para una ruta individual; no se afirma reemplazo continuo ni atomicidad entre archivos.
+
+Pruebas Windows 10 x64 build 19045, Node 24.13.1/npm 11.10.0, usando directorios temporales NTFS:
+
+- `npm test`: 34 E0 + 44 dominio + 74 store = **152 pruebas aprobadas**.
+- Terminaciones reales `process.exit(86)` cubren siete puntos de commit, lote Resource de descriptor/fuente, recuperación de borrado, rollback interrumpido, confirmación interrumpida, repetición de arranque, conflicto con edición/eliminación externa y aislamiento interrumpido de journal truncado. Las copias exactas y revisiones se comparan antes/después.
+- `npm run typecheck` y `npm run build`: exit 0; no cambiaron dependencias, lock, schemas, fixtures ni UI.
+- No se simuló corte eléctrico. E0-C1 tampoco demostró flush de metadata de directorio; no se promete durabilidad física ni tolerancia a pérdida de energía.
+
+Corrección durante el trabajo: un primer clasificador trataba la salida preservada junto a su destino ya restaurado como recreación externa; se ajustó la clasificación por identidad del candidato de restauración y la prueba reanuda rollback en un segundo proceso. Una prueba adicional fija el caso de borrado con todos los destinos aplicados: completa el journal y mantiene el backup detached. No se limpiaron los registros cerrados ni se amplió el scope a snapshots/retención, historial Git, UI de conflictos, migraciones o app-server.
+
+A3-030 recibe evidencia parcial de recuperación local repetible por `operationId`; no se reanuda Codex/app-server. A3-038 conserva una copia local y permite rollback automático del lote, pero snapshots con retención, historial visible, restauración del usuario y coordinación con Git siguen pendientes. A3-046 queda cubierto para interrupciones del proceso, no para energía; A3-047 conserva y diagnostica cambios externos, sin UI diff/merge; A3-048 mantiene inspección en solo lectura de versiones futuras, no ejecuta migraciones. Commit solicitado: `feat(store): add crash recovery journal`, publicado en `codex/e1-base` sin force push.
+
 ## 2026-10-15 — E1-C2
 
 Se verificó raíz Git, origin `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base`, árbol inicialmente limpio y base/remoto E1-C1 `276cdb8`. Se leyeron contratos E0-A, resumen/decisiones E0, evidencia Windows E0-C1, especificación local §§7–8/18/28 y codecs/dominio actuales. No se actualizan dependencias, lock, schemas/fixtures E0 ni UI/IPC.

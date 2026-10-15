@@ -17,7 +17,10 @@ export interface StoreHost {
   authorizeAccess(request: AccessRequest): boolean;
 }
 export type FaultPhase = 'after-intent' | 'after-staging' | 'before-detach' | 'after-detach' |
-  'before-install' | 'after-install' | 'before-commit' | 'after-commit';
+  'before-install' | 'after-install' | 'before-commit' | 'after-commit' |
+  'recovery-after-decision' | 'recovery-after-backup-check' | 'recovery-after-entry' |
+  'recovery-before-finalize' | 'recovery-after-finalize' | 'recovery-before-conflict' |
+  'recovery-after-conflict' | 'recovery-before-quarantine' | 'recovery-after-quarantine';
 export interface ServiceOptions {
   host: StoreHost;
   registry?: TypeRegistry;
@@ -72,18 +75,24 @@ export interface ServiceState {
   reason?: string;
   project: ProjectReadResult;
   externalConflict: boolean;
+  recoveryDiagnostics: readonly StoreDiagnostic[];
 }
 export interface IntentEntry extends WriteChange {
   backupPath: string;
   stagedPath: string;
   candidatePath: string;
   detachedPath: string;
+  /** Absent in C2 journals created before E1-D1; revisions are captured in new intents. */
+  revisionBefore?: number | null;
+  revisionAfter?: number | null;
 }
 export interface WriteIntent {
   schemaVersion: '1.0.0';
   protocol: 'a3.store.detached-link/1';
   operationId: string;
   projectId: string;
+  /** Stable non-secret principal identity; absent only in legacy E1-C2 journals. */
+  actor?: Pick<Actor, 'kind' | 'id'>;
   requestHash: string;
   readSet: { path: string; hash: string | null; identity: string | null }[];
   entries: IntentEntry[];
@@ -93,7 +102,8 @@ export interface ProgressEvent {
   schemaVersion: '1.0.0';
   seq: number;
   previousHash: string;
-  event: 'intent' | 'staged' | 'detach-start' | 'detached' | 'install-start' | 'installed' | 'verified' | 'committed' | 'failed' | 'restored-link';
+  event: 'intent' | 'staged' | 'detach-start' | 'detached' | 'install-start' | 'installed' | 'verified' | 'committed' | 'failed' | 'restored-link' |
+    'recovery-start' | 'recovery-progress' | 'recovery-committed' | 'recovery-rolled-back' | 'recovery-conflict';
   index?: number;
   detail?: string;
   hash: string;

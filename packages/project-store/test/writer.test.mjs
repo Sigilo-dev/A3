@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { fork } from 'node:child_process';
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
@@ -64,8 +64,11 @@ test('resource by ID: exact bytes, descriptor revision, synced intent/backups an
   const intent = JSON.parse(await readFile(join(root, receipt.transactionPath, 'intent.json')));
   const sourceEntry = intent.entries.find((e) => e.path === opened.path);
   assert.equal(sourceEntry.beforeHash, opened.sha256);
+  assert.equal(sourceEntry.revisionBefore, 1); assert.equal(sourceEntry.revisionAfter, 2);
   assert.equal(sha256(await readFile(join(root, sourceEntry.backupPath))), opened.sha256);
   assert.equal(sha256(await readFile(join(root, sourceEntry.stagedPath))), sourceEntry.afterHash);
+  assert.deepEqual(intent.actor, { kind: 'user', id: 'test-user' });
+  assert.equal(Object.hasOwn(intent, 'prompt'), false); assert.equal(Object.hasOwn(intent, 'content'), false);
   await service.checkExternalChanges(); await service.checkExternalChanges();
   assert.equal(events.filter((e) => e.kind === 'external-change').length, 0);
   assert.equal(events.filter((e) => e.kind === 'committed').length, 1);
@@ -185,6 +188,26 @@ test('domain removal quarantines documents, preserving shared source content', w
   assert.deepEqual(await readFile(join(root, 'pages/readme.md')), source);
   assert.equal(service.state.mode, 'writer');
 });
+test('A3-046: an interrupted deletion with every destination applied is confirmed from detached copies', windows, async (t) => {
+  const setupResult = await setup(t);
+  const { root, service, host, lease, open, options } = setupResult;
+  const placementPath = service.state.project.documents.find((d) => d.record?.kind === 'placement' && d.record.value.id === P1).location.path;
+  const placementBytes = await readFile(join(root, placementPath));
+  options.fault = async (phase) => { if (phase === 'before-commit') throw new Error('injected interruption after all delete effects'); };
+  const proposal = ok(await service.prepare(command(service, host, 'a3.core.delete', { ref: { kind: 'placement', id: P1, workspaceId: W1 } }, 44)));
+  const failure = rejects(await service.commit(proposal));
+  assert.equal(failure.recoveryRequired, true);
+  await lease.close(); options.fault = undefined;
+  const reopened = await open();
+  assert.equal(reopened.service.state.mode, 'writer', JSON.stringify(reopened.service.state.recoveryDiagnostics));
+  assert.ok(!reopened.service.state.project.snapshot.records.some((r) => r.kind === 'placement' && r.value.id === P1));
+  const operation = (await readdir(join(root, '.a3/local/transactions'))).find((name) => name !== 'quarantine');
+  const intent = JSON.parse(await readFile(join(root, '.a3/local/transactions', operation, 'intent.json'), 'utf8'));
+  const entry = intent.entries.find((item) => item.path === placementPath);
+  assert.equal(sha256(await readFile(join(root, entry.detachedPath))), sha256(placementBytes));
+  const events = (await readFile(join(root, '.a3/local/transactions', operation, 'progress.ndjson'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.at(-1).event, 'recovery-committed');
+});
 test('domain resource move stages source and descriptor without overwriting an existing target', windows, async (t) => {
   const { root, service, host } = await setup(t);
   const resource = service.state.project.snapshot.records.find((r) => r.kind === 'resource');
@@ -207,17 +230,129 @@ test('removing an unused resource descriptor retains its bytes without a false d
   assert.equal(service.state.mode, 'writer');
   assert.equal(service.state.externalConflict, false);
 });
-for (const phase of ['after-intent', 'after-staging', 'after-detach', 'after-install', 'before-commit', 'after-commit']) test(`A3-046: process exit at ${phase}; restart does not accept pending mixed state`, windows, async (t) => {
+for (const phase of ['after-intent', 'after-staging', 'after-detach', 'before-install', 'after-install', 'before-commit', 'after-commit']) test(`A3-046: process exit at ${phase}; restart deterministically recovers every file`, windows, async (t) => {
   const { root, lease, open } = await setup(t);
+  const resource = lease.service.state.project.snapshot.records.find((r) => r.kind === 'resource');
+  const opened = ok(await lease.service.openResource(resource.value.id));
+  const descriptorPath = lease.service.state.project.documents.find((d) => d.record?.kind === 'resource' && d.record.value.id === resource.value.id).location.path;
+  const beforeSource = await readFile(join(root, opened.path));
+  const beforeDescriptor = await readFile(join(root, descriptorPath));
   await lease.close();
   const workerProcess = child(root, 'write', phase);
   const [code] = await workerProcess.exited;
   assert.equal(code, 86, workerProcess.output());
+  if (phase === 'after-intent') {
+    const interruptedPreparation = child(root, 'recover', 'recovery-after-backup-check');
+    assert.equal((await interruptedPreparation.exited)[0], 86, interruptedPreparation.output());
+  }
   const reopened = await open();
-  if (phase === 'after-commit') assert.equal(reopened.service.state.mode, 'writer');
-  else { assert.equal(reopened.service.state.mode, 'read-only'); assert.equal(reopened.service.state.reason, 'recovery-required'); }
+  const shouldCommit = phase === 'before-commit' || phase === 'after-commit';
+  assert.equal(reopened.service.state.mode, 'writer', JSON.stringify(reopened.service.state.recoveryDiagnostics));
+  if (shouldCommit) {
+    assert.deepEqual(await readFile(join(root, opened.path)), Buffer.from('new worker content\r\n'));
+    assert.equal(JSON.parse(await readFile(join(root, descriptorPath))).revision, JSON.parse(beforeDescriptor).revision + 1);
+  } else {
+    assert.deepEqual(await readFile(join(root, opened.path)), beforeSource);
+    assert.deepEqual(await readFile(join(root, descriptorPath)), beforeDescriptor);
+  }
   const operations = await readdir(join(root, '.a3/local/transactions'));
-  assert.equal(operations.length, 1);
+  const operation = operations.find((name) => name !== 'quarantine');
+  assert.ok(operation);
+  const events = (await readFile(join(root, '.a3/local/transactions', operation, 'progress.ndjson'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.at(-1).event, shouldCommit && phase === 'before-commit' ? 'recovery-committed' :
+    shouldCommit ? 'committed' : 'recovery-rolled-back');
+  await reopened.close();
+  const reopenedTwice = await open();
+  assert.equal(reopenedTwice.service.state.mode, 'writer');
+  if (shouldCommit) assert.deepEqual(await readFile(join(root, opened.path)), Buffer.from('new worker content\r\n'));
+  else assert.deepEqual(await readFile(join(root, opened.path)), beforeSource);
+});
+test('A3-046: interruption during rollback resumes idempotently on the next process', windows, async (t) => {
+  const { root, lease, open } = await setup(t);
+  const resource = lease.service.state.project.snapshot.records.find((r) => r.kind === 'resource');
+  const opened = ok(await lease.service.openResource(resource.value.id));
+  const descriptorPath = lease.service.state.project.documents.find((d) => d.record?.kind === 'resource' && d.record.value.id === resource.value.id).location.path;
+  const beforeSource = await readFile(join(root, opened.path));
+  const beforeDescriptor = await readFile(join(root, descriptorPath));
+  await lease.close();
+  const writer = child(root, 'write', 'after-install');
+  assert.equal((await writer.exited)[0], 86, writer.output());
+  const recovery = child(root, 'recover', 'recovery-after-entry');
+  assert.equal((await recovery.exited)[0], 86, recovery.output());
+  const reopened = await open();
+  assert.equal(reopened.service.state.mode, 'writer', JSON.stringify(reopened.service.state.recoveryDiagnostics));
+  assert.deepEqual(await readFile(join(root, opened.path)), beforeSource);
+  assert.deepEqual(await readFile(join(root, descriptorPath)), beforeDescriptor);
+  await reopened.close();
+  assert.equal((await open()).service.state.mode, 'writer');
+});
+test('A3-046: interruption while confirming an all-applied operation does not apply it twice', windows, async (t) => {
+  const { root, lease, open } = await setup(t);
+  const resource = lease.service.state.project.snapshot.records.find((r) => r.kind === 'resource');
+  const opened = ok(await lease.service.openResource(resource.value.id));
+  const descriptorPath = lease.service.state.project.documents.find((d) => d.record?.kind === 'resource' && d.record.value.id === resource.value.id).location.path;
+  const beforeRevision = JSON.parse(await readFile(join(root, descriptorPath))).revision;
+  await lease.close();
+  const writer = child(root, 'write', 'before-commit');
+  assert.equal((await writer.exited)[0], 86, writer.output());
+  const recovery = child(root, 'recover', 'recovery-before-finalize');
+  assert.equal((await recovery.exited)[0], 86, recovery.output());
+  const finalizedRecovery = child(root, 'recover', 'recovery-after-finalize');
+  assert.equal((await finalizedRecovery.exited)[0], 86, finalizedRecovery.output());
+  const reopened = await open();
+  assert.equal(reopened.service.state.mode, 'writer', JSON.stringify(reopened.service.state.recoveryDiagnostics));
+  assert.deepEqual(await readFile(join(root, opened.path)), Buffer.from('new worker content\r\n'));
+  assert.equal(JSON.parse(await readFile(join(root, descriptorPath))).revision, beforeRevision + 1);
+  const operation = (await readdir(join(root, '.a3/local/transactions'))).find((name) => name !== 'quarantine');
+  const log = join(root, '.a3/local/transactions', operation, 'progress.ndjson');
+  const beforeCount = (await readFile(log, 'utf8')).trim().split('\n').length;
+  await reopened.close();
+  assert.equal((await open()).service.state.mode, 'writer');
+  assert.equal((await readFile(log, 'utf8')).trim().split('\n').length, beforeCount);
+});
+test('A3-046: later external bytes are preserved with both journal versions and reported as conflict', windows, async (t) => {
+  const { root, lease, open } = await setup(t);
+  const resource = lease.service.state.project.snapshot.records.find((r) => r.kind === 'resource');
+  const opened = ok(await lease.service.openResource(resource.value.id));
+  const beforeSource = await readFile(join(root, opened.path));
+  await lease.close();
+  const writer = child(root, 'write', 'after-install');
+  assert.equal((await writer.exited)[0], 86, writer.output());
+  const external = Buffer.from('external edit after interrupted write\r\n');
+  await writeFile(join(root, opened.path), external);
+  const interruptedRecovery = child(root, 'recover', 'recovery-before-conflict');
+  assert.equal((await interruptedRecovery.exited)[0], 86, interruptedRecovery.output());
+  const recordedConflict = child(root, 'recover', 'recovery-after-conflict');
+  assert.equal((await recordedConflict.exited)[0], 86, recordedConflict.output());
+  const reopened = await open();
+  assert.equal(reopened.service.state.mode, 'read-only');
+  assert.equal(reopened.service.state.reason, 'recovery-required');
+  assert.ok(reopened.service.state.recoveryDiagnostics.some((d) => d.detail === 'recovery-external-change'));
+  assert.deepEqual(await readFile(join(root, opened.path)), external);
+  const operation = (await readdir(join(root, '.a3/local/transactions'))).find((name) => name !== 'quarantine');
+  const intent = JSON.parse(await readFile(join(root, '.a3/local/transactions', operation, 'intent.json'), 'utf8'));
+  const sourceEntry = intent.entries.find((entry) => entry.path === opened.path);
+  assert.equal(sha256(await readFile(join(root, sourceEntry.backupPath))), sha256(beforeSource));
+  assert.deepEqual(await readFile(join(root, sourceEntry.stagedPath)), Buffer.from('new worker content\r\n'));
+});
+test('A3-047: external deletion after an installed file is treated as conflict, not undone', windows, async (t) => {
+  const { root, lease, open } = await setup(t);
+  const resource = lease.service.state.project.snapshot.records.find((r) => r.kind === 'resource');
+  const descriptorPath = lease.service.state.project.documents.find((d) => d.record?.kind === 'resource' && d.record.value.id === resource.value.id).location.path;
+  const beforeDescriptor = await readFile(join(root, descriptorPath));
+  await lease.close();
+  const writer = child(root, 'write', 'after-install');
+  assert.equal((await writer.exited)[0], 86, writer.output());
+  await unlink(join(root, descriptorPath));
+  const reopened = await open();
+  assert.equal(reopened.service.state.mode, 'read-only');
+  assert.ok(reopened.service.state.recoveryDiagnostics.some((d) => d.detail === 'recovery-external-change' && d.path === descriptorPath));
+  await assert.rejects(readFile(join(root, descriptorPath)), { code: 'ENOENT' });
+  const operation = (await readdir(join(root, '.a3/local/transactions'))).find((name) => name !== 'quarantine');
+  const intent = JSON.parse(await readFile(join(root, '.a3/local/transactions', operation, 'intent.json'), 'utf8'));
+  const entry = intent.entries.find((item) => item.path === descriptorPath);
+  assert.equal(sha256(await readFile(join(root, entry.backupPath))), sha256(beforeDescriptor));
+  assert.equal(sha256(await readFile(join(root, entry.stagedPath))), entry.afterHash);
 });
 test('truncated progress and missing intent are fail-closed, without repair', windows, async (t) => {
   const { root, service, lease, open } = await setup(t);
@@ -226,8 +361,16 @@ test('truncated progress and missing intent are fail-closed, without repair', wi
   await lease.close();
   const log = join(root, receipt.transactionPath, 'progress.ndjson');
   await writeFile(log, (await readFile(log)).subarray(0, -8));
+  const isolation = child(root, 'recover', 'recovery-before-quarantine');
+  assert.equal((await isolation.exited)[0], 86, isolation.output());
   const truncated = await open(); assert.equal(truncated.service.state.reason, 'recovery-required');
+  assert.ok(truncated.service.state.recoveryDiagnostics.some((d) => d.detail === 'journal-quarantined'));
+  assert.ok((await readdir(join(root, '.a3/local/transactions/quarantine'))).length === 1);
   await truncated.close();
   await mkdir(join(root, '.a3/local/transactions', id(300)));
-  assert.equal((await open()).service.state.reason, 'recovery-required');
+  const interruptedQuarantine = child(root, 'recover', 'recovery-after-quarantine');
+  assert.equal((await interruptedQuarantine.exited)[0], 86, interruptedQuarantine.output());
+  const missingIntent = await open();
+  assert.equal(missingIntent.service.state.reason, 'recovery-required');
+  assert.equal((await readdir(join(root, '.a3/local/transactions/quarantine'))).length, 2);
 });

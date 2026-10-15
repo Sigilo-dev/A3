@@ -5,7 +5,8 @@ import { defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePl
 import { encodeDocument, issue, serializeRecord, sha256 } from './codec.js';
 import { canonicalJson, freeze, pointerToken } from './json.js';
 import { acquireOwnership, projectIdentity, type Ownership } from './ownership.js';
-import { jsonBytes, ProgressLog, progressProtocol, transactionRoot, unfinishedTransactions } from './progress.js';
+import { jsonBytes, ProgressLog, progressProtocol, transactionRoot } from './progress.js';
+import { recoverTransactions } from './recovery.js';
 import { checkedPath, fileBytes, ioIssue, PathError, readProject, readProjectResource, resolvePortablePath } from './reader.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
 import type { JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
@@ -71,6 +72,7 @@ export class ProjectService {
   #debounce: NodeJS.Timeout | undefined;
   #dirty = false;
   #own = new Map<string, Observation>();
+  #recoveryDiagnostics: StoreDiagnostic[] = [];
   #sourceRefs = new Map<string, Resource>();
   #registry: TypeRegistry;
   #resourceLimit: number;
@@ -91,18 +93,23 @@ export class ProjectService {
       service.#accepted = service.#observed = await service.#scan(true);
       const project = service.#accepted.project.snapshot.records.find((r) => r.kind === 'project');
       if (project?.kind === 'project') service.#catalog = project.value.catalogRoot;
-      if (service.#accepted.project.mode !== 'ready' || !service.#accepted.project.catalogComplete || service.#accepted.diagnostics.some((d) => d.severity === 'error')) service.#reason ??= 'project-not-writable';
       if (ownership) {
-        const pending = await unfinishedTransactions(root, transactionRoot);
-        if (pending.length) service.#reason = 'recovery-required';
+        const recovery = await recoverTransactions(root, { ...(project?.kind === 'project' ? { projectId: project.value.projectId } : {}), authenticatedActor: options.host.authenticatedActor,
+          maxBytes: service.#resourceLimit, authorizeWrite: (paths) => service.#authorized('write', [...paths]), ...(options.fault ? { fault: options.fault } : {}) });
+        service.#recoveryDiagnostics = [...recovery.diagnostics];
+        if (recovery.diagnostics.some((d) => d.code === 'REVISION_CONFLICT')) service.#external = true;
+        if (recovery.blocked) service.#reason = 'recovery-required';
+        else if (recovery.recovered.length) service.#accepted = service.#observed = await service.#scan(true);
       }
+      if (!service.#reason && (service.#accepted.project.mode !== 'ready' || !service.#accepted.project.catalogComplete || service.#accepted.diagnostics.some((d) => d.severity === 'error'))) service.#reason = 'project-not-writable';
       service.#startWatcher();
       return service;
     } catch (error) { await ownership?.close(); throw error; }
   }
   get state(): ServiceState {
     return { mode: this.#ownership?.alive() && !this.#reason && !this.#closing ? 'writer' : 'read-only',
-      ...(this.#reason ? { reason: this.#reason } : {}), project: this.#observed.project, externalConflict: this.#external };
+      ...(this.#reason ? { reason: this.#reason } : {}), project: this.#observed.project, externalConflict: this.#external,
+      recoveryDiagnostics: this.#recoveryDiagnostics };
   }
   subscribe(listener: (event: ServiceEvent) => void): () => void { this.#listeners.add(listener); return () => { this.#listeners.delete(listener); }; }
   #emit(event: ServiceEvent): void { for (const listener of this.#listeners) { try { listener(freeze(event)); } catch { /* A UI listener cannot abort IO. */ } } }
@@ -376,8 +383,14 @@ export class ProjectService {
       // Never reuse an operation directory, including one left by a dead process.
       await mkdir(await absentPath(this.root, folder));
       transactionPath = folder;
-      const entries: IntentEntry[] = plan.changes.map((c, index) => ({ ...c, backupPath: `${folder}/${index}.before`, stagedPath: `${folder}/${index}.staged`, candidatePath: `${folder}/${index}.candidate`, detachedPath: `${folder}/${index}.detached` }));
-      const intent: WriteIntent = { schemaVersion: '1.0.0', protocol: progressProtocol, operationId: plan.operationId, projectId: plan.projectId, requestHash: data.requestHash,
+      const entries: IntentEntry[] = plan.changes.map((c, index) => {
+        const before = c.ref ? data.scan.project.snapshot.records.find((record) => refKey(refOf(record)) === refKey(c.ref!)) : undefined;
+        const after = c.ref ? data.nextRecords.find((record) => refKey(refOf(record)) === refKey(c.ref!)) : undefined;
+        return { ...c, backupPath: `${folder}/${index}.before`, stagedPath: `${folder}/${index}.staged`, candidatePath: `${folder}/${index}.candidate`, detachedPath: `${folder}/${index}.detached`,
+          revisionBefore: before?.value.revision ?? null, revisionAfter: after?.value.revision ?? null };
+      });
+      const intent: WriteIntent = { schemaVersion: '1.0.0', protocol: progressProtocol, operationId: plan.operationId, projectId: plan.projectId,
+        actor: { kind: this.options.host.authenticatedActor.kind, id: this.options.host.authenticatedActor.id }, requestHash: data.requestHash,
         readSet: [...data.scan.files].map(([path, value]) => ({ path, hash: value.hash, identity: value.identity })), entries, extensions: {} };
       log = new ProgressLog(this.root, folder); await log.intent(intent);
       await this.#fault('after-intent', plan.operationId);
@@ -428,8 +441,8 @@ export class ProjectService {
           }
         }
         if (entry.afterHash !== null) {
-          await log.append('install-start', { index });
           await this.#fault('before-install', plan.operationId, index, entry.path);
+          await log.append('install-start', { index });
           // Candidate is disposable; immutable staged bytes remain a separate file.
           if (sha256(await fileBytes(this.root, entry.candidatePath, this.#resourceLimit)) !== entry.afterHash) throw new PathError('candidate-changed', entry.path);
           await installExclusive(this.root, entry.candidatePath, entry.path);
@@ -509,6 +522,7 @@ async function openService(path: string, options: ServiceOptions): Promise<Store
     return { ok: true, value: { service, reused: false, close: async () => {
       if (closed) return; closed = true;
       if (--entry.leases === 0) { await service.dispose(); if (pool.get(identity) === entry) pool.delete(identity); }
-    } }, diagnostics: service.state.mode === 'read-only' ? [issue('a3.project.json', 'io', service.state.reason ?? 'writer-unavailable', 'Proyecto abierto en solo lectura; no se transfirió el escritor.', { severity: 'warning' })] : [] };
+    } }, diagnostics: service.state.mode === 'read-only' ? [...service.state.recoveryDiagnostics,
+      issue('a3.project.json', 'io', service.state.reason ?? 'writer-unavailable', 'Proyecto abierto en solo lectura; no se transfirió el escritor.', { severity: 'warning' })] : service.state.recoveryDiagnostics };
   } catch (error) { await ownership?.close(); return failure([ioIssue('a3.project.json', error)]); }
 }
