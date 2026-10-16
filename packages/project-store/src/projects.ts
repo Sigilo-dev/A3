@@ -1,8 +1,8 @@
 import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { defaultRegistry, refKey, refOf, revisionsOf, validateSnapshot, type ContentEffect, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { CONTENT_NODE_CATALOG, contentNodeDefinition, defaultRegistry, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
@@ -15,6 +15,24 @@ import { inspectLocalMountFile, validateMountRelativePath } from './mounts.js';
 import type { ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function detectedMediaType(resource: Extract<DomainRecord, { kind: 'resource' }>['value']): string | undefined {
+  if (resource.mediaType) return resource.mediaType;
+  if (resource.kind === 'remote-url') return 'text/uri-list';
+  const extension = resource.path.split('/').at(-1)?.toLowerCase().split('.').at(-1);
+  return ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif',
+    mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska', mp3: 'audio/mpeg', wav: 'audio/wav',
+    ogg: 'audio/ogg', flac: 'audio/flac', md: 'text/markdown', txt: 'text/plain', json: 'application/json' } as Record<string, string>)[extension ?? ''];
+}
+function resourceDescriptor(record: Extract<DomainRecord, { kind: 'resource' }>): CanvasResourceDescriptor {
+  const resource = record.value;
+  const mediaType = detectedMediaType(resource);
+  if (resource.kind === 'remote-url') {
+    let label = 'Referencia externa';
+    try { label = new URL(resource.url).hostname; } catch { /* The domain validator reports malformed URLs. */ }
+    return { id: resource.id, kind: resource.kind, label, ...(mediaType ? { mediaType } : {}), url: resource.url };
+  }
+  return { id: resource.id, kind: resource.kind, label: basename(resource.path), ...(mediaType ? { mediaType } : {}) };
+}
 export class LocalProjectError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'LocalProjectError'; }
 }
@@ -36,7 +54,13 @@ export interface LocalProjectsState {
 export interface WorkspaceViewport { x: number; y: number; zoom: number; }
 export interface CanvasEntitySummary {
   id: string; revision: number; type: string; typeVersion: string; title: string; properties: Entity['properties']; ports: Entity['ports'];
-  contentResourceId?: string; typeAvailable: boolean;
+  contentResourceId?: string; contentResource?: CanvasResourceDescriptor; typeAvailable: boolean;
+}
+export interface CanvasResourceDescriptor { id: string; kind: 'project-file' | 'mounted-file' | 'remote-url'; label: string; mediaType?: string; url?: string; }
+export interface CanvasResourceChoice extends CanvasResourceDescriptor {}
+export interface CanvasContentNodeInput {
+  kind: ContentNodeKind; title: string; position: { x: number; y: number }; value?: string; url?: string; resourceId?: string;
+  description?: string; altText?: string; language?: string;
 }
 export interface CanvasEntityChoice { id: string; type: string; typeVersion: string; title: string; }
 export interface CanvasPlacementView {
@@ -51,11 +75,11 @@ export interface CanvasPlacementMove { id: string; expectedRevision: number; pos
 export interface CanvasPlacementViewPatch { id: string; expectedRevision: number; position?: { x: number; y: number }; style?: ExtensionMap; }
 export interface CanvasSelectionRef { id: string; expectedRevision: number; }
 export interface CanvasSelection { placements: CanvasSelectionRef[]; drawings: CanvasSelectionRef[]; groups: CanvasSelectionRef[]; }
-export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; }
+export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; mediaType?: string; bytes?: Uint8Array; }
 export interface LocalCanvasWorkspace {
   sessionId: string; workspaceId: string; name: string; revision: number;
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
-  placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[]; drawings: readonly CanvasDrawingView[]; groups: readonly CanvasGroupView[];
+  resourceChoices: readonly CanvasResourceChoice[]; placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[]; drawings: readonly CanvasDrawingView[]; groups: readonly CanvasGroupView[];
   history: { canUndo: boolean; canRedo: boolean; undoRequiresDelete: boolean; redoRequiresDelete: boolean; deleteAvailable: boolean };
   canDeleteEdges: boolean; canDeleteDrawings: boolean; canConvertDrawings: boolean;
 }
@@ -494,14 +518,18 @@ export class LocalProjectManager {
       projectId: active.projectId, operation: 'write', paths: [], refs: [{ kind: 'workspace', id: workspaceId }], resources: [], requiredCapabilities: ['diagram.edit'], stage: 'prepare' });
     const snapshot = active.lease.service.state.project.snapshot;
     const choices = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'entity' }> => record.kind === 'entity');
+    const resourceRecords = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource');
+    const resources = new Map(resourceRecords.map((record) => [record.value.id.toLowerCase(), record]));
     const placements = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'placement' }> => record.kind === 'placement' && record.workspaceId === workspaceId)
       .map(({ value }) => ({ id: value.id, revision: value.revision, entityId: value.entityId, position: value.position, size: value.size, style: value.style }));
     const placedIds = new Set(placements.map((placement) => placement.entityId.toLowerCase()));
     const entities = choices.filter(({ value }) => placedIds.has(value.id.toLowerCase()))
       .map(({ value }) => ({ id: value.id, revision: value.revision, type: value.type, typeVersion: value.typeVersion,
-        title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId } : {}),
-        typeAvailable: (this.options.registry ?? defaultRegistry()).nodeTypes.some((definition) => definition.name === value.type && definition.version === value.typeVersion) }));
+        title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
+          ...(resources.get(value.contentResourceId.toLowerCase()) ? { contentResource: resourceDescriptor(resources.get(value.contentResourceId.toLowerCase())!) } : {}) } : {}),
+        typeAvailable: isBuiltinContentNodeType(value.type) }));
     const entityChoices = choices.map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
+    const resourceChoices = resourceRecords.map((record) => resourceDescriptor(record));
     const placementIds = new Map(placements.map((placement) => [placement.id.toLowerCase(), placement.id]));
     const visualEdges = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'visual-edge' }> => record.kind === 'visual-edge' && record.workspaceId === workspaceId)
       .map(({ value }) => ({ id: value.id, revision: value.revision, sourcePlacementId: placementIds.get(value.sourcePlacementId.toLowerCase()) ?? value.sourcePlacementId,
@@ -525,7 +553,7 @@ export class LocalProjectManager {
     const undoEvent = history?.entries[history.cursor - 1], redoEvent = history?.entries[history.cursor];
     const historyDelete = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
       projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: ['delete'], stage: 'prepare' });
-    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, placements, visualEdges, drawings, groups,
+    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, resourceChoices, placements, visualEdges, drawings, groups,
       history: { canUndo: !!undoEvent && !history?.blocked, canRedo: !!redoEvent && !history?.blocked,
         undoRequiresDelete: !!undoEvent && historyRequiresDelete(undoEvent, 'undo'), redoRequiresDelete: !!redoEvent && historyRequiresDelete(redoEvent, 'redo'),
         deleteAvailable: historyDelete.allowed },
@@ -586,6 +614,51 @@ export class LocalProjectManager {
       const record: DomainRecord = { kind: 'placement', workspaceId, value: { schemaVersion: '1.0.0', id, revision: 1, entityId: entity.value.id,
         position: { x: position.x, y: position.y }, size: { width: 300, height: 190 }, style: {}, extensions: {} } };
       await this.#commitCanvasCommand(active, { command: 'a3.core.create-document', payload: { record } }, [entity.value.id], { kind: 'placement', id, workspaceId });
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  createCanvasContentNode(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, input: CanvasContentNodeInput): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      const view = this.#canvasWorkspace(sessionId, workspaceId);
+      demand(view.canWrite, 'PERMISSION_DENIED', 'El proyecto no permite insertar nodos de contenido.');
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision,
+        'REVISION_CONFLICT', 'El workspace cambió; recarga antes de insertar el nodo.');
+      demand(input && CONTENT_NODE_CATALOG.some((item) => item.kind === input.kind), 'INVALID_CONTENT_NODE', 'El tipo no existe en el catálogo de nodos A3.');
+      demand(typeof input.title === 'string' && input.title.trim().length > 0 && input.title.trim().length <= 200 &&
+        input.position && Number.isFinite(input.position.x) && Number.isFinite(input.position.y), 'INVALID_CONTENT_NODE', 'El título y la posición del nodo deben ser válidos.');
+      const definition = contentNodeDefinition(input.kind), snapshot = active.lease.service.state.project.snapshot;
+      const entityId = randomUUID(), placementId = randomUUID(), resourceId = randomUUID();
+      const absent: DocumentRef[] = [{ kind: 'entity', id: entityId }, { kind: 'placement', id: placementId, workspaceId }];
+      const properties: ExtensionMap = {};
+      for (const [key, value] of [['a3.content.description', input.description], ['a3.content.alt-text', input.altText], ['a3.content.language', input.language]] as const) {
+        if (value !== undefined) {
+          demand(typeof value === 'string' && value.length <= 16000, 'INVALID_CONTENT_METADATA', 'Los metadatos del nodo deben ser texto de hasta 16000 caracteres.');
+          properties[key] = value;
+        }
+      }
+      let source: CreateContentNodeSource;
+      if (definition.source === 'inline') {
+        demand(typeof input.value === 'string' && input.value.length <= 1_000_000, 'INVALID_CONTENT_SOURCE', 'Escribe contenido de hasta 1 MB para el nodo.');
+        source = { kind: 'inline', resourceId, path: `content/${resourceId}${definition.extension}`, mediaType: definition.mediaType, content: input.value };
+        absent.push({ kind: 'resource', id: resourceId });
+      } else if (definition.source === 'url' || input.kind === 'image' && input.url !== undefined) {
+        demand(typeof input.url === 'string' && input.url.length <= 2048, 'INVALID_CONTENT_URL', 'Escribe una URL absoluta válida.');
+        source = { kind: 'url', resourceId, url: input.url };
+        absent.push({ kind: 'resource', id: resourceId });
+      } else {
+        demand(typeof input.resourceId === 'string' && uuid.test(input.resourceId), 'RESOURCE_REQUIRED', `Selecciona un recurso para ${definition.label}.`);
+        const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === input.resourceId!.toLowerCase());
+        demand(resource, 'RESOURCE_MISSING', 'El recurso seleccionado ya no existe.');
+        const mediaType = detectedMediaType(resource.value);
+        if (definition.mediaType.endsWith('/*') && mediaType && !mediaType.startsWith(definition.mediaType.slice(0, -1))) {
+          throw new LocalProjectError('RESOURCE_TYPE_MISMATCH', `El recurso seleccionado no es ${definition.mediaType.slice(0, -1)}.`);
+        }
+        source = { kind: 'existing-resource', resourceId: resource.value.id };
+      }
+      await this.#commitCanvasCommand(active, { command: 'a3.core.create-content-node', payload: {
+        workspaceId, entityId, placementId, kind: input.kind, title: input.title.trim(), position: input.position, properties, source
+      } }, [entityId], absent);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }
@@ -721,7 +794,7 @@ export class LocalProjectManager {
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }
-  loadCanvasContent(sessionId: string, workspaceId: string, entityId: string, resourceId: string): Promise<CanvasResourcePreview> {
+  loadCanvasContent(sessionId: string, workspaceId: string, entityId: string, resourceId: string, purpose: 'preview' | 'playback' = 'preview'): Promise<CanvasResourcePreview> {
     return this.#queue(async () => {
       const { active } = this.#canvasContext(sessionId, workspaceId);
       const snapshot = active.lease.service.state.project.snapshot;
@@ -729,13 +802,24 @@ export class LocalProjectManager {
       demand(entity?.kind === 'entity' && entity.value.contentResourceId?.toLowerCase() === resourceId.toLowerCase() &&
         snapshot.records.some((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.entityId.toLowerCase() === entityId.toLowerCase()),
       'RESOURCE_NOT_IN_VIEW', 'El recurso no pertenece a una entidad representada en este workspace.');
-      const opened = await active.lease.service.openResource(resourceId, 64 * 1024);
+      const descriptor = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === resourceId.toLowerCase());
+      demand(descriptor, 'RESOURCE_MISSING', 'El descriptor del recurso no está disponible; el nodo se conserva para reparación.');
+      const mediaType = detectedMediaType(descriptor.value) ?? 'application/octet-stream';
+      if (descriptor.value.kind === 'remote-url') return { entityId, resourceId, text: null, state: 'unavailable', mediaType };
+      if (purpose === 'playback' && !mediaType.startsWith('video/') && !mediaType.startsWith('audio/')) {
+        throw new LocalProjectError('MEDIA_TYPE_NOT_PLAYABLE', 'Solo se permite activar video o audio local en el reproductor.');
+      }
+      // Renderer receives bounded transient bytes for small image previews or explicit media playback;
+      // A3 never writes a preview copy beside the original resource.
+      const limit = purpose === 'playback' ? 32 * 1024 * 1024 : mediaType.startsWith('image/') ? 4 * 1024 * 1024 : 64 * 1024;
+      const opened = await active.lease.service.openResource(resourceId, limit);
       if (!opened.ok) {
         const tooLarge = opened.diagnostics.some((item) => item.detail.includes('read-limit') || item.detail.includes('size-limit') || item.detail.includes('resource-too-large'));
-        return { entityId, resourceId, text: null, state: tooLarge ? 'too-large' : 'unavailable' };
+        return { entityId, resourceId, text: null, state: tooLarge ? 'too-large' : 'unavailable', mediaType };
       }
-      try { return { entityId, resourceId, text: new TextDecoder('utf-8', { fatal: true }).decode(opened.value.bytes), state: 'ready' }; }
-      catch { return { entityId, resourceId, text: null, state: 'binary' }; }
+      if (purpose === 'playback' || mediaType.startsWith('image/')) return { entityId, resourceId, text: null, state: 'binary', mediaType, bytes: opened.value.bytes };
+      try { return { entityId, resourceId, text: new TextDecoder('utf-8', { fatal: true }).decode(opened.value.bytes), state: 'ready', mediaType }; }
+      catch { return { entityId, resourceId, text: null, state: 'binary', mediaType }; }
     });
   }
   async #commitCanvasCommand(active: ActiveProjectBinding, operation: Pick<DomainCommand, 'command' | 'payload'>, entityIds: string[], absent?: DocumentRef | readonly DocumentRef[], expectedContentHashes: { resourceId: string; hash: string }[] = []): Promise<void> {

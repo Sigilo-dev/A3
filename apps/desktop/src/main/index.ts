@@ -72,7 +72,7 @@ function csp(development: boolean): string {
     `script-src 'self'${development ? " 'unsafe-inline'" : ''}; ` +
     `style-src 'self'${development ? " 'unsafe-inline'" : ''}; ` +
     `connect-src ${development ? "'self' ws://127.0.0.1:* ws://localhost:*" : "'none'"}; ` +
-    "img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'";
+    "img-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'";
 }
 
 async function startDesktop(): Promise<void> {

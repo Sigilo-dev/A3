@@ -1,10 +1,12 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { applyEdgeChanges, applyNodeChanges, Background, BackgroundVariant, Handle, NodeResizer, Position, ReactFlow, SelectionMode, ViewportPortal, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { CanvasEntitySummary, CanvasGroupView, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, CanvasSelection, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
+import type { CanvasEntitySummary, CanvasGroupView, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, CanvasSelection, CanvasResourcePreview, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
 import { CanvasEdgeEditor, edgeAppearance, edgeTypes, toFlowEdges, type CanvasEdge, type CanvasTool } from './CanvasVisualEdges';
 import { CanvasDrawingLayer, type StrokePreview } from './CanvasDrawings';
+import { CanvasContentBody } from './CanvasContentNodes';
 import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffset, panViewport, renderOrigin, screenToWorld, toVisualViewport, wheelViewport, worldToScreen, zoomAt, type WorldViewport } from '../../shared/world-viewport';
+import { CONTENT_NODE_CATALOG, contentNodeDefinition, type ContentNodeKind } from '@a3/domain/content-nodes';
 import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
 
 // Navigation reference only: no Entity, Placement, drawing or React Flow node is created.
@@ -18,21 +20,60 @@ type CanvasGroupNodeData = { group: CanvasGroupView; canWrite: boolean; tool: Ca
 type CanvasGroupNode = Node<CanvasGroupNodeData, 'a3Group'>;
 type CanvasFlowNode = CanvasNode | CanvasGroupNode;
 const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }: NodeProps<CanvasNode>) {
-  const [preview, setPreview] = useState<{ text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary' } | null>(null);
+  const [preview, setPreview] = useState<CanvasResourcePreview | null>(null);
+  const [playback, setPlayback] = useState<CanvasResourcePreview | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [playbackBusy, setPlaybackBusy] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
+  const nodeRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const node = nodeRef.current;
+    if (!node) return;
+    if (!('IntersectionObserver' in window)) { setVisible(true); return; }
+    const observer = new IntersectionObserver((entries) => setVisible(entries.some((entry) => entry.isIntersecting)),
+      { root: node.closest('.canvas-host') });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     let mounted = true;
     setPreview(null);
-    if (data.entity.contentResourceId) void window.a3?.canvas({ action: 'content', sessionId: data.sessionId, workspaceId: data.workspaceId,
-      entityId: data.entity.id, resourceId: data.entity.contentResourceId }).then((result) => {
-      if (mounted && result.ok) setPreview({ text: result.value.text, state: result.value.state });
-      else if (mounted && result && !result.ok) setPreview({ text: null, state: 'unavailable' });
-    }).catch(() => { if (mounted) setPreview({ text: null, state: 'unavailable' }); });
+    if (visible && data.entity.contentResourceId && data.entity.contentResource?.kind !== 'remote-url' &&
+        !['a3.content.video', 'a3.content.audio', 'a3.content.file'].includes(data.entity.type)) {
+      void window.a3?.canvas({ action: 'content', sessionId: data.sessionId, workspaceId: data.workspaceId,
+        entityId: data.entity.id, resourceId: data.entity.contentResourceId, purpose: 'preview' }).then((result) => {
+        if (mounted && result.ok) setPreview(result.value);
+        else if (mounted && result && !result.ok) setPreview({ entityId: data.entity.id, resourceId: data.entity.contentResourceId!, text: null, state: 'unavailable' });
+      }).catch(() => { if (mounted) setPreview({ entityId: data.entity.id, resourceId: data.entity.contentResourceId!, text: null, state: 'unavailable' }); });
+    }
     return () => { mounted = false; };
-  }, [data.sessionId, data.workspaceId, data.entity.id, data.entity.contentResourceId, data.entity.revision]);
+  }, [visible, data.sessionId, data.workspaceId, data.entity.id, data.entity.contentResourceId, data.entity.contentResource?.kind, data.entity.revision, data.entity.type]);
+  useEffect(() => {
+    if (!visible) { setPlayback(null); setPlaybackBusy(false); return; }
+    const bytes = playback?.bytes ?? preview?.bytes;
+    if (!bytes) { setMediaUrl(null); return; }
+    const mediaType = playback?.mediaType ?? preview?.mediaType ?? 'application/octet-stream';
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType }));
+    setMediaUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [visible, playback?.bytes, playback?.mediaType, preview?.bytes, preview?.mediaType]);
+  async function activatePlayback(): Promise<void> {
+    if (!visible || !data.entity.contentResourceId || !window.a3 || playbackBusy) return;
+    setPlaybackBusy(true); setPlaybackError(null);
+    try {
+      const result = await window.a3.canvas({ action: 'content', sessionId: data.sessionId, workspaceId: data.workspaceId,
+        entityId: data.entity.id, resourceId: data.entity.contentResourceId, purpose: 'playback' });
+      if (!result.ok) throw new Error(result.error.message);
+      if (result.value.state !== 'binary' || !result.value.bytes) throw new Error(result.value.state === 'too-large' ? 'El medio supera 32 MiB para reproducción integrada.' : 'No se pudo leer el medio local.');
+      setPlayback(result.value);
+    } catch (error) { setPlaybackError(error instanceof Error ? error.message : 'No se pudo activar el reproductor.'); }
+    finally { setPlaybackBusy(false); }
+  }
   const accent = data.placement.style['a3.ui.accent'];
   const borderColor = typeof accent === 'string' && /^#[\da-f]{6}$/i.test(accent) ? accent : undefined;
   const properties = Object.keys(data.entity.properties).length > 0 ? JSON.stringify(data.entity.properties, null, 2) : '';
-  return <article className="canvas-entity-node" data-placement-id={data.placement.id} data-entity-id={data.entity.id}
+  return <article ref={nodeRef} className="canvas-entity-node" data-placement-id={data.placement.id} data-entity-id={data.entity.id} data-node-type={data.entity.type}
     data-node-fallback={!data.entity.typeAvailable} style={borderColor ? { borderColor } : undefined}>
     <Handle id="visual-target" type="target" position={Position.Left} isConnectable={data.canWrite && data.tool === 'connect'} aria-label="Destino de línea visual" />
     <Handle id="visual-source" type="source" position={Position.Right} isConnectable={data.canWrite && data.tool === 'connect'} aria-label="Origen de línea visual" />
@@ -43,10 +84,8 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
     <div className="canvas-entity-body nodrag nopan nowheel">
       {data.entity.ports.length > 0 && <div className="canvas-ports" aria-label="Puertos">{data.entity.ports.map((port) => <span key={port.id} title={port.id}>{port.label || port.id}</span>)}</div>}
       {properties && <details><summary>Propiedades</summary><pre>{properties}</pre></details>}
-      {data.entity.contentResourceId && <details><summary>Contenido</summary>
-        {preview?.text ? <pre className="canvas-content-preview">{preview.text.slice(0, 1200)}</pre> : <p className="canvas-content-state">
-          {preview?.state === 'too-large' ? 'Contenido extenso · abrir desde Archivos' : preview?.state === 'binary' ? 'Recurso binario' : preview?.state === 'unavailable' ? 'Recurso no disponible' : 'Cargando vista previa…'}</p>}
-      </details>}
+      {data.entity.contentResourceId && <CanvasContentBody entity={data.entity} preview={preview} mediaUrl={mediaUrl} activatePlayback={() => void activatePlayback()}
+        playbackBusy={playbackBusy} playbackError={playbackError} />}
       {Object.keys(data.placement.style).length > 0 && <details><summary>Estilo de esta vista</summary><pre>{JSON.stringify(data.placement.style, null, 2)}</pre></details>}
     </div>
   </article>;
@@ -214,6 +253,14 @@ export function CanvasPanel({ active }: { active: LocalProjectSession | null | u
   </section>;
 }
 
+function initialContentValue(kind: ContentNodeKind): string {
+  if (kind === 'page') return '# Nueva página\n\n';
+  if (kind === 'short-text') return 'Escribe una idea breve.';
+  if (kind === 'code') return '// Nuevo fragmento\n';
+  if (kind === 'drawing') return '{"schemaVersion":"1.0.0","strokes":[]}\n';
+  return '';
+}
+
 function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; workspaceId: string }): React.JSX.Element {
   const [workspace, setWorkspace] = useState<LocalCanvasWorkspace | null>(null);
   const [nodes, setNodes] = useState<CanvasFlowNode[]>([]);
@@ -225,6 +272,15 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   const [selectedGroupId, setSelectedGroupId] = useState('');
   const [strokePreview, setStrokePreview] = useState<StrokePreview | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState('');
+  const [contentKind, setContentKind] = useState<ContentNodeKind>('page');
+  const [contentTitle, setContentTitle] = useState('Nueva página');
+  const [contentValue, setContentValue] = useState('# Nueva página\n\n');
+  const [contentUrl, setContentUrl] = useState('');
+  const [contentImageSource, setContentImageSource] = useState<'resource' | 'url'>('resource');
+  const [contentResourceId, setContentResourceId] = useState('');
+  const [contentDescription, setContentDescription] = useState('');
+  const [contentAltText, setContentAltText] = useState('');
+  const [contentLanguage, setContentLanguage] = useState('');
   const [viewport, setViewport] = useState<WorldViewport>({ x: 0, y: 0, zoom: 1 });
   const [origin, setOrigin] = useState({ x: 0, y: 0 });
   const [showReference, setShowReference] = useState(false);
@@ -311,6 +367,9 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   useEffect(() => {
     if (workspace && !workspace.entityChoices.some((entity) => entity.id === selectedEntityId)) setSelectedEntityId(workspace.entityChoices[0]?.id ?? '');
   }, [workspace?.entityChoices, selectedEntityId]);
+  useEffect(() => {
+    if (workspace && !workspace.resourceChoices.some((resource) => resource.id === contentResourceId)) setContentResourceId(workspace.resourceChoices[0]?.id ?? '');
+  }, [workspace?.resourceChoices, contentResourceId]);
 
   function report(cause: unknown): void {
     failed.current = true;
@@ -404,6 +463,21 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     installWorkspace(result.value, id);
     if (id) setNodes((previous) => previous.map((node) => ({ ...node, selected: node.id === id })));
     setError(null); setErrorKind(null); setStatus('Representación creada');
+  }
+  async function createContentNode(): Promise<void> {
+    if (!workspace || !window.a3) return;
+    const rect = hostRef.current?.getBoundingClientRect(); if (!rect) return;
+    const definition = contentNodeDefinition(contentKind);
+    const node = { kind: contentKind, title: contentTitle, position: screenToWorld({ x: rect.width / 2, y: rect.height / 2 }, current.current),
+      description: contentDescription, altText: contentAltText, language: contentLanguage,
+      ...(definition.source === 'inline' ? { value: contentValue } : definition.source === 'url' || contentKind === 'image' && contentImageSource === 'url'
+        ? { url: contentUrl } : { resourceId: contentResourceId }) };
+    const result = await window.a3.canvas({ action: 'create-content-node', sessionId, workspaceId, expectedWorkspaceRevision: workspace.revision, node });
+    if (!result.ok) { setErrorKind('placement'); setError(`${result.error.code}: ${result.error.message} ${result.error.recovery}`); setStatus('Nodo sin guardar'); return; }
+    const placement = result.value.placements.find((item) => !workspace.placements.some((old) => old.id === item.id));
+    installWorkspace(result.value, placement?.id);
+    if (placement) setNodes((previous) => previous.map((item) => ({ ...item, selected: item.id === placement.id })));
+    setError(null); setErrorKind(null); setStatus('Nodo de contenido creado');
   }
   function mutateCanvas(request: (latest: LocalCanvasWorkspace) => CanvasRequest, savedLabel = 'Organización guardada', errorCategory: 'placement' | 'drawing' = 'placement'): Promise<boolean> {
     const operation = mutationTail.current.then(async () => {
@@ -727,6 +801,37 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       <label>Entidad <select aria-label="Entidad para nueva representación" data-canvas-entity value={selectedEntityId || workspace?.entityChoices[0]?.id || ''} disabled={!workspace?.canWrite || !workspace.entityChoices.length}
         onChange={(event) => setSelectedEntityId(event.target.value)}>{workspace?.entityChoices.map((entity) => <option key={entity.id} value={entity.id}>{entity.title} · {entity.type}</option>)}</select></label>
       <button className="secondary" data-canvas-create-placement disabled={!workspace?.canWrite || !workspace.entityChoices.length} onClick={() => void createPlacement()}>Crear representación</button>
+      <details className="canvas-insert-node" data-canvas-insert-node>
+        <summary>Insertar nodo de contenido</summary>
+        <div className="canvas-insert-node-form">
+          <label>Tipo <select data-content-kind value={contentKind} disabled={!workspace?.canWrite} onChange={(event) => {
+            const kind = event.target.value as ContentNodeKind; setContentKind(kind); setContentTitle(`Nuevo ${contentNodeDefinition(kind).label.toLowerCase()}`); setContentValue(initialContentValue(kind)); setContentImageSource('resource');
+          }}>{CONTENT_NODE_CATALOG.map((item) => <option key={item.kind} value={item.kind}>{item.label}</option>)}</select></label>
+          <label>Título <input data-content-title value={contentTitle} maxLength={200} disabled={!workspace?.canWrite} onChange={(event) => setContentTitle(event.target.value)} /></label>
+          {contentKind === 'page' || contentKind === 'short-text' || contentKind === 'code' || contentKind === 'drawing'
+            ? <label className="canvas-content-source">Fuente <textarea data-content-value value={contentValue} maxLength={1_000_000} disabled={!workspace?.canWrite} onChange={(event) => setContentValue(event.target.value)} /></label>
+            : contentKind === 'youtube' || contentKind === 'web-link'
+              ? <label>URL <input data-content-url type="url" value={contentUrl} maxLength={2048} placeholder="https://…" disabled={!workspace?.canWrite} onChange={(event) => setContentUrl(event.target.value)} /></label>
+              : contentKind === 'image' ? <>
+                <label>Origen <select data-content-image-source value={contentImageSource} disabled={!workspace?.canWrite} onChange={(event) => setContentImageSource(event.target.value as 'resource' | 'url')}>
+                  <option value="resource">Recurso local o montado</option><option value="url">Referencia URL</option></select></label>
+                {contentImageSource === 'url' ? <label>URL de imagen <input data-content-url type="url" value={contentUrl} maxLength={2048} placeholder="https://…" disabled={!workspace?.canWrite} onChange={(event) => setContentUrl(event.target.value)} /></label> :
+                  <label>Recurso existente <select data-content-resource value={contentResourceId} disabled={!workspace?.canWrite || !workspace.resourceChoices.length}
+                    onChange={(event) => setContentResourceId(event.target.value)}><option value="">Selecciona un recurso</option>{workspace?.resourceChoices.map((resource) => <option key={resource.id} value={resource.id}>{resource.label} · {resource.mediaType ?? resource.kind}</option>)}</select></label>}
+              </>
+              : <label>Recurso existente <select data-content-resource value={contentResourceId} disabled={!workspace?.canWrite || !workspace.resourceChoices.length}
+                onChange={(event) => setContentResourceId(event.target.value)}><option value="">Selecciona un recurso</option>{workspace?.resourceChoices.map((resource) => <option key={resource.id} value={resource.id}>{resource.label} · {resource.mediaType ?? resource.kind}</option>)}</select></label>}
+          {(contentKind === 'image' || contentKind === 'video' || contentKind === 'audio') && <label>Descripción <input data-content-description value={contentDescription} maxLength={16000} disabled={!workspace?.canWrite} onChange={(event) => setContentDescription(event.target.value)} /></label>}
+          {contentKind === 'image' && <label>Texto alternativo <input data-content-alt-text value={contentAltText} maxLength={16000} disabled={!workspace?.canWrite} onChange={(event) => setContentAltText(event.target.value)} /></label>}
+          {contentKind === 'code' && <label>Lenguaje <input data-content-language value={contentLanguage} maxLength={80} disabled={!workspace?.canWrite} onChange={(event) => setContentLanguage(event.target.value)} /></label>}
+          <button className="secondary" data-canvas-create-content disabled={!workspace?.canWrite || !contentTitle.trim() ||
+            (['youtube', 'web-link'].includes(contentKind) && !contentUrl.trim()) || contentKind === 'image' && (contentImageSource === 'url' ? !contentUrl.trim() : !contentResourceId) ||
+            (['video', 'audio', 'file'].includes(contentKind) && !contentResourceId)}
+            onClick={() => void createContentNode()}>Insertar</button>
+          {['youtube', 'web-link'].includes(contentKind) && <small>Se guarda una referencia; A3 no consulta ni descarga la URL.</small>}
+          {['image', 'video', 'audio', 'file'].includes(contentKind) && !workspace?.resourceChoices.length && <small>Crea o incorpora un recurso desde Archivos y vuelve a abrir este catálogo.</small>}
+        </div>
+      </details>
       <label className="canvas-fixture"><input type="checkbox" data-canvas-fixture checked={showReference} onChange={(event) => setShowReference(event.target.checked)} />Referencia de prueba</label>
     </div>
     <div className="canvas-arrange-toolbar" role="toolbar" aria-label="Duplicación, disposición e historial">

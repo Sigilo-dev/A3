@@ -208,9 +208,10 @@ async function healthy() {
   await click('[data-section="projects"]'); await click('[data-close-project]'); await waitFor("!document.querySelector('[data-active-project]')");
   const canvasFixture = join(projectParent, 'Canvas fixture');
   await cp(join(__dirname, '../../../fixtures/e0/project'), canvasFixture, { recursive: true });
-  const fixtureEntityPath = join(canvasFixture, '.a3', 'entities', '00000000-0000-4000-8000-000000000002.json');
+  const fixtureEntityPath = join(canvasFixture, '.a3', 'entities', '00000000-0000-4000-8000-000000000003.json');
   const fixtureEntity = JSON.parse(await readFile(fixtureEntityPath, 'utf8'));
   fixtureEntity.properties['demo.smoke'] = 'Fallback property'; fixtureEntity.ports = [{ id: 'smoke-port', label: 'Puerto visible' }];
+  fixtureEntity.contentResourceId = '00000000-0000-4000-8000-000000000004';
   await writeFile(fixtureEntityPath, JSON.stringify(fixtureEntity, null, 2) + '\n');
   const fixtureEdgePath = join(canvasFixture, '.a3/workspaces/00000000-0000-4000-8000-000000000006/visual-edges/00000000-0000-4000-8000-000000000011.json');
   const fixtureEdge = JSON.parse(await readFile(fixtureEdgePath, 'utf8'));
@@ -220,9 +221,9 @@ async function healthy() {
   await waitFor("document.querySelector('[data-active-project] h2')?.textContent === 'Ejemplo E0-A'");
   await click('[data-section="canvas"]'); await waitFor("document.querySelector('[data-canvas-node-count]')?.textContent.startsWith('2 representaciones')");
   assert.equal(await js("document.querySelectorAll('.react-flow__node').length"), 2);
-  assert.equal(await js("document.querySelectorAll('[data-node-fallback=\"true\"]').length"), 2);
-  await waitFor("(() => { const n = document.querySelector('[data-entity-id=\"00000000-0000-4000-8000-000000000002\"]'); return n?.textContent.includes('demo.smoke') && n.textContent.includes('Puerto visible') && n.textContent.includes('Visión del fixture'); })()");
-  const fallbackCard = await js("document.querySelector('[data-entity-id=\"00000000-0000-4000-8000-000000000002\"]')?.textContent");
+  assert.equal(await js("document.querySelectorAll('[data-node-fallback=\"true\"]').length"), 1);
+  await waitFor("(() => { const n = document.querySelector('[data-entity-id=\"00000000-0000-4000-8000-000000000003\"]'); return n?.textContent.includes('demo.smoke') && n.textContent.includes('Puerto visible') && n.textContent.includes('Visión del fixture'); })()");
+  const fallbackCard = await js("document.querySelector('[data-entity-id=\"00000000-0000-4000-8000-000000000003\"]')?.textContent");
   assert.ok(fallbackCard.includes('demo.smoke') && fallbackCard.includes('Puerto visible') && fallbackCard.includes('Visión del fixture'));
   await click('[data-canvas-create-placement]');
   await waitFor("document.querySelector('[data-canvas-node-count]')?.textContent.startsWith('3 representaciones')");

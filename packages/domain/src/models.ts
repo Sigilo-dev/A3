@@ -1,3 +1,4 @@
+import type { ContentNodeKind } from './content-nodes.js';
 export type UUID = string;
 export type Namespace = string;
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -111,10 +112,19 @@ export interface DuplicateSelection {
     visualEdges: Record<string, UUID>; relationViews: Record<string, UUID>; drawings?: Record<string, UUID>; groups?: Record<string, UUID> };
   resourceCopies: ResourceCopy[]; includeExternalRelations: boolean;
 }
+export type CreateContentNodeSource =
+  | { kind: 'inline'; resourceId: UUID; path: string; mediaType: string; content: string }
+  | { kind: 'url'; resourceId: UUID; url: string }
+  | { kind: 'existing-resource'; resourceId: UUID };
+export interface CreateContentNode {
+  workspaceId: UUID; entityId: UUID; placementId: UUID; kind: ContentNodeKind; title: string;
+  position: Point; properties: ExtensionMap; source: CreateContentNodeSource;
+}
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
 export type Payloads = {
   'a3.core.create-project': { project: Project; workspace: Workspace };
   'a3.core.create-document': { record: DomainRecord };
+  'a3.core.create-content-node': CreateContentNode;
   'a3.core.rename': { ref: DocumentRef; name: string };
   'a3.core.set-workspace-viewport': { workspaceId: UUID; viewport: { x: number; y: number; zoom: number } };
   'a3.core.update-entity': EntityPatch;

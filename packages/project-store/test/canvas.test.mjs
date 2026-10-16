@@ -80,7 +80,7 @@ test('A3-004/006: placements share live entity content but move and resize indep
   assert.notEqual(firstPlacement.id, secondPlacement.id);
   assert.equal(first.entities.find((entity) => entity.id === E1).id, second.entities.find((entity) => entity.id === E1).id);
   assert.equal(first.entities.find((entity) => entity.id === E1).title, 'Visión');
-  assert.equal(first.entities.find((entity) => entity.id === E1).typeAvailable, false);
+  assert.equal(first.entities.find((entity) => entity.id === E1).typeAvailable, true, 'the built-in Markdown page renderer is available');
   assert.ok(first.entities.find((entity) => entity.id === E1).ports);
 
   // Update canonical Markdown through the existing validated writer.

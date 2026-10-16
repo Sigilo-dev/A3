@@ -1,6 +1,6 @@
-import type { CanvasDrawingPatch, CanvasPlacementMove, CanvasPlacementViewPatch, CanvasSelection, CanvasVisualEdgePatch, LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
+import type { CanvasContentNodeInput, CanvasDrawingPatch, CanvasPlacementMove, CanvasPlacementViewPatch, CanvasSelection, CanvasVisualEdgePatch, LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
 import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
-export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourcePreview, LocalCanvasWorkspace } from '@a3/project-store';
+export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, LocalCanvasWorkspace } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
@@ -11,6 +11,7 @@ export type CanvasRequest =
   | { action: 'load' | 'flush' | 'discard' | 'approve-edge-delete' | 'approve-drawing-delete' | 'approve-history-delete'; sessionId: string; workspaceId: string }
   | { action: 'stage'; sessionId: string; workspaceId: string; expectedRevision: number; viewport: WorkspaceViewport }
   | { action: 'create-placement'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; entityId: string; position: { x: number; y: number } }
+  | { action: 'create-content-node'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; node: CanvasContentNodeInput }
   | { action: 'duplicate-selection'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; selection: CanvasSelection; mode: 'content' | 'representation' }
   | { action: 'undo' | 'redo'; sessionId: string; workspaceId: string }
   | { action: 'update-placement'; sessionId: string; workspaceId: string; placementId: string; expectedRevision: number;
@@ -29,7 +30,7 @@ export type CanvasRequest =
   | { action: 'update-drawing'; sessionId: string; workspaceId: string; drawingId: string; expectedRevision: number; patch: CanvasDrawingPatch }
   | { action: 'delete-drawing'; sessionId: string; workspaceId: string; drawingId: string; expectedRevision: number }
   | { action: 'convert-drawings-to-node'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; drawings: { id: string; expectedRevision: number }[] };
-export type CanvasContentRequest = { action: 'content'; sessionId: string; workspaceId: string; entityId: string; resourceId: string };
+export type CanvasContentRequest = { action: 'content'; sessionId: string; workspaceId: string; entityId: string; resourceId: string; purpose?: 'preview' | 'playback' };
 export type CanvasResult = { ok: true; value: LocalCanvasWorkspace } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasContentResult = { ok: true; value: import('@a3/project-store').CanvasResourcePreview } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type ProjectsRequest =

@@ -1,5 +1,6 @@
 import { clipboard, dialog, type BrowserWindow } from 'electron';
 import { join } from 'node:path';
+import { CONTENT_NODE_CATALOG } from '@a3/domain';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, FilesRequest, FilesResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
@@ -13,6 +14,17 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
   if (input.action === 'create-placement') return Object.keys(input).length === 6 && uuid.test(String(input.entityId)) && Number.isSafeInteger(input.expectedWorkspaceRevision) &&
     Number(input.expectedWorkspaceRevision) >= 1 && !!input.position && typeof input.position === 'object' && !Array.isArray(input.position) &&
     Object.keys(input.position).length === 2 && Number.isFinite((input.position as Record<string, unknown>).x) && Number.isFinite((input.position as Record<string, unknown>).y);
+  if (input.action === 'create-content-node') {
+    const node = input.node as Record<string, unknown> | null;
+    if (Object.keys(input).length !== 5 || !Number.isSafeInteger(input.expectedWorkspaceRevision) || Number(input.expectedWorkspaceRevision) < 1 ||
+        !node || typeof node !== 'object' || Array.isArray(node) || Object.keys(node).some((key) => !['kind', 'title', 'position', 'value', 'url', 'resourceId', 'description', 'altText', 'language'].includes(key)) ||
+        !CONTENT_NODE_CATALOG.some((item) => item.kind === node.kind) || typeof node.title !== 'string' || !node.title.trim() || node.title.length > 200 || !validPoint(node.position)) return false;
+    const definition = CONTENT_NODE_CATALOG.find((item) => item.kind === node.kind)!;
+    if (definition.source === 'inline') return typeof node.value === 'string' && node.value.length <= 1_000_000 && !('url' in node) && !('resourceId' in node);
+    if (definition.source === 'url') return typeof node.url === 'string' && node.url.length <= 2048 && !('value' in node) && !('resourceId' in node);
+    if (node.kind === 'image' && typeof node.url === 'string') return node.url.length <= 2048 && !('value' in node) && !('resourceId' in node);
+    return typeof node.resourceId === 'string' && uuid.test(node.resourceId) && !('value' in node) && !('url' in node);
+  }
   if (input.action === 'update-placement') {
     if (Object.keys(input).length !== 6 || !uuid.test(String(input.placementId)) || !Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 1 ||
         !input.patch || typeof input.patch !== 'object' || Array.isArray(input.patch)) return false;
@@ -24,7 +36,9 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
         !Number.isFinite((patch.size as Record<string, unknown>).width) || !Number.isFinite((patch.size as Record<string, unknown>).height))) return false;
     return true;
   }
-  if (input.action === 'content') return Object.keys(input).length === 5 && uuid.test(String(input.entityId)) && uuid.test(String(input.resourceId));
+  if (input.action === 'content') return (Object.keys(input).length === 5 || Object.keys(input).length === 6) &&
+    Object.keys(input).every((key) => ['action', 'sessionId', 'workspaceId', 'entityId', 'resourceId', 'purpose'].includes(key)) &&
+    uuid.test(String(input.entityId)) && uuid.test(String(input.resourceId)) && (input.purpose === undefined || ['preview', 'playback'].includes(String(input.purpose)));
   if (input.action === 'move-placements') return Object.keys(input).length === 4 && Array.isArray(input.placements) && input.placements.length > 0 &&
     input.placements.every((item: unknown) => !!item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length === 3 &&
       uuid.test(String((item as Record<string, unknown>).id)) && Number.isSafeInteger((item as Record<string, unknown>).expectedRevision) &&
@@ -172,11 +186,12 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'flush': return { ok: true, value: await manager.flushCanvasWorkspace(value.sessionId, value.workspaceId) };
           case 'discard': return { ok: true, value: await manager.discardCanvasViewport(value.sessionId, value.workspaceId) };
           case 'create-placement': return { ok: true, value: await manager.createCanvasPlacement(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.entityId, value.position) };
+          case 'create-content-node': return { ok: true, value: await manager.createCanvasContentNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.node) };
           case 'duplicate-selection': return { ok: true, value: await manager.duplicateCanvasSelection(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.selection, value.mode) };
           case 'undo': return { ok: true, value: await manager.undoCanvas(value.sessionId, value.workspaceId) };
           case 'redo': return { ok: true, value: await manager.redoCanvas(value.sessionId, value.workspaceId) };
           case 'update-placement': return { ok: true, value: await manager.updateCanvasPlacement(value.sessionId, value.workspaceId, value.placementId, value.expectedRevision, value.patch) };
-          case 'content': return { ok: true, value: await manager.loadCanvasContent(value.sessionId, value.workspaceId, value.entityId, value.resourceId) };
+          case 'content': return { ok: true, value: await manager.loadCanvasContent(value.sessionId, value.workspaceId, value.entityId, value.resourceId, value.purpose) };
           case 'move-placements': return { ok: true, value: await manager.moveCanvasPlacements(value.sessionId, value.workspaceId, value.placements) };
           case 'update-placement-views': return { ok: true, value: await manager.updateCanvasPlacementViews(value.sessionId, value.workspaceId, value.placements) };
           case 'create-group': return { ok: true, value: await manager.createCanvasGroup(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.name, value.members) };

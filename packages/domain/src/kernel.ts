@@ -1,5 +1,6 @@
 import { canonical, copy, diagnostic, freeze, getRecord, isJson, isObject, refKey, refOf, revisionsOf, sameId, UUID_PATTERN } from './data.js';
 import { findRelationType, validateDefinition, validateRecord, validateRegistry, validateSnapshot } from './validation.js';
+import { CONTENT_NODE_CATALOG, contentNodeDefinition } from './content-nodes.js';
 import type { CommandContext, ContentEffect, Diagnostic, DocumentKinds, DocumentRef, DomainCommand, DomainRecord, DomainSnapshot, DuplicateSelection, ExpectedRevision, NodeTypeChange, Outcome, Payloads, PreparedPlan, RecordChange, RecordKind, ReversibleCanvasCommand, Resource, ResourceLocation, TypeRegistry } from './models.js';
 
 class DomainFault extends Error {
@@ -9,6 +10,7 @@ function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnost
   throw new DomainFault(diagnostic(detail, message, ref, code));
 }
 const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity',
+  'a3.core.create-content-node',
   'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-placement-views', 'a3.core.update-visual-edge', 'a3.core.update-drawing', 'a3.core.convert-drawings-to-node', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-group-collapsed', 'a3.core.set-collection-members',
   'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.apply-canvas-history', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
 const kinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
@@ -210,6 +212,59 @@ function convertDrawingsToNode(draft: Draft, payload: Payloads['a3.core.convert-
   draft.add(resource); draft.add(entity); draft.add(placement);
   draft.effects.push({ kind: 'create', resourceId: payload.resourceId, path, content: canonical(asset) + '\n' });
   for (const record of selected) deleteRecord(draft, { ref: refOf(record) });
+}
+
+function createContentNode(draft: Draft, payload: Payloads['a3.core.create-content-node']): void {
+  if (!payload || !CONTENT_NODE_CATALOG.some((item) => item.kind === payload.kind)) fail('unknown-content-node', 'El tipo de nodo no existe en el catálogo A3.');
+  const definition = contentNodeDefinition(payload.kind);
+  if (typeof payload.title !== 'string' || !payload.title.trim() || payload.title.trim().length > 200 ||
+      !payload.position || !Number.isFinite(payload.position.x) || !Number.isFinite(payload.position.y) ||
+      !payload.properties || typeof payload.properties !== 'object' || Array.isArray(payload.properties) ||
+      !UUID_PATTERN.test(payload.entityId) || !UUID_PATTERN.test(payload.placementId)) {
+    fail('invalid-content-node', 'El nodo requiere título, propiedades, posición e identidades válidas.');
+  }
+  draft.require({ kind: 'workspace', id: payload.workspaceId });
+  if (!payload.source || typeof payload.source !== 'object' || Array.isArray(payload.source)) fail('invalid-content-source', 'El origen del nodo no es válido.');
+  const resourceId = payload.source?.resourceId;
+  if (typeof resourceId !== 'string' || !UUID_PATTERN.test(resourceId)) fail('invalid-content-resource', 'El nodo requiere un Resource ID válido.');
+  let newResource: DomainRecord | undefined;
+  if (definition.source === 'inline') {
+    if (payload.source.kind !== 'inline' || typeof payload.source.content !== 'string' || payload.source.content.length > 1_000_000 ||
+        payload.source.path !== `content/${resourceId}${definition.extension}` || payload.source.mediaType !== definition.mediaType) {
+      fail('invalid-content-source', `El nodo ${definition.label} requiere contenido local en su formato canónico.`);
+    }
+    newResource = { kind: 'resource', value: { schemaVersion: '1.0.0', id: resourceId, revision: 1,
+      kind: 'project-file', path: payload.source.path, mediaType: payload.source.mediaType, extensions: {} } };
+    draft.effects.push({ kind: 'create', resourceId, path: payload.source.path, content: payload.source.content });
+  } else if (definition.source === 'url' || payload.kind === 'image' && payload.source.kind === 'url') {
+    if (payload.source.kind !== 'url' || typeof payload.source.url !== 'string' || payload.source.url.length > 2048) fail('invalid-content-source', `El nodo ${definition.label} requiere una URL.`);
+    const URLConstructor = (globalThis as unknown as { URL: new (input: string) => {
+      protocol: string; username: string; password: string; hostname: string; pathname: string; href: string; searchParams: { get(name: string): string | null };
+    } }).URL;
+    let url: InstanceType<typeof URLConstructor>;
+    try { url = new URLConstructor(payload.source.url); } catch { fail('invalid-content-url', 'Escribe una URL absoluta válida.'); }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) fail('invalid-content-url', 'Solo se admiten enlaces HTTP/HTTPS sin credenciales.');
+    if (payload.kind === 'youtube') {
+      const host = url.hostname.toLowerCase().replace(/^www\./, '');
+      const id = host === 'youtu.be' ? url.pathname.split('/').filter(Boolean)[0] : url.searchParams.get('v') ?? url.pathname.split('/').filter(Boolean).at(-1);
+      if (!['youtube.com', 'm.youtube.com', 'youtu.be'].includes(host) || !id || !/^[\w-]{11}$/.test(id)) {
+        fail('invalid-youtube-url', 'Usa un enlace de video de YouTube con un ID reconocible.');
+      }
+    }
+    newResource = { kind: 'resource', value: { schemaVersion: '1.0.0', id: resourceId, revision: 1,
+      kind: 'remote-url', url: url.href, ...(definition.source === 'url' ? { mediaType: definition.mediaType } : {}), extensions: {} } };
+  } else {
+    if (payload.source.kind !== 'existing-resource') fail('invalid-content-source', `El nodo ${definition.label} requiere un recurso existente.`);
+    const sourceResource = draft.require({ kind: 'resource', id: resourceId });
+    if (sourceResource.kind !== 'resource') fail('invalid-content-resource', 'El recurso elegido no está disponible.');
+  }
+  if (newResource) draft.add(newResource);
+  const entity: DomainRecord = { kind: 'entity', value: { schemaVersion: '1.0.0', id: payload.entityId, revision: 1,
+    type: definition.type, typeVersion: '1.0.0', title: payload.title.trim(), contentResourceId: resourceId, tags: [],
+    properties: { ...payload.properties }, ports: [], bindings: {}, extensions: {} } };
+  const placement: DomainRecord = { kind: 'placement', workspaceId: payload.workspaceId, value: { schemaVersion: '1.0.0', id: payload.placementId, revision: 1,
+    entityId: payload.entityId, position: { x: payload.position.x, y: payload.position.y }, size: { width: 320, height: 220 }, style: {}, extensions: {} } };
+  draft.add(entity); draft.add(placement);
 }
 
 function moveGroup(draft: Draft, ref: DocumentRef, offset: { x: number; y: number }): void {
@@ -453,6 +508,7 @@ function apply(draft: Draft): void {
       if (request.payload.record.kind === 'project') fail('unsupported-create', 'Usa el constructor de proyecto.');
       draft.add(request.payload.record);
       break;
+    case 'a3.core.create-content-node': createContentNode(draft, request.payload); break;
     case 'a3.core.set-workspace-viewport': {
       const { viewport, workspaceId } = request.payload;
       if (!isObject(viewport) || Object.keys(viewport).some((key) => !['x', 'y', 'zoom'].includes(key)) ||

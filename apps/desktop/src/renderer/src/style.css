@@ -100,6 +100,26 @@ button:focus-visible, a:focus-visible { outline: 2px solid #c3ed82; outline-offs
 .canvas-entity-body summary { cursor: pointer; color: #c3ed82; }
 .canvas-entity-body pre { max-height: 92px; overflow: auto; margin: 5px 0 0; padding: 7px; border-radius: 4px; background: #0d1217; color: #c8d2d5; font: 9px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .canvas-entity-body .canvas-content-preview { max-height: 120px; }
+.canvas-content-card { display: grid; gap: 6px; min-width: 0; margin: 5px 0; padding: 9px; border: 1px solid #34463b; border-radius: 6px; background: #111a16; color: #dce5dc; }
+.canvas-content-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.canvas-content-card small { overflow: hidden; text-overflow: ellipsis; color: #9eafa3; font-size: 9px; }
+.canvas-content-card p { margin: 0; color: #b7c4bb; line-height: 1.4; }
+.canvas-content-card .canvas-content-preview { max-height: 120px; margin: 0; }
+.canvas-content-card .canvas-content-preview.is-code { color: #b9d7ed; }
+.canvas-content-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.canvas-content-heading small { flex: none; }
+.canvas-content-url { overflow-wrap: anywhere; color: #a5c9dc; font: 9px/1.4 ui-monospace, Consolas, monospace; }
+.canvas-media-placeholder { display: grid; place-items: center; min-height: 54px; color: #c3ed82; font-size: 22px; border-radius: 4px; background: linear-gradient(135deg, #202c26, #111917); }
+.canvas-image-preview { display: block; max-width: 100%; max-height: 120px; margin: 0 auto; object-fit: contain; }
+.canvas-media-player { display: block; width: 100%; max-height: 130px; }
+.canvas-insert-node { position: relative; z-index: 10; }
+.canvas-insert-node > summary { padding: 6px 9px; border: 1px solid #45574c; border-radius: 4px; background: #19241e; color: #d3dfd4; cursor: pointer; }
+.canvas-insert-node-form { position: absolute; top: 30px; left: 0; display: grid; gap: 8px; width: min(390px, 70vw); max-height: min(480px, 65vh); overflow: auto; padding: 12px; border: 1px solid #45574c; border-radius: 6px; background: #131b17; box-shadow: 0 12px 28px #0009; }
+.canvas-insert-node-form label { display: grid; gap: 4px; color: #b8c9b7; font-size: 10px; }
+.canvas-insert-node-form input, .canvas-insert-node-form select, .canvas-insert-node-form textarea { width: 100%; max-width: none; padding: 6px; border: 1px solid #45574c; border-radius: 4px; background: #0f1512; color: #e8edf0; font: inherit; font-size: 11px; line-height: 1.4; }
+.canvas-insert-node-form textarea { min-height: 100px; resize: vertical; font-family: ui-monospace, Consolas, monospace; }
+.canvas-insert-node-form button { justify-self: start; margin: 0; }
+.canvas-insert-node-form > small { color: #aab7a4; line-height: 1.4; }
 .canvas-ports { display: flex; flex-wrap: wrap; gap: 5px; margin: 4px 0 8px; }
 .canvas-ports span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; border: 1px solid #45574e; border-radius: 10px; padding: 2px 7px; color: #b8ccbf; font-size: 9px; }
 .canvas-toolbar label { display: flex; align-items: center; gap: 6px; font-size: 11px; }
