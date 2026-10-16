@@ -9,6 +9,49 @@ const W2 = '00000000-0000-4000-8000-000000000007';
 const R1 = '00000000-0000-4000-8000-000000000004';
 const pathOf = (root, id) => join(root, '.a3', 'workspaces', id, 'workspace.json');
 
+test('E3-F1: project diagram style commits through the domain writer and survives reopen with broker checks', windows, async (t) => {
+  const { root, tempRoot } = await scratch(t); const host = await fixtureHost(root, 'diagram-style-profile');
+  const manager = new LocalProjectManager({ stateDirectory: join(tempRoot, 'catalog'), host }); t.after(() => manager.dispose());
+  let active = (await manager.openFolder(root)).active;
+  const workspaceId = active.workspaces[0].id;
+  const canvas = await manager.loadCanvasWorkspace(active.sessionId, workspaceId);
+  assert.deepEqual(canvas.diagramStyle, { schemaVersion: '1.0.0', engine: 'a3-native', theme: 'default' });
+  const initial = await manager.loadDiagramStyle(active.sessionId);
+  const profile = { schemaVersion: '1.0.0', engine: 'plantuml', theme: 'default', fonts: { family: 'Segoe UI', size: 14 },
+    colors: { primary: '#203040', text: '#ffffff', line: '#9abcde' }, borders: { color: '#567890' }, orientation: 'left-right', spacing: { nodes: 42 } };
+  const saved = await manager.saveDiagramStyle(active.sessionId, initial.projectRevision, profile);
+  assert.deepEqual(saved.profile, profile); assert.equal(saved.projectRevision, initial.projectRevision + 1);
+  assert.equal((await manager.loadCanvasWorkspace(active.sessionId, workspaceId)).diagramStyle.engine, 'plantuml');
+  const manifestPath = join(root, 'a3.project.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  assert.deepEqual(manifest.extensions['a3.diagrams.style'], profile);
+  await assert.rejects(manager.saveDiagramStyle(active.sessionId, initial.projectRevision, profile), { code: 'REVISION_CONFLICT' });
+  await manager.closeActive(active.sessionId); active = (await manager.openFolder(root)).active;
+  assert.deepEqual((await manager.loadDiagramStyle(active.sessionId)).profile, profile);
+  const beforeDeniedSave = await readFile(manifestPath);
+  assert.equal(await host.capabilities.setProfile({ root, projectId: host.projectId, profile: 'consultar' }), true);
+  await assert.rejects(manager.saveDiagramStyle(active.sessionId, saved.projectRevision, { ...profile, theme: 'dark' }), { code: 'PERMISSION_DENIED' });
+  assert.deepEqual(await readFile(manifestPath), beforeDeniedSave);
+});
+
+test('E3-F1: an incompatible saved style is diagnostic and cannot be overwritten by the default profile', windows, async (t) => {
+  const { root, tempRoot } = await scratch(t);
+  const manifestPath = join(root, 'a3.project.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.extensions['a3.diagrams.style'] = { schemaVersion: '9.0.0', engine: 'future-engine', futureStyle: { keep: true } };
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const original = await readFile(manifestPath);
+  const host = await fixtureHost(root, 'incompatible-diagram-style');
+  const manager = new LocalProjectManager({ stateDirectory: join(tempRoot, 'catalog'), host }); t.after(() => manager.dispose());
+  const active = (await manager.openFolder(root)).active;
+  const state = await manager.loadDiagramStyle(active.sessionId);
+  assert.equal(state.canWrite, false);
+  assert.equal(state.profile.engine, 'a3-native');
+  assert.ok(state.diagnostics.length > 0);
+  await assert.rejects(manager.saveDiagramStyle(active.sessionId, state.projectRevision, { schemaVersion: '1.0.0', engine: 'a3-native', theme: 'default' }), { code: 'DIAGRAM_STYLE_READ_ONLY' });
+  assert.deepEqual(await readFile(manifestPath), original);
+});
+
 test('A3-006/007: viewport drafts flush on close, remain independent per workspace and reopen without drift', windows, async (t) => {
   const { root, tempRoot } = await scratch(t);
   const document = JSON.parse(await readFile(pathOf(root, W1), 'utf8'));

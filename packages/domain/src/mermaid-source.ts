@@ -24,9 +24,11 @@ export function supportsMermaidSourceRenderer(type: string, typeVersion: string,
 }
 
 export interface MermaidEngine {
+  configure?(configuration: Record<string, unknown>): void;
   parse(source: string): Promise<false | { diagramType?: string }> | false | { diagramType?: string };
   render(id: string, source: string): Promise<{ svg: string }> | { svg: string };
 }
+let mermaidRenderQueue: Promise<void> = Promise.resolve();
 
 export type MermaidRenderResult =
   | { state: 'rendered'; svg: string; diagramType: string }
@@ -54,17 +56,22 @@ function errorMessage(error: unknown): string {
  * Runs a renderer supplied by the caller. This domain adapter never loads a package,
  * executes source as JavaScript/HTML, edits it, or converts it to an A3 model.
  */
-export async function renderMermaidSource(source: string, renderId: string, loadEngine: () => Promise<MermaidEngine>): Promise<MermaidRenderResult> {
+export async function renderMermaidSource(source: string, renderId: string, loadEngine: () => Promise<MermaidEngine>, configuration?: Record<string, unknown>): Promise<MermaidRenderResult> {
   if (source.length > MERMAID_SOURCE_LIMIT) return { state: 'too-large', message: `La vista Mermaid está limitada a ${MERMAID_SOURCE_LIMIT.toLocaleString('es')} caracteres; la fuente original permanece intacta.` };
   let engine: MermaidEngine;
   try { engine = await loadEngine(); }
   catch { return { state: 'unavailable', message: `El motor Mermaid ${MERMAID_RENDERER_VERSION} no está disponible; la fuente original permanece intacta.` }; }
+  let release!: () => void;
+  const previous = mermaidRenderQueue;
+  mermaidRenderQueue = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
   try {
+    if (configuration) engine.configure?.(configuration);
     const parsed = await engine.parse(source);
     if (parsed === false) return { state: 'invalid', message: 'Mermaid rechazó la fuente; la fuente original permanece intacta.' };
     const output = await engine.render(renderId, source);
     return { state: 'rendered', svg: output.svg, diagramType: parsed.diagramType ?? 'desconocido' };
   } catch (error) {
     return { state: 'invalid', message: errorMessage(error), ...locationFrom(error) };
-  }
+  } finally { release(); }
 }

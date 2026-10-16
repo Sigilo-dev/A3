@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0.0",
+  "engine": "mermaid",
+  "theme": "dark",
+  "fonts": { "family": "Segoe UI", "size": 15 },
+  "colors": {
+    "background": "#1c2530",
+    "primary": "#314559",
+    "secondary": "#283847",
+    "text": "#f1f5f9",
+    "line": "#a5bacd"
+  },
+  "borders": { "color": "#647b91", "width": 2, "radius": 8 },
+  "orientation": "left-right",
+  "spacing": { "nodes": 48, "ranks": 64 },
+  "background": { "color": "#1c2530", "resourceId": "12345678-1234-4234-8234-123456789abc" },
+  "scale": 1.25
+}

@@ -4,6 +4,7 @@ export * from './uml.js';
 export * from './er.js';
 export * from './iot.js';
 export * from './iot-circuit.js';
+export * from './diagram-style.js';
 export * from './mermaid-source.js';
 export * from './plantuml-source.js';
 export * from './structurizr-source.js';

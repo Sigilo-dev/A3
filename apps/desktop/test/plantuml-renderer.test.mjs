@@ -187,6 +187,30 @@ test('E3-E1 preserves literal include and include_many behavior without reopenin
   assert.equal(includeMany.match(/IncludeExpansionProof/g)?.length, 2);
 });
 
+test('E3-F1 adds a generated PlantUML profile only to render input and keeps the source hash stable', async (t) => {
+  const directory = await testDirectory(); t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = join(directory, 'project'); await mkdir(root);
+  let launch;
+  const source = '@startuml\nclass A\n@enduml';
+  const originalHash = hash(Buffer.from(source, 'utf8'));
+  const result = await renderer(directory, { resolveJava: async () => ({ executable: 'java.exe', major: 21, version: '21.0.10' }),
+    runProcess: async (value) => { launch = value; return { code: 0, stdout: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), stderr: Buffer.alloc(0), timedOut: false, tooLarge: false }; }
+  }).render({ ...input(source, root), styleDirectives: 'skinparam defaultFontName "Segoe UI"\nskinparam classBackgroundColor #203040' });
+  assert.equal(result.state, 'rendered');
+  assert.equal(result.sourceHash, originalHash);
+  assert.match(launch.stdin, /@startuml\nskinparam defaultFontName "Segoe UI"\nskinparam classBackgroundColor #203040\nclass A/);
+  assert.equal(source, '@startuml\nclass A\n@enduml');
+});
+
+test('E3-F1 rejects an unsafe generated PlantUML directive before Java starts', async (t) => {
+  const directory = await testDirectory(); t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = join(directory, 'project'); await mkdir(root); let launched = false;
+  const result = await renderer(directory, { resolveJava: async () => ({ executable: 'java.exe', major: 21, version: '21.0.10' }),
+    runProcess: async () => { launched = true; throw new Error('must not launch'); }
+  }).render({ ...input('@startuml\nclass A\n@enduml', root), styleDirectives: 'skinparam !include secret.puml' });
+  assert.equal(result.state, 'invalid'); assert.equal(launched, false);
+});
+
 test('E3-E1 rejects runtime file loaders in source before Java can process them', async (t) => {
   const directory = await testDirectory(); t.after(() => rm(directory, { recursive: true, force: true }));
   const root = join(directory, 'project'); await mkdir(root);

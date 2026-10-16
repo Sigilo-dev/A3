@@ -12,6 +12,7 @@ import { buildMermaidImportRecords, parseMermaidImport, requiredMermaidMapping, 
 import { parsePlantUmlClassImport } from '@a3/domain/plantuml-import';
 import { parseStructurizrDslImport, parseStructurizrJsonImport, type StructurizrImportGraph, type StructurizrImportIssue } from '@a3/domain/structurizr-import';
 import { STRUCTURIZR_DSL_SOURCE_TYPE, STRUCTURIZR_JSON_SOURCE_TYPE, STRUCTURIZR_SOURCE_LIMIT, structurizrSourceProperties, type StructurizrSourceFormat } from '@a3/domain/structurizr-source';
+import { adaptDiagramStyle, diagramStyleLayer, DIAGRAM_STYLE_EXTENSION, defaultDiagramStyleProfile, validateDiagramStyleProfile, type DiagramStyleProfile } from '@a3/domain';
 import { projectErCanvas, type CanvasErState } from './er-canvas.js';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
@@ -70,6 +71,7 @@ export interface LocalProjectsState {
   restoreNotice?: string;
 }
 export interface WorkspaceViewport { x: number; y: number; zoom: number; }
+export interface DiagramStyleState { projectRevision: number; profile: DiagramStyleProfile; canWrite: boolean; diagnostics: readonly string[]; }
 export interface CanvasEntitySummary {
   c4Category?: C4Category;
   id: string; revision: number; type: string; typeVersion: string; title: string; properties: Entity['properties']; ports: Entity['ports'];
@@ -101,7 +103,7 @@ export interface CanvasSelectionRef { id: string; expectedRevision: number; }
 export interface CanvasSelection { placements: CanvasSelectionRef[]; drawings: CanvasSelectionRef[]; groups: CanvasSelectionRef[]; }
 export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; mediaType?: string; bytes?: Uint8Array; }
 /** Main-process-only read context for the pinned renderer; never expose its absolute paths to the renderer. */
-export interface PlantUmlRenderInput { source: string; sourceHash: string; workingDirectory: string; includeRoots: readonly string[]; }
+export interface PlantUmlRenderInput { source: string; sourceHash: string; workingDirectory: string; includeRoots: readonly string[]; styleDirectives?: string; }
 export interface CanvasMermaidImportItem { key: string; kind: string; title: string; action: 'create' | 'update' | 'unchanged' | 'conflict'; }
 export interface CanvasMermaidImportPreview {
   token: string; sourceEntityId: string; sourceRevision: number; resourceId: string; family: MermaidImportGraph['family']; mode: 'new' | 'update';
@@ -127,7 +129,7 @@ export interface LocalCanvasWorkspace {
   er: CanvasErState;
   uml: CanvasUmlState;
   c4: CanvasC4State;
-  sessionId: string; workspaceId: string; name: string; revision: number;
+  sessionId: string; workspaceId: string; name: string; revision: number; diagramStyle: DiagramStyleProfile; diagramStyleDiagnostics: readonly string[];
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
   resourceChoices: readonly CanvasResourceChoice[]; placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[];
   conceptualRelations: readonly CanvasConceptualRelationView[]; drawings: readonly CanvasDrawingView[]; groups: readonly CanvasGroupView[];
@@ -833,6 +835,10 @@ export class LocalProjectManager {
     const edit = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
       projectId: active.projectId, operation: 'write', paths: [], refs: [{ kind: 'workspace', id: workspaceId }], resources: [], requiredCapabilities: ['diagram.edit'], stage: 'prepare' });
     const snapshot = active.lease.service.state.project.snapshot, registry = active.lease.service.typeRegistry;
+    const projectRecord = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'project' }> => record.kind === 'project');
+    const storedStyle = projectRecord?.value.extensions[DIAGRAM_STYLE_EXTENSION];
+    const styleDiagnostics = storedStyle === undefined ? [] : validateDiagramStyleProfile(storedStyle);
+    const diagramStyle = styleDiagnostics.length ? defaultDiagramStyleProfile() : storedStyle as DiagramStyleProfile | undefined ?? defaultDiagramStyleProfile();
     const choices = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'entity' }> => record.kind === 'entity');
     const resourceRecords = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource');
     const resources = new Map(resourceRecords.map((record) => [record.value.id.toLowerCase(), record]));
@@ -885,7 +891,7 @@ export class LocalProjectManager {
     const undoEvent = history?.entries[history.cursor - 1], redoEvent = history?.entries[history.cursor];
     const historyDelete = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
       projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: ['delete'], stage: 'prepare' });
-    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, resourceChoices, placements, visualEdges, conceptualRelations, drawings, groups,
+    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, diagramStyle, diagramStyleDiagnostics: styleDiagnostics, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, resourceChoices, placements, visualEdges, conceptualRelations, drawings, groups,
       c4: projectC4Canvas(snapshot, registry, workspaceId),
       uml: projectUmlCanvas(snapshot, workspaceId),
       er: projectErCanvas(snapshot, workspaceId),
@@ -900,6 +906,43 @@ export class LocalProjectManager {
   }
   loadCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
     return this.#queue(async () => { const { active } = this.#canvasContext(sessionId, workspaceId); await this.#canvasHistory(active, workspaceId); return this.#canvasWorkspace(sessionId, workspaceId); });
+  }
+  loadDiagramStyle(sessionId: string): Promise<DiagramStyleState> {
+    return this.#queue(async () => {
+      const active = this.#active;
+      demand(active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión cambió; vuelve a abrir Preferencias del proyecto.');
+      const record = active.lease.service.state.project.snapshot.records.find((item): item is Extract<DomainRecord, { kind: 'project' }> => item.kind === 'project');
+      demand(record?.kind === 'project', 'PROJECT_MISSING', 'El manifiesto del proyecto no está disponible; no se modificó ningún dato.');
+      const stored = record.value.extensions[DIAGRAM_STYLE_EXTENSION];
+      const diagnostics = stored === undefined ? [] : validateDiagramStyleProfile(stored);
+      const profile = diagnostics.length ? defaultDiagramStyleProfile() : stored as DiagramStyleProfile | undefined ?? defaultDiagramStyleProfile();
+      const decision = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+        projectId: active.projectId, operation: 'write', paths: [], refs: [{ kind: 'project', id: active.projectId }], resources: [],
+        requiredCapabilities: ['diagram.edit'], stage: 'prepare' });
+      return { projectRevision: record.value.revision, profile, canWrite: diagnostics.length === 0 && active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && decision.allowed, diagnostics };
+    });
+  }
+  saveDiagramStyle(sessionId: string, expectedProjectRevision: number, profile: DiagramStyleProfile): Promise<DiagramStyleState> {
+    return this.#queue(async () => {
+      const active = this.#active;
+      demand(active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión cambió; el perfil no se guardó.');
+      const snapshot = active.lease.service.state.project.snapshot;
+      const project = snapshot.records.find((item): item is Extract<DomainRecord, { kind: 'project' }> => item.kind === 'project');
+      demand(project?.kind === 'project' && project.value.revision === expectedProjectRevision, 'REVISION_CONFLICT', 'El manifiesto cambió; vuelve a cargar el perfil antes de guardar.');
+      const currentProfile = project.value.extensions[DIAGRAM_STYLE_EXTENSION];
+      demand(currentProfile === undefined || validateDiagramStyleProfile(currentProfile).length === 0, 'DIAGRAM_STYLE_READ_ONLY', 'El perfil guardado tiene campos incompatibles y se conserva sin cambios; no se sobrescribió.');
+      const problems = validateDiagramStyleProfile(profile);
+      demand(problems.length === 0, 'DIAGRAM_STYLE_INVALID', problems.join(' '));
+      demand(active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict, 'PERMISSION_DENIED', 'El proyecto no permite guardar el perfil en este momento.');
+      await this.#commitCanvasCommand(active, { command: 'a3.diagrams.set-style', payload: { profile } }, []);
+      const next = active.lease.service.state.project.snapshot.records.find((item): item is Extract<DomainRecord, { kind: 'project' }> => item.kind === 'project');
+      demand(next?.kind === 'project', 'PROJECT_MISSING', 'El perfil se guardó, pero no se pudo releer el manifiesto.');
+      const decision = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+        projectId: active.projectId, operation: 'write', paths: [], refs: [{ kind: 'project', id: active.projectId }], resources: [],
+        requiredCapabilities: ['diagram.edit'], stage: 'prepare' });
+      return { projectRevision: next.value.revision, profile: next.value.extensions[DIAGRAM_STYLE_EXTENSION] as unknown as DiagramStyleProfile,
+        canWrite: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && decision.allowed, diagnostics: [] };
+    });
   }
   stageCanvasViewport(sessionId: string, workspaceId: string, expectedRevision: number, viewport: WorkspaceViewport): Promise<LocalCanvasWorkspace> {
     return this.#queue(async () => {
@@ -1215,13 +1258,15 @@ export class LocalProjectManager {
       catch { return { entityId, resourceId, text: null, state: 'binary', mediaType }; }
     });
   }
-  preparePlantUmlRender(sessionId: string, workspaceId: string, sourceEntityId: string): Promise<PlantUmlRenderInput> {
+  preparePlantUmlRender(sessionId: string, workspaceId: string, sourceEntityId: string, placementId: string): Promise<PlantUmlRenderInput> {
     return this.#queue(async () => {
       const { active } = this.#canvasContext(sessionId, workspaceId);
       const snapshot = active.lease.service.state.project.snapshot;
       const entity = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === sourceEntityId.toLowerCase());
+      const placement = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'placement' }> => record.kind === 'placement' &&
+        record.workspaceId === workspaceId && record.value.id.toLowerCase() === placementId.toLowerCase() && record.value.entityId.toLowerCase() === sourceEntityId.toLowerCase());
       demand(entity?.kind === 'entity' && supportsPlantUmlSourceRenderer(entity.value.type, entity.value.typeVersion, entity.value.properties) &&
-        typeof entity.value.contentResourceId === 'string' && snapshot.records.some((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.entityId.toLowerCase() === sourceEntityId.toLowerCase()),
+        typeof entity.value.contentResourceId === 'string' && placement,
       'PLANTUML_SOURCE_MISSING', 'La fuente PlantUML no está en este workspace o su versión/autoridad no está reconocida; el contenido se conserva.');
       const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === entity.value.contentResourceId!.toLowerCase());
       demand(resource && resource.value.kind !== 'remote-url' && /\.(?:puml|plantuml)$/i.test(resource.value.path),
@@ -1260,7 +1305,14 @@ export class LocalProjectManager {
       }
       demand(includeRoots.size <= 16 && ![...includeRoots].some((path) => path.includes(';') || /[\r\n\0]/.test(path)),
         'PLANTUML_INCLUDE_ROOT_LIMIT', 'Hay demasiadas raíces o una ruta no representable de forma segura para los includes locales.');
-      return { source, sourceHash: opened.value.sha256, workingDirectory, includeRoots: [...includeRoots] };
+      const project = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'project' }> => record.kind === 'project');
+      const savedStyle = project?.value.extensions[DIAGRAM_STYLE_EXTENSION];
+      const profile = savedStyle !== undefined && validateDiagramStyleProfile(savedStyle).length === 0 ? savedStyle as unknown as DiagramStyleProfile : defaultDiagramStyleProfile();
+      const entityStyle = diagramStyleLayer(entity.value.properties[DIAGRAM_STYLE_EXTENSION]);
+      const viewStyle = diagramStyleLayer(placement.value.style[DIAGRAM_STYLE_EXTENSION]);
+      const adaptation = adaptDiagramStyle(profile, { ...(entityStyle ? { entity: entityStyle } : {}), ...(viewStyle ? { view: viewStyle } : {}) });
+      return { source, sourceHash: opened.value.sha256, workingDirectory, includeRoots: [...includeRoots],
+        ...(profile.engine === 'plantuml' && adaptation.plantUmlSkinparam ? { styleDirectives: adaptation.plantUmlSkinparam } : {}) };
     });
   }
   previewCanvasMermaidImport(sessionId: string, workspaceId: string, sourceEntityId: string): Promise<CanvasMermaidImportPreview> {

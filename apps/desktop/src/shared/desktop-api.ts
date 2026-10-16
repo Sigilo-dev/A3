@@ -4,10 +4,11 @@ import type { C4Operation } from '@a3/domain';
 import type { UmlOperation } from '@a3/domain';
 import type { ErOperation } from '@a3/domain/er';
 import type { IotCircuitData } from '@a3/domain/iot-circuit';
+import type { DiagramStyleProfile } from '@a3/domain';
 export type { CanvasErState, CanvasErElement, CanvasErRelationship, CanvasErRelationView } from '@a3/project-store';
 export type { CanvasUmlState, CanvasUmlElement, CanvasUmlRelationship, CanvasUmlRelationView } from '@a3/project-store';
 export type { CanvasC4State, CanvasC4Element, CanvasC4Relationship, CanvasC4RelationView } from '@a3/project-store';
-export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasConceptualRelationView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, CanvasMermaidImportPreview, CanvasPlantUmlImportPreview, CanvasStructurizrImportPreview, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace } from '@a3/project-store';
+export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasConceptualRelationView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, CanvasMermaidImportPreview, CanvasPlantUmlImportPreview, CanvasStructurizrImportPreview, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace, DiagramStyleState } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
@@ -40,7 +41,9 @@ export type CodeRequest =
 export type CodeResult = { ok: true; value: import('@a3/project-store').CodeDocument } | { ok: false; error: { code: string; message: string; recovery: string } };
 export const DROP_STAGE_CHANNEL = 'a3.canvas:stage-drop';
 export type CanvasRequest =
-  | { action: 'plantuml-render'; sessionId: string; workspaceId: string; sourceEntityId: string }
+  | { action: 'diagram-style-load'; sessionId: string; workspaceId: string }
+  | { action: 'diagram-style-save'; sessionId: string; workspaceId: string; expectedProjectRevision: number; profile: DiagramStyleProfile }
+  | { action: 'plantuml-render'; sessionId: string; workspaceId: string; sourceEntityId: string; placementId: string }
   | { action: 'plantuml-import-preview'; sessionId: string; workspaceId: string; sourceEntityId: string }
   | { action: 'plantuml-import-apply'; sessionId: string; workspaceId: string; token: string; authority: 'source' | 'a3-model' }
   | { action: 'structurizr-import-preview'; sessionId: string; workspaceId: string; sourceEntityId: string }
@@ -90,6 +93,7 @@ export type MarkdownRequest =
   | { action: 'save'; sessionId: string; entityId: string; resourceId: string; entityRevision: number; expectedRevision: number; expectedHash: string; content: string };
 export type MarkdownResult = { ok: true; value: import('@a3/project-store').MarkdownDocument | import('@a3/project-store').MarkdownAsset } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasResult = { ok: true; value: LocalCanvasWorkspace } | { ok: false; error: { code: string; message: string; recovery: string } };
+export type CanvasStyleResult = { ok: true; value: import('@a3/project-store').DiagramStyleState } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasMermaidImportResult = { ok: true; value: import('@a3/project-store').CanvasMermaidImportPreview } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasPlantUmlImportResult = { ok: true; value: import('@a3/project-store').CanvasPlantUmlImportPreview } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasStructurizrImportResult = { ok: true; value: import('@a3/project-store').CanvasStructurizrImportPreview } | { ok: false; error: { code: string; message: string; recovery: string } };
@@ -149,6 +153,7 @@ export interface DesktopAPI {
   canvas(request: Extract<CanvasRequest, { action: 'structurizr-import-preview' }>): Promise<CanvasStructurizrImportResult>;
   canvas(request: Extract<CanvasRequest, { action: 'structurizr-import-apply' }>): Promise<CanvasResult>;
   canvas(request: Extract<CanvasRequest, { action: 'plantuml-render' }>): Promise<CanvasPlantUmlResult>;
+  canvas(request: Extract<CanvasRequest, { action: 'diagram-style-load' | 'diagram-style-save' }>): Promise<CanvasStyleResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;
   canvas(request: CanvasContentRequest): Promise<CanvasContentResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;

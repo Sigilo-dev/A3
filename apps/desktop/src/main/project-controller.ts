@@ -1,5 +1,5 @@
 import { clipboard, dialog, type BrowserWindow } from 'electron';
-import { validC4Operation, validUmlOperation } from '@a3/domain';
+import { validC4Operation, validUmlOperation, validateDiagramStyleProfile } from '@a3/domain';
 import { validErOperation } from '@a3/domain/er';
 import { lstat, realpath, readdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -7,7 +7,7 @@ import { basename, dirname, join, parse, relative, resolve } from 'node:path';
 import { CONTENT_NODE_CATALOG, CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_RELATION_KINDS, IOT_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { validIotCircuitOperation } from '@a3/domain/iot-circuit';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { CanvasContentRequest, CanvasContentResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
 import { validCanvasView, validPageView } from '@a3/project-store';
 import type { WorkspaceSessionRequest, WorkspaceSessionResult } from '../shared/desktop-api';
@@ -78,7 +78,10 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
   const input = value as Record<string, unknown>;
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (typeof input.action !== 'string' || typeof input.sessionId !== 'string' || typeof input.workspaceId !== 'string' || !uuid.test(input.sessionId) || !uuid.test(input.workspaceId)) return false;
-  if (input.action === 'plantuml-render') return Object.keys(input).length === 4 && uuid.test(String(input.sourceEntityId));
+  if (input.action === 'plantuml-render') return Object.keys(input).length === 5 && uuid.test(String(input.sourceEntityId)) && uuid.test(String(input.placementId));
+  if (input.action === 'diagram-style-load') return Object.keys(input).length === 3;
+  if (input.action === 'diagram-style-save') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedProjectRevision) &&
+    Number(input.expectedProjectRevision) >= 1 && validateDiagramStyleProfile(input.profile).length === 0;
   if (input.action === 'plantuml-import-preview') return Object.keys(input).length === 4 && uuid.test(String(input.sourceEntityId));
   if (input.action === 'plantuml-import-apply') return Object.keys(input).length === 5 && uuid.test(String(input.token)) && ['source', 'a3-model'].includes(String(input.authority));
   if (input.action === 'structurizr-import-preview') return Object.keys(input).length === 4 && uuid.test(String(input.sourceEntityId));
@@ -421,11 +424,13 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
-    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasMermaidImportResult | CanvasPlantUmlImportResult | CanvasPlantUmlResult | CanvasStructurizrImportResult> {
+    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasMermaidImportResult | CanvasPlantUmlImportResult | CanvasPlantUmlResult | CanvasStyleResult | CanvasStructurizrImportResult> {
       if (!validCanvasRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de lienzo inválida.', recovery: 'Reabre el workspace.' } };
       try {
         switch (value.action) {
-          case 'plantuml-render': return { ok: true, value: await plantumlRenderer.render(await manager.preparePlantUmlRender(value.sessionId, value.workspaceId, value.sourceEntityId)) };
+          case 'diagram-style-load': return { ok: true, value: await manager.loadDiagramStyle(value.sessionId) };
+          case 'diagram-style-save': return { ok: true, value: await manager.saveDiagramStyle(value.sessionId, value.expectedProjectRevision, value.profile) };
+          case 'plantuml-render': return { ok: true, value: await plantumlRenderer.render(await manager.preparePlantUmlRender(value.sessionId, value.workspaceId, value.sourceEntityId, value.placementId)) };
           case 'plantuml-import-preview': return { ok: true, value: await manager.previewCanvasPlantUmlImport(value.sessionId, value.workspaceId, value.sourceEntityId) };
           case 'plantuml-import-apply': return { ok: true, value: await manager.applyCanvasPlantUmlImport(value.sessionId, value.workspaceId, value.token, value.authority) };
           case 'structurizr-import-preview': return { ok: true, value: await manager.previewCanvasStructurizrImport(value.sessionId, value.workspaceId, value.sourceEntityId) };

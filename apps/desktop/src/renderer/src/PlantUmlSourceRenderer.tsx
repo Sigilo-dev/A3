@@ -26,7 +26,8 @@ async function sha256Text(source: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function PlantUmlSourceRenderer({ entity, source, unavailableMessage, sessionId, workspaceId, onImported, canApply }: {
+export function PlantUmlSourceRenderer({ entity, source, placementId, unavailableMessage, sessionId, workspaceId, onImported, canApply }: {
+  placementId: string;
   entity: CanvasEntitySummary; source: string | null; unavailableMessage?: string; sessionId: string; workspaceId: string;
   onImported?: (workspace: LocalCanvasWorkspace) => void; canApply: boolean;
 }): React.JSX.Element {
@@ -63,7 +64,7 @@ export function PlantUmlSourceRenderer({ entity, source, unavailableMessage, ses
     }
     void (async () => {
       try {
-        const response = await api.canvas({ action: 'plantuml-render', sessionId, workspaceId, sourceEntityId: entity.id });
+        const response = await api.canvas({ action: 'plantuml-render', sessionId, workspaceId, sourceEntityId: entity.id, placementId });
         if (!response.ok) throw new Error(`${response.error.code}: ${response.error.message}`);
         const value = response.value;
         if (value.sourceHash && value.sourceHash !== await sha256Text(source)) {
@@ -79,7 +80,7 @@ export function PlantUmlSourceRenderer({ entity, source, unavailableMessage, ses
       }
     })();
     return () => { current = false; };
-  }, [authoritySupported, entity.id, sessionId, source, visible, workspaceId]);
+  }, [authoritySupported, entity.id, placementId, sessionId, source, visible, workspaceId]);
 
   async function prepareImport(): Promise<void> {
     if (!window.a3 || importBusy) return;

@@ -1,4 +1,5 @@
 import type { CanvasEntitySummary, CanvasResourcePreview, LocalCanvasWorkspace } from '../../shared/desktop-api';
+import type { DiagramStyleProfile, ExtensionMap } from '@a3/domain';
 import { CONCEPTUAL_NODE_CATALOG, conceptualNodeKind } from '@a3/domain/conceptual-diagrams';
 import { MERMAID_SOURCE_TYPE } from '@a3/domain/mermaid-source';
 import { PLANTUML_SOURCE_TYPE } from '@a3/domain/plantuml-source';
@@ -31,7 +32,8 @@ function DrawingAssetPreview({ source }: { source: string }): React.JSX.Element 
   } catch { return <p className="canvas-content-state">Fuente de dibujo no interpretable; los bytes originales se conservan.</p>; }
 }
 
-export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback, playbackBusy, playbackError, onOpenMarkdown, onOpenCode, onDiagramImported, canApplyDiagramImport, sessionId, workspaceId, onProjectsChanged }: {
+export function CanvasContentBody({ entity, placementId, placementStyle, diagramStyle, preview, mediaUrl, activatePlayback, playbackBusy, playbackError, onOpenMarkdown, onOpenCode, onDiagramImported, canApplyDiagramImport, sessionId, workspaceId, onProjectsChanged }: {
+  placementId: string; placementStyle: ExtensionMap; diagramStyle: DiagramStyleProfile;
   entity: CanvasEntitySummary; preview: CanvasResourcePreview | null; mediaUrl: string | null;
   activatePlayback: () => void; playbackBusy: boolean; playbackError: string | null; onOpenMarkdown?: () => void; onOpenCode?: () => void;
   onDiagramImported?: (workspace: LocalCanvasWorkspace) => void; canApplyDiagramImport?: boolean; sessionId: string; workspaceId: string;
@@ -56,11 +58,11 @@ export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback,
   const shortText = entity.type === 'a3.content.short-text';
   const code = entity.type === 'a3.content.code';
   const drawing = entity.type === 'a3.core.drawing';
-  if (entity.type === MERMAID_SOURCE_TYPE) return <MermaidSourceRenderer entity={entity} source={text}
+  if (entity.type === MERMAID_SOURCE_TYPE) return <MermaidSourceRenderer entity={entity} source={text} profile={diagramStyle} placementStyle={placementStyle}
     sessionId={sessionId} workspaceId={workspaceId} onImported={onDiagramImported} canApply={canApplyDiagramImport === true}
     unavailableMessage={preview?.state === 'too-large' ? 'La vista segura supera el límite de lectura; el recurso y sus bytes originales permanecen intactos.' :
       preview?.state === 'binary' ? 'El recurso no es texto UTF-8; se conserva como fuente sin renderizar.' : unavailable || undefined} />;
-  if (entity.type === PLANTUML_SOURCE_TYPE) return <PlantUmlSourceRenderer entity={entity} source={text} sessionId={sessionId} workspaceId={workspaceId}
+  if (entity.type === PLANTUML_SOURCE_TYPE) return <PlantUmlSourceRenderer entity={entity} source={text} placementId={placementId} sessionId={sessionId} workspaceId={workspaceId}
     onImported={onDiagramImported} canApply={canApplyDiagramImport === true}
     unavailableMessage={preview?.state === 'too-large' ? 'La fuente supera el límite de lectura; el original permanece intacto.' :
       preview?.state === 'binary' ? 'El recurso no es texto UTF-8; se conserva sin renderizar.' : unavailable || undefined} />;

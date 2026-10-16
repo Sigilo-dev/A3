@@ -412,3 +412,14 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .iot-selected-component { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid #40513a; }
 .iot-inspector button { width: fit-content; padding: 7px 10px; border: 1px solid #6a8157; border-radius: 4px; background: #273721; color: #e5ebdc; }
 .iot-inspector :focus-visible { outline: 2px solid #c5eb98; outline-offset: 2px; }
+.diagram-style-preferences { display: grid; gap: 12px; max-width: 980px; }
+.diagram-style-preferences fieldset { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; border: 1px solid #41515e; border-radius: 6px; padding: 12px; }
+.diagram-style-preferences legend { padding: 0 6px; color: #c3ed82; }
+.diagram-style-preferences label { display: grid; gap: 5px; min-width: 0; color: #d9e1e6; font-size: 12px; }
+.diagram-style-preferences input, .diagram-style-preferences select { width: 100%; min-width: 0; padding: 7px; border: 1px solid #41515e; border-radius: 4px; background: #10151b; color: #e8edf0; font: inherit; }
+.diagram-style-preferences input[type="color"] { height: 34px; padding: 2px; }
+.diagram-style-preferences button.primary { width: fit-content; padding: 9px 15px; border: 1px solid #93b66e; border-radius: 5px; background: #314329; color: #edf6e6; }
+.diagram-style-preferences :focus-visible { outline: 2px solid #c3ed82; outline-offset: 2px; }
+.diagram-style-compatibility, .diagram-theme-export { padding: 12px; border: 1px solid #354753; border-radius: 6px; background: #151c22; }
+.diagram-theme-export textarea { width: 100%; max-width: 100%; min-height: 240px; padding: 10px; border: 1px solid #41515e; border-radius: 4px; background: #0d1217; color: #dce8d5; font: 12px/1.5 ui-monospace, monospace; }
+.diagram-style-diagnostics { font-size: 10px; color: #efc998; }

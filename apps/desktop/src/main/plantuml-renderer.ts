@@ -132,6 +132,21 @@ function diagnosticLine(text: string): number | undefined {
   return Number.isInteger(line) && line > 0 ? line : undefined;
 }
 
+function addProfileStyle(source: string, directives?: string): string | undefined {
+  if (!directives) return source;
+  if (directives.length > 4096) return undefined;
+  const lines = directives.split(/\r?\n/);
+  const safe = lines.length <= 16 && lines.every((line) =>
+    /^skinparam (?:backgroundColor|classBackgroundColor|defaultFontColor|ArrowColor|classBorderColor) #[\da-f]{6}$/i.test(line) ||
+    /^skinparam defaultFontSize (?:[6-9]|[1-6]\d|7[0-2])$/.test(line) ||
+    /^skinparam defaultFontName "[\p{L}\p{N} ,_'".-]{1,120}"$/u.test(line));
+  if (!safe) return undefined;
+  const sourceLines = source.split(/\r?\n/), start = sourceLines.findIndex((line) => /^\s*@startuml\b/i.test(line));
+  if (start < 0) return undefined;
+  sourceLines.splice(start + 1, 0, ...lines);
+  return sourceLines.join('\n');
+}
+
 function diagnosticMessage(stderr: string, roots: readonly string[]): string {
   let message = stderr.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !/^java\s+version/i.test(line) && !/^(?:protocolVersion|status|lineNumber)=/i.test(line)) ?? '';
   message = message.replace(/^label=/i, '');
@@ -275,6 +290,9 @@ export class PlantUmlRenderer {
       if (error instanceof IncludeExpansionError) return { state: 'invalid', message: error.message, line: error.sourceLine, sourceHash };
       return { state: 'unavailable', message: 'No se pudieron validar los includes locales; el original permanece intacto.', sourceHash };
     }
+    const styledSource = addProfileStyle(renderSource, input.styleDirectives);
+    if (styledSource === undefined) return { state: 'invalid', message: 'El perfil PlantUML no pudo validarse o la fuente no contiene @startuml; se conservó el original.', sourceHash };
+    renderSource = styledSource;
     const tempRoot = resolve(this.options.installDirectory, 'render-tmp');
     await mkdir(tempRoot, { recursive: true });
     const temp = await mkdtemp(join(tempRoot, 'a3-plantuml-'));

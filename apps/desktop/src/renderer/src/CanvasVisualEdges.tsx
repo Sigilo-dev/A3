@@ -4,17 +4,18 @@ import type { CanvasC4RelationView, CanvasConceptualRelationView, CanvasErRelati
 import { umlMultiplicityText } from '@a3/domain/uml';
 import type { ErCardinality } from '@a3/domain/er';
 import type { C4Step } from '@a3/domain/c4';
+import { adaptDiagramStyle } from '@a3/domain';
 
 export type CanvasTool = 'select' | 'connect' | 'text' | 'draw';
-type EdgeData = { view: CanvasVisualEdgeView; origin: { x: number; y: number } };
+type EdgeData = { view: CanvasVisualEdgeView; origin: { x: number; y: number }; defaultLineColor?: string };
 type SemanticEdgeData = { view: CanvasConceptualRelationView; origin: { x: number; y: number } };
 type C4EdgeData = { view: CanvasC4RelationView; origin: { x: number; y: number }; step?: C4Step };
 type UmlEdgeData = { view: CanvasUmlRelationView; origin: { x: number; y: number } };
 type ErEdgeData = { view: CanvasErRelationView; origin: { x: number; y: number } };
 export type CanvasEdge = Edge<EdgeData | SemanticEdgeData | C4EdgeData | UmlEdgeData | ErEdgeData, 'a3Visual' | 'a3Semantic' | 'a3C4' | 'a3Uml' | 'a3Er'>;
-export function edgeAppearance(style: CanvasVisualEdgeView['style']) {
+export function edgeAppearance(style: CanvasVisualEdgeView['style'], defaultColor?: string) {
   return {
-    color: typeof style['a3.ui.line.color'] === 'string' && /^#[\da-f]{6}$/i.test(style['a3.ui.line.color']) ? style['a3.ui.line.color'] : '#9bc279',
+    color: typeof style['a3.ui.line.color'] === 'string' && /^#[\da-f]{6}$/i.test(style['a3.ui.line.color']) ? style['a3.ui.line.color'] : defaultColor ?? '#9bc279',
     width: typeof style['a3.ui.line.width'] === 'number' && style['a3.ui.line.width'] >= 1 && style['a3.ui.line.width'] <= 12 ? style['a3.ui.line.width'] : 2,
     pattern: style['a3.ui.line.pattern'] === 'dashed' ? 'dashed' : 'solid',
     route: ['straight', 'orthogonal'].includes(String(style['a3.ui.line.route'])) ? String(style['a3.ui.line.route']) : 'curved',
@@ -23,18 +24,20 @@ export function edgeAppearance(style: CanvasVisualEdgeView['style']) {
 }
 export function toFlowEdges(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, tool: CanvasTool, previous: CanvasEdge[] = [], endpointMap: ReadonlyMap<string, string> = new Map()): CanvasEdge[] {
   const old = new Map(previous.map((edge) => [edge.id, edge]));
+  const defaultLineColor = adaptDiagramStyle(workspace.diagramStyle).applied.colors?.line;
   const visualEdges = workspace.visualEdges.map((view) => {
     const existing = old.get(view.id);
+    const existingDefaultLineColor = existing?.data && 'defaultLineColor' in existing.data ? existing.data.defaultLineColor : undefined;
     const reconnectable = workspace.canWrite && tool === 'connect';
     const source = endpointMap.get(view.sourcePlacementId.toLowerCase()) ?? view.sourcePlacementId;
     const target = endpointMap.get(view.targetPlacementId.toLowerCase()) ?? view.targetPlacementId;
     const sourceHandle = endpointMap.has(view.sourcePlacementId.toLowerCase()) ? 'group-visual-source' : 'visual-source';
     const targetHandle = endpointMap.has(view.targetPlacementId.toLowerCase()) ? 'group-visual-target' : 'visual-target';
-    if (existing?.data?.view.revision === view.revision && existing.source === source && existing.target === target && existing.reconnectable === reconnectable && existing.data.origin.x === origin.x && existing.data.origin.y === origin.y) return existing;
+    if (existing?.type === 'a3Visual' && existing.data?.view.revision === view.revision && existing.source === source && existing.target === target && existing.reconnectable === reconnectable && existing.data.origin.x === origin.x && existing.data.origin.y === origin.y && existingDefaultLineColor === defaultLineColor) return existing;
     const style = edgeAppearance(view.style);
     const marker = { type: MarkerType.ArrowClosed, color: style.color };
     return { id: view.id, source, target, sourceHandle, targetHandle,
-      type: 'a3Visual' as const, data: { view, origin }, reconnectable, selectable: true, focusable: true, selected: existing?.selected,
+      type: 'a3Visual' as const, data: { view, origin, ...(defaultLineColor ? { defaultLineColor } : {}) }, reconnectable, selectable: true, focusable: true, selected: existing?.selected,
       ariaLabel: `Línea visual: ${view.label || 'sin etiqueta'}. Solo organización.`,
       markerStart: ['backward', 'both'].includes(style.direction) ? marker : undefined,
       markerEnd: ['forward', 'both'].includes(style.direction) ? marker : undefined };
@@ -77,7 +80,7 @@ const VisualEdgeRenderer = memo(function VisualEdgeRenderer(props: EdgeProps<Can
   if (!props.data) return null;
   const { view, origin } = props.data;
   if (!('waypoints' in view)) return null;
-  const style = edgeAppearance(view.style);
+  const style = edgeAppearance(view.style, 'defaultLineColor' in props.data ? props.data.defaultLineColor : undefined);
   let [path, labelX, labelY] = style.route === 'straight' ? getStraightPath(props) : style.route === 'orthogonal' ? getSmoothStepPath(props) : getBezierPath(props);
   if (view.waypoints.length) {
     const points = [{ x: props.sourceX, y: props.sourceY }, ...view.waypoints.map((point) => ({ x: point.x - origin.x, y: point.y - origin.y })), { x: props.targetX, y: props.targetY }];

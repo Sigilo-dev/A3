@@ -28,11 +28,13 @@ import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffs
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, type ContentNodeKind } from '@a3/domain/content-nodes';
 import { conceptualNodeKind } from '@a3/domain/conceptual-diagrams';
 import type { ConceptualNodeKind, ConceptualRelationKind, Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
+import { adaptDiagramStyle, DIAGRAM_STYLE_EXTENSION, diagramStyleLayer, type DiagramStyleProfile } from '@a3/domain';
+import type { CSSProperties } from 'react';
 
 // Navigation reference only: no Entity, Placement, drawing or React Flow node is created.
 const reference = { x: 120, y: 110, width: 550, height: 220 };
 type CanvasNodeData = {
-  sessionId: string; workspaceId: string; entity: CanvasEntitySummary; placement: CanvasPlacementView; canWrite: boolean; tool: CanvasTool;
+  sessionId: string; workspaceId: string; entity: CanvasEntitySummary; placement: CanvasPlacementView; diagramStyle: DiagramStyleProfile; canWrite: boolean; tool: CanvasTool;
   onOpenMarkdown: (target: MarkdownEditorTarget) => void;
   onDiagramImported: (workspace: LocalCanvasWorkspace) => void;
   onProjectsChanged: () => void;
@@ -97,9 +99,24 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
   }
   const accent = data.placement.style['a3.ui.accent'];
   const borderColor = typeof accent === 'string' && /^#[\da-f]{6}$/i.test(accent) ? accent : undefined;
+  const style = adaptDiagramStyle({ ...data.diagramStyle, engine: 'a3-native' }, {
+    typeBase: { borders: { width: 1, radius: 8 } },
+    entity: diagramStyleLayer(data.entity.properties[DIAGRAM_STYLE_EXTENSION]),
+    view: diagramStyleLayer(data.placement.style[DIAGRAM_STYLE_EXTENSION])
+  });
+  const applied = style.applied;
+  const diagramCss: CSSProperties = {
+    ...(applied.colors?.background || applied.background?.color || applied.colors?.primary ? { backgroundColor: applied.background?.color ?? applied.colors?.background ?? applied.colors?.primary } : {}),
+    ...(applied.colors?.text ? { color: applied.colors.text } : {}),
+    ...(applied.borders?.color || borderColor ? { borderColor: applied.borders?.color ?? borderColor } : {}),
+    ...(applied.borders?.width !== undefined ? { borderWidth: `${applied.borders.width}px` } : {}),
+    ...(applied.borders?.radius !== undefined ? { borderRadius: `${applied.borders.radius}px` } : {}),
+    ...(applied.fonts?.family ? { fontFamily: applied.fonts.family } : {}),
+    ...(applied.fonts?.size !== undefined ? { fontSize: `${applied.fonts.size}px` } : {})
+  };
   const properties = Object.keys(data.entity.properties).length > 0 ? JSON.stringify(data.entity.properties, null, 2) : '';
   return <article ref={nodeRef} className="canvas-entity-node" data-placement-id={data.placement.id} data-entity-id={data.entity.id} data-node-type={data.entity.type}
-    data-node-fallback={!data.entity.typeAvailable} style={borderColor ? { borderColor } : undefined}>
+    data-node-fallback={!data.entity.typeAvailable} data-style-engine={style.engine} style={Object.keys(diagramCss).length ? diagramCss : undefined}>
     <Handle id="visual-target" type="target" position={Position.Left} isConnectable={data.canWrite && data.tool === 'connect'} aria-label="Destino de línea visual" />
     <Handle id="visual-source" type="source" position={Position.Right} isConnectable={data.canWrite && data.tool === 'connect'} aria-label="Origen de línea visual" />
     <NodeResizer isVisible={selected && data.canWrite && data.tool === 'select' && data.placement.style['a3.ui.locked'] !== true} minWidth={180} minHeight={130} color="#c3ed82"
@@ -118,13 +135,15 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
         {c4Data(data.entity)?.instanceOfId && <p>Instancia de {c4Data(data.entity)?.instanceOfId}</p>}
         {c4Data(data.entity)?.environment && <p>Entorno: {c4Data(data.entity)?.environment}</p>}
       </section>}
-      {data.entity.contentResourceId && <CanvasContentBody entity={data.entity} sessionId={data.sessionId} workspaceId={data.workspaceId} preview={preview} mediaUrl={mediaUrl} activatePlayback={() => void activatePlayback()}
+      {data.entity.contentResourceId && <CanvasContentBody entity={data.entity} placementId={data.placement.id} placementStyle={data.placement.style} diagramStyle={data.diagramStyle}
+        sessionId={data.sessionId} workspaceId={data.workspaceId} preview={preview} mediaUrl={mediaUrl} activatePlayback={() => void activatePlayback()}
         playbackBusy={playbackBusy} playbackError={playbackError} onOpenMarkdown={() => {
           if (data.entity.contentResourceId) data.onOpenMarkdown({ sessionId: data.sessionId, entityId: data.entity.id, resourceId: data.entity.contentResourceId, title: data.entity.title });
         }} onDiagramImported={data.onDiagramImported} canApplyDiagramImport={data.canWrite} onProjectsChanged={data.onProjectsChanged} onOpenCode={() => {
           if (data.entity.contentResourceId) onOpenCode?.({ sessionId: data.sessionId, title: data.entity.title, target: { resourceId: data.entity.contentResourceId, entityId: data.entity.id } });
         }} />}
       {Object.keys(data.placement.style).length > 0 && <details><summary>Estilo de esta vista</summary><pre>{JSON.stringify(data.placement.style, null, 2)}</pre></details>}
+      {style.unsupported.length > 0 && <details className="diagram-style-diagnostics"><summary>Ajustes que este motor omite ({style.unsupported.length})</summary><p>{style.unsupported.join(', ')}</p></details>}
     </div>
   </article>;
 }), a3Group: memo(function CanvasGroupNodeRenderer({ data, selected }: NodeProps<CanvasGroupNode>) {
@@ -258,13 +277,13 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
     if (!entity) return [];
     const existing = old.get(placement.id) as CanvasNode | undefined;
     if (!force && existing && existing.data.placement.revision === placement.revision && existing.data.entity.revision === entity.revision &&
-        existing.data.canWrite === workspace.canWrite && existing.data.tool === tool && existing.data.onOpenMarkdown === onOpenMarkdown && existing.data.onDiagramImported === onDiagramImported && existing.data.onProjectsChanged === onProjectsChanged) return [existing];
+        JSON.stringify(existing.data.diagramStyle) === JSON.stringify(workspace.diagramStyle) && existing.data.canWrite === workspace.canWrite && existing.data.tool === tool && existing.data.onOpenMarkdown === onOpenMarkdown && existing.data.onDiagramImported === onDiagramImported && existing.data.onProjectsChanged === onProjectsChanged) return [existing];
     return [{ id: placement.id, type: 'a3Entity', position: { x: placement.position.x - origin.x, y: placement.position.y - origin.y },
       style: { width: placement.size.width, height: placement.size.height }, draggable: workspace.canWrite && tool === 'select' && placement.style['a3.ui.locked'] !== true,
       zIndex: typeof placement.style['a3.ui.z-index'] === 'number' ? placement.style['a3.ui.z-index'] : 1,
       dragHandle: '.canvas-entity-header', selectable: true, focusable: true, selected: existing?.selected,
       ariaLabel: `${entity.title || entity.type}${placement.style['a3.ui.locked'] === true ? ', bloqueado' : ''}`,
-      data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, tool, onResizeEnd, onOpenMarkdown, onDiagramImported, onProjectsChanged } }];
+      data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, diagramStyle: workspace.diagramStyle, canWrite: workspace.canWrite, tool, onResizeEnd, onOpenMarkdown, onDiagramImported, onProjectsChanged } }];
   });
   const groupNodes: CanvasGroupNode[] = workspace.groups.filter((group) => !groups.hiddenGroups.has(group.id.toLowerCase())).map((group) => {
     const key = group.id.toLowerCase(), layout = groups.layouts.get(key)!, collapsed = group.collapsed;

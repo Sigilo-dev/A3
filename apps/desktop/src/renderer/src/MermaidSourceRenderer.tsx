@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { MERMAID_RENDERER_VERSION, MERMAID_SOURCE_LIMIT, MERMAID_SOURCE_TYPE, renderMermaidSource, supportsMermaidSourceRenderer, type MermaidEngine, type MermaidRenderResult } from '@a3/domain/mermaid-source';
 import type { CanvasEntitySummary, CanvasMermaidImportPreview, LocalCanvasWorkspace } from '../../shared/desktop-api';
+import { adaptDiagramStyle, DIAGRAM_STYLE_EXTENSION, diagramStyleLayer, type DiagramStyleProfile, type ExtensionMap } from '@a3/domain';
 
 let engineInitialized = false;
 async function loadMermaidEngine(): Promise<MermaidEngine> {
@@ -15,11 +16,16 @@ async function loadMermaidEngine(): Promise<MermaidEngine> {
       maxTextSize: MERMAID_SOURCE_LIMIT,
       maxEdges: 500,
       suppressErrorRendering: true,
-      secure: ['securityLevel', 'startOnLoad', 'htmlLabels', 'theme', 'themeCSS', 'fontFamily', 'maxTextSize', 'maxEdges', 'suppressErrorRendering']
+      secure: ['securityLevel', 'startOnLoad', 'htmlLabels', 'theme', 'themeVariables', 'themeCSS', 'fontFamily', 'flowchart', 'maxTextSize', 'maxEdges', 'suppressErrorRendering']
     });
     engineInitialized = true;
   }
-  return { parse: (source) => mermaid.parse(source), render: (id, source) => mermaid.render(id, source) };
+  return { configure: (configuration) => mermaid.initialize({
+      startOnLoad: false, securityLevel: 'strict', htmlLabels: false, maxTextSize: MERMAID_SOURCE_LIMIT,
+      maxEdges: 500, suppressErrorRendering: true,
+      secure: ['securityLevel', 'startOnLoad', 'htmlLabels', 'theme', 'themeVariables', 'themeCSS', 'fontFamily', 'flowchart', 'maxTextSize', 'maxEdges', 'suppressErrorRendering'],
+      ...configuration
+    }), parse: (source) => mermaid.parse(source), render: (id, source) => mermaid.render(id, source) };
 }
 
 function sanitizeSvg(svg: string): string {
@@ -43,13 +49,13 @@ function sanitizeSvg(svg: string): string {
   return new XMLSerializer().serializeToString(document.documentElement);
 }
 
-function useDiagram(source: string | null): MermaidRenderResult | null {
+function useDiagram(source: string | null, configuration: Record<string, unknown>): MermaidRenderResult | null {
   const reactId = useId().replace(/[^\da-z_-]/gi, ''), [result, setResult] = useState<MermaidRenderResult | null>(null);
   useEffect(() => {
     let current = true;
     setResult(null);
     if (source === null) return () => { current = false; };
-    void renderMermaidSource(source, `a3-${reactId}`, loadMermaidEngine).then((value) => {
+    void renderMermaidSource(source, `a3-${reactId}`, loadMermaidEngine, configuration).then((value) => {
       if (!current) return;
       if (value.state === 'rendered') {
         const svg = sanitizeSvg(value.svg);
@@ -57,7 +63,7 @@ function useDiagram(source: string | null): MermaidRenderResult | null {
       } else setResult(value);
     }).catch(() => { if (current) setResult({ state: 'unavailable', message: `El motor Mermaid ${MERMAID_RENDERER_VERSION} no está disponible; la fuente original permanece intacta.` }); });
     return () => { current = false; };
-  }, [source, reactId]);
+  }, [source, reactId, configuration]);
   return result;
 }
 
@@ -67,12 +73,16 @@ function ImportIssues({ title, items }: { title: string; items: readonly { line:
     <li key={`${item.line}:${item.source}:${index}`}><span>Línea {item.line}</span> {item.source && <code>{item.source}</code>} · {item.reason}</li>)}</ul></section>;
 }
 
-export function MermaidSourceRenderer({ entity, source, unavailableMessage, sessionId, workspaceId, canApply, onImported }: {
+export function MermaidSourceRenderer({ entity, source, profile, placementStyle, unavailableMessage, sessionId, workspaceId, canApply, onImported }: {
+  profile: DiagramStyleProfile; placementStyle: ExtensionMap;
   entity: CanvasEntitySummary; source: string | null; unavailableMessage?: string; sessionId: string; workspaceId: string;
   canApply: boolean; onImported?: (workspace: LocalCanvasWorkspace) => void;
 }): React.JSX.Element {
   const authoritySupported = supportsMermaidSourceRenderer(entity.type, entity.typeVersion, entity.properties);
-  const result = useDiagram(authoritySupported ? source : null);
+  const adaptation = adaptDiagramStyle(profile, { entity: diagramStyleLayer(entity.properties[DIAGRAM_STYLE_EXTENSION]), view: diagramStyleLayer(placementStyle[DIAGRAM_STYLE_EXTENSION]) });
+  const sourceHasInit = source !== null && /^\s*%%\{\s*init\s*:/im.test(source);
+  const mermaidConfiguration = profile.engine === 'mermaid' ? adaptation.mermaidConfig ?? { theme: 'default' } : { theme: 'default' };
+  const result = useDiagram(authoritySupported ? source : null, mermaidConfiguration);
   const [importPreview, setImportPreview] = useState<CanvasMermaidImportPreview | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -110,6 +120,8 @@ export function MermaidSourceRenderer({ entity, source, unavailableMessage, sess
     data-mermaid-line={result?.state === 'invalid' ? result.line : undefined} aria-label={`Diagrama Mermaid de fuente ${entity.title}`}>
     {safeSvg ? <div className="mermaid-source-output" role="img" aria-label={`Diagrama Mermaid: ${entity.title}`} dangerouslySetInnerHTML={{ __html: safeSvg }} /> :
       <p className="canvas-content-state" role={state === 'invalid' || state === 'unavailable' || state === 'fallback' ? 'alert' : 'status'}>{message || 'Validando y renderizando Mermaid…'}</p>}
+    {profile.engine === 'mermaid' && sourceHasInit && <p className="canvas-content-state" role="status">La fuente conserva su init. El perfil del proyecto fija el tema seguro para esta vista.</p>}
+    {profile.engine === 'mermaid' && adaptation.unsupported.length > 0 && <p className="canvas-content-state" role="status">El perfil omite en Mermaid: {adaptation.unsupported.join(', ')}.</p>}
     {source !== null && <details className="mermaid-source-original"><summary>Fuente Mermaid preservada</summary><pre>{source}</pre></details>}
     {importAvailable && <section className="mermaid-import" aria-label="Conversión a modelo A3">
       <p>Importación explícita y parcial. La fuente nunca se elimina; flowchart, class y ER usan solo la gramática documentada.</p>

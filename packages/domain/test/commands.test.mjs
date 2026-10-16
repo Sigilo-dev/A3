@@ -371,6 +371,18 @@ test('creating a project validates default workspace and absence preconditions',
   assert.equal(empty.records.length, 0);
 });
 
+test('E3-F1: project diagram profile uses a revisioned, diagram.edit-authorized domain command', () => {
+  const state = fixture();
+  const profile = { schemaVersion: '1.0.0', engine: 'mermaid', theme: 'dark', fonts: { family: 'Segoe UI', size: 14 }, colors: { primary: '#223344' } };
+  const planned = success(run(state, 'a3.diagrams.set-style', { profile }));
+  const updated = find(planned.nextSnapshot, 'project', find(state, 'project', state.records.find((record) => record.kind === 'project').value.projectId).value.projectId);
+  assert.deepEqual(updated.value.extensions['a3.diagrams.style'], profile);
+  assert.equal(updated.value.revision, 2);
+  rejection(run(state, 'a3.diagrams.set-style', { profile: { ...profile, colors: { primary: 'red' } } }), 'diagram-style-invalid');
+  rejection(run(state, 'a3.diagrams.set-style', { profile }, [], context({ authorization: { authorize: () => false } })), 'permission-denied');
+  assert.equal(find(state, 'project', updated.value.projectId).value.revision, 1);
+});
+
 test('prepared plans are deterministic and detect stale catalog, dependency, content and tampering', () => {
   const state = fixture();
   const cmd = request(state, 'a3.core.rename', { ref: { kind: 'entity', id: E1 }, name: 'Nuevo' });

@@ -14,6 +14,7 @@ import { createIotCircuitEntity, validIotCircuitOperation, IOT_CIRCUIT_KEY, IOT_
 import { c4Category, c4Data } from './c4.js';
 import { CONCEPTUAL_KIND_KEY, CONCEPTUAL_LABEL_KEY, CONCEPTUAL_RELATION_TYPE, CONCEPTUAL_RELATION_VERSION,
   conceptualNodeDefinition, isConceptualEntity, isConceptualNodeKind, isConceptualRelation, isConceptualRelationKind } from './conceptual-diagrams.js';
+import { DIAGRAM_STYLE_EXTENSION, validateDiagramStyleProfile } from './diagram-style.js';
 import type { CommandContext, ContentEffect, Diagnostic, DocumentKinds, DocumentRef, DomainCommand, DomainRecord, DomainSnapshot, DuplicateSelection, ExpectedRevision, JsonValue, NodeTypeChange, Outcome, Payloads, PreparedPlan, RecordChange, RecordKind, ReversibleCanvasCommand, Resource, ResourceLocation, TypeRegistry } from './models.js';
 
 class DomainFault extends Error {
@@ -22,7 +23,7 @@ class DomainFault extends Error {
 function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnostic['code'] = 'VALIDATION_FAILED'): never {
   throw new DomainFault(diagnostic(detail, message, ref, code));
 }
-const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity',
+const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity', 'a3.diagrams.set-style',
   'a3.c4.change',
   'a3.uml.change',
   'a3.er.change',
@@ -877,6 +878,14 @@ function apply(draft: Draft): void {
       draft.add({ kind: 'project', value: request.payload.project });
       draft.add({ kind: 'workspace', value: request.payload.workspace });
       break;
+    case 'a3.diagrams.set-style': {
+      const issues = validateDiagramStyleProfile(request.payload.profile);
+      if (issues.length) fail('diagram-style-invalid', issues.join(' '), { kind: 'project', id: request.projectId });
+      draft.edit({ kind: 'project', id: request.projectId }, 'project', (project) => {
+        project.extensions[DIAGRAM_STYLE_EXTENSION] = copy(request.payload.profile) as unknown as JsonValue;
+      });
+      break;
+    }
     case 'a3.core.create-document':
       if (request.payload.record.kind === 'project') fail('unsupported-create', 'Usa el constructor de proyecto.');
       draft.add(request.payload.record);

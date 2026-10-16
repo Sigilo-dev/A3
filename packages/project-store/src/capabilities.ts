@@ -76,6 +76,7 @@ const hash = (value: string): string => createHash('sha256').update(value, 'utf8
 function safeOperation(value: string): string {
   const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
   if (new RegExp(`^a3\\.core\\.[a-z-]+(?::${uuid})?$`, 'i').test(value)) return value.replace(new RegExp(`:${uuid}$`, 'i'), ':<operation-id>');
+  if (new RegExp(`^a3\\.diagrams\\.[a-z-]+(?::${uuid})?$`, 'i').test(value)) return value.replace(new RegExp(`:${uuid}$`, 'i'), ':<operation-id>');
   if (/^policy\.profile:(consultar|proponer|trabajar|personalizado)$/.test(value)) return value;
   if (/^policy\.grant:(deny|propose|approval|direct)$/.test(value)) return value;
   if (/^mount\.bind:(read-only|read-write)$/.test(value)) return value;
@@ -249,7 +250,8 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
   };
   const modesForRequest = (request: AuthorizationRequest): Capability[] => {
     const caps = new Set<Capability>();
-    if (request.command === 'a3.core.register-node-type' || request.command === 'a3.core.unregister-node-type' || request.registryWrite) caps.add('package.install');
+    if (request.command === 'a3.diagrams.set-style') caps.add('diagram.edit');
+    else if (request.command === 'a3.core.register-node-type' || request.command === 'a3.core.unregister-node-type' || request.registryWrite) caps.add('package.install');
     else if (request.command === 'a3.core.delete') {
       caps.add('delete');
       caps.add(request.refs.some((ref) => domainRefCapabilities.has(ref.kind)) ? 'diagram.edit' : 'document.edit');

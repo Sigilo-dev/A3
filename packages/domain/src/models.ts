@@ -4,6 +4,7 @@ import type { C4Change } from './c4.js';
 import type { UmlChange } from './uml.js';
 import type { ErChange } from './er.js';
 import type { ChangeIotCircuit, CreateIotCircuit } from './iot-circuit.js';
+import type { DiagramStyleProfile } from './diagram-style.js';
 export type UUID = string;
 export type Namespace = string;
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -156,6 +157,7 @@ export interface StructurizrImportChange {
 }
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
 export type Payloads = {
+  'a3.diagrams.set-style': { profile: DiagramStyleProfile };
   'a3.er.change': ErChange;
   'a3.mermaid.import': MermaidImportChange;
   'a3.plantuml.import': PlantUmlImportChange;
