@@ -9,6 +9,18 @@ export const FILES_CHANNEL = 'a3.files:command';
 export const CANVAS_CHANNEL = 'a3.canvas:command';
 export const MARKDOWN_CHANNEL = 'a3.markdown:document';
 export const WORKSPACE_SESSION_CHANNEL = 'a3.workspace:session';
+export const NAVIGATION_CHANNEL = 'a3.navigation:command';
+export type { NavigationIndex, NavigationPage, PageLink, MenuPermissions, PageAnchor } from '@a3/project-store';
+export type NavigationRequest = { action: 'index' | 'permissions'; sessionId: string }
+  | { action: 'resolve'; sessionId: string; sourceId: string; target: string; kind: 'wiki' | 'markdown' }
+  | { action: 'copy-link'; sessionId: string; entityId: string }
+  | { action: 'rename-page'; sessionId: string; entityId: string; expectedRevision: number; title: string }
+  | { action: 'move-page'; sessionId: string; entityId: string; expectedRevision: number; destination: string }
+  | { action: 'shortcuts-load' | 'shortcuts-reset' }
+  | { action: 'shortcuts-save'; bindings: import('@a3/domain').ShortcutBindings };
+export type NavigationValue = import('@a3/project-store').NavigationIndex | import('@a3/project-store').MenuPermissions |
+  Omit<import('@a3/project-store').PageLink, 'start' | 'end' | 'label'> | import('@a3/domain').ShortcutBindings | { changed: true };
+export type NavigationResult = { ok: true; value: NavigationValue } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type { WorkspaceSession, WorkspaceSessionAction, PageViewState, CanvasViewState, FocusTab, PageReference } from '@a3/project-store';
 export type WorkspaceSessionRequest = ({ action: 'load' } | { action: 'reference'; tabId: string } | { action: 'locate'; tabId: string } | (Exclude<import('@a3/project-store').WorkspaceSessionAction, { action: 'load' }> & { expectedRevision: number })) & { sessionId: string };
 export type WorkspaceSessionResult = { ok: true; value: import('@a3/project-store').WorkspaceSession | import('@a3/project-store').PageReference | { located: boolean } } | { ok: false; error: { code: string; message: string; recovery: string } };
@@ -70,6 +82,7 @@ export type FilesRequest =
   | { action: 'open-mount'; sessionId: string; resourceId: string }
   | { action: 'create-file' | 'create-folder'; sessionId: string; parentId: string; name: string }
   | { action: 'rename'; sessionId: string; itemId: string; name: string }
+  | { action: 'move'; sessionId: string; itemId: string; destination: string }
   | { action: 'duplicate'; sessionId: string; itemId: string; name?: string }
   | { action: 'preview-delete'; sessionId: string; itemId: string }
   | { action: 'cancel-delete' | 'confirm-delete'; sessionId: string; token: string }
@@ -95,6 +108,7 @@ export interface DesktopAPI {
   getAppInfo(): Promise<ShellResult<AppInfo>>;
   projects(request: ProjectsRequest): Promise<ProjectsResult>;
   workspaceSession(request: WorkspaceSessionRequest): Promise<WorkspaceSessionResult>;
+  navigation(request: NavigationRequest): Promise<NavigationResult>;
   files(request: FilesRequest): Promise<FilesResult>;
   canvas(request: CanvasContentRequest): Promise<CanvasContentResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;

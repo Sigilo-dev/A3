@@ -7,6 +7,9 @@ import { CanvasDrawingLayer, type StrokePreview } from './CanvasDrawings';
 import { CanvasContentBody } from './CanvasContentNodes';
 import type { MarkdownEditorTarget } from './MarkdownEditor';
 import type { CodeEditorTarget } from './CodeEditor';
+import { ContextMenu, menuAt, useMenuPermissions, type MenuState, type ContextAction } from './ContextMenu';
+import { matchesShortcut, useShortcuts } from './shortcuts';
+import { useTextPrompt } from './TextInputDialog';
 const CodeOpenContext = createContext<((target: CodeEditorTarget) => void) | undefined>(undefined);
 const ContentVersionContext = createContext(0);
 import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffset, panViewport, renderOrigin, screenToWorld, toVisualViewport, wheelViewport, worldToScreen, zoomAt, type WorldViewport } from '../../shared/world-viewport';
@@ -275,6 +278,7 @@ function initialContentValue(kind: ContentNodeKind): string {
 }
 
 function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewport, onViewportChange }: { sessionId: string; workspaceId: string; onOpenMarkdown: (target: MarkdownEditorTarget) => void; initialViewport?: WorldViewport | null; onViewportChange?: (view: WorldViewport) => void }): React.JSX.Element {
+  const [menu, setMenu] = useState<MenuState | null>(null), permissions = useMenuPermissions(sessionId), shortcuts = useShortcuts(), [ask, promptDialog] = useTextPrompt();
   const onViewChange = useRef(onViewportChange); onViewChange.current = onViewportChange;
   const [workspace, setWorkspace] = useState<LocalCanvasWorkspace | null>(null);
   const [nodes, setNodes] = useState<CanvasFlowNode[]>([]);
@@ -837,6 +841,65 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
   }
   const hasGroupSelection = selection.nodeIds.length + selection.groupIds.length + selection.drawingIds.length > 0;
   function changeHistory(action: 'undo' | 'redo'): void { void mutateCanvas(() => ({ action, sessionId, workspaceId }), action === 'undo' ? 'Cambio deshecho' : 'Cambio rehecho'); }
+  function fitScene(): void {
+    const rect = hostRef.current?.getBoundingClientRect(); if (!rect || !workspace) return;
+    let x = Infinity, y = Infinity, right = -Infinity, bottom = -Infinity;
+    const include = (bx: number, by: number, width: number, height: number): void => { x = Math.min(x, bx); y = Math.min(y, by); right = Math.max(right, bx + width); bottom = Math.max(bottom, by + height); };
+    for (const p of workspace.placements) include(p.position.x, p.position.y, p.size.width, p.size.height);
+    for (const d of workspace.drawings) for (const p of d.points) include(p.x, p.y, 1, 1);
+    if (x === Infinity && showReference) include(reference.x, reference.y, reference.width, reference.height); if (x === Infinity) return;
+    try { update(fitContent({ x, y, width: right - x, height: bottom - y }, rect), true); } catch (error) { report(error); }
+  }
+  function canvasMenu(event: React.MouseEvent | React.KeyboardEvent): void {
+    if (event.target instanceof Element && event.target.closest('input,textarea,[contenteditable="true"]')) return;
+    const target = event.target instanceof Element ? event.target : null, drawingId = target?.closest<SVGElement>('[data-drawing-id]')?.dataset.drawingId;
+    const nodeId = target?.closest<HTMLElement>('.react-flow__node')?.dataset.id, node = nodes.find((n) => n.id === nodeId);
+    let context = 'canvas';
+    if (drawingId) { context = 'stroke'; if (!selection.drawingIds.includes(drawingId)) setSelection({ nodeIds: [], groupIds: [], edgeIds: [], drawingIds: [drawingId] }); }
+    else if (node?.type === 'a3Group') { context = 'group'; setSelectedGroupId(node.data.group.id); setGroupName(node.data.group.name); if (!selection.groupIds.includes(node.data.group.id)) setSelection({ nodeIds: [], groupIds: [node.data.group.id], edgeIds: [], drawingIds: [] }); }
+    else if (node) { context = 'placement'; if (!selection.nodeIds.includes(node.id)) {
+      setNodes((old) => old.map((n) => ({ ...n, selected: n.id === node.id }))); setSelection({ nodeIds: [node.id], groupIds: [], edgeIds: [], drawingIds: [] });
+    } }
+    setMenu(menuAt(event, context, []));
+  }
+  function canvasActions(): ContextAction[] {
+    const reason = !workspace?.canWrite ? 'diagram.edit: el proyecto no permite editar el lienzo o tiene un conflicto pendiente.' : '';
+    const actions: ContextAction[] = [], context = menu?.context;
+    const add = (id: string, label: string, run: () => void, capability?: ContextAction['capability'], why?: string): void => { actions.push({ id, label, run, capability, reason: why || (capability && capability !== 'read' ? reason : '') }); };
+    if (context === 'canvas') {
+      add('insert', 'Insertar nodo', () => { const details = hostRef.current?.parentElement?.querySelector<HTMLDetailsElement>('[data-canvas-insert-node]'); if (details) { details.open = true; details.querySelector<HTMLElement>('select,input')?.focus(); } }, 'diagram');
+      add('paste', 'Pegar', () => void smartPaste('smart'), 'diagram'); add('paste-text', 'Pegar como texto', () => void smartPaste('text'), 'diagram');
+      add('draw', 'Dibujar', () => setTool('draw'), 'diagram'); add('fit', 'Ajustar contenido', fitScene, 'read');
+      if (selectedMembers().length) add('group', 'Agrupar selección', () => void createGroup(), 'diagram');
+    } else if (context === 'placement' || context === 'group' || context === 'stroke') {
+      if (context === 'placement') {
+        const p = workspace?.placements.find((p) => p.id === selection.nodeIds[0]), e = workspace?.entities.find((e) => e.id === p?.entityId);
+        if (e?.contentResourceId && ['a3.core.page', 'a3.content.markdown', 'a3.content.short-text'].includes(e.type)) {
+          add('open', 'Abrir página', () => onOpenMarkdown({ sessionId, entityId: e.id, resourceId: e.contentResourceId!, title: e.title }), 'read');
+          add('copy-link', 'Copiar vínculo por ID', () => { void window.a3?.navigation({ action: 'copy-link', sessionId, entityId: e.id }).then((r) => { if (!r.ok) report(new Error(r.error.message)); }); }, 'read');
+        }
+        add('duplicate-content', 'Duplicar contenido', () => duplicateSelection('content'), 'document');
+        add('lock', 'Bloquear selección', () => lockSelection(true), 'diagram'); add('unlock', 'Desbloquear selección', () => lockSelection(false), 'diagram');
+        add('connect', 'Conectar visualmente', () => setTool('connect'), 'diagram');
+        if (selection.nodeIds.length >= 2) add('align-left', 'Alinear izquierda', () => alignSelection('left'), 'diagram');
+      }
+      add('duplicate-view', 'Duplicar representación', () => duplicateSelection('representation'), 'diagram');
+      if (context !== 'group') add('group', 'Agrupar selección', () => void createGroup(), 'diagram');
+      if (context === 'group') {
+        const g = workspace?.groups.find((g) => g.id === selection.groupIds[0]);
+        if (g) {
+          add('rename', 'Renombrar grupo', () => { void ask('Nuevo nombre del grupo', g.name).then((name) => { if (name) void mutateCanvas((latest) => ({ action: 'rename-group', sessionId, workspaceId, groupId: g.id, expectedRevision: latest.groups.find((v) => v.id === g.id)?.revision ?? 0, name })); }); }, 'diagram');
+          add('collapse', g.collapsed ? 'Expandir grupo' : 'Contraer grupo', () => toggleGroup(g.id), 'diagram');
+          add('move', 'Mover grupo (x, y)', () => { void ask('Desplazamiento del grupo: x, y', '20, 20').then((text) => {
+            if (!text) return; const values = text.split(',').map(Number); if (values.length !== 2 || !values.every(Number.isFinite)) { report(new Error('Introduce dos números finitos separados por coma.')); return; }
+            void mutateCanvas((latest) => ({ action: 'move-group', sessionId, workspaceId, groupId: g.id, expectedRevision: latest.groups.find((v) => v.id === g.id)?.revision ?? 0, offset: { x: values[0]!, y: values[1]! } }));
+          }); }, 'diagram');
+        }
+      }
+      if (context === 'stroke') add('delete', 'Borrar trazos seleccionados', () => { for (const id of selection.drawingIds) void deleteDrawing(id); }, 'delete', !workspace?.canDeleteDrawings ? 'delete: el broker no permite borrar trazos.' : '');
+    }
+    return actions;
+  }
   const visual = toVisualViewport(viewport, origin);
   const topLeft = screenToWorld({ x: 0, y: 0 }, viewport);
   const referenceScreen = worldToScreen(reference, viewport);
@@ -853,7 +916,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
       <button className="secondary" data-canvas-zoom-out disabled={!workspace || viewport.zoom <= MIN_ZOOM} onClick={() => zoom(1 / 1.2)} aria-label="Alejar">−</button>
       <output data-canvas-zoom aria-label="Escala del lienzo">{(viewport.zoom * 100).toLocaleString('es', { maximumFractionDigits: 1 })} %</output>
       <button className="secondary" data-canvas-zoom-in disabled={!workspace || viewport.zoom >= MAX_ZOOM} onClick={() => zoom(1.2)} aria-label="Acercar">+</button>
-      <button className="secondary" data-canvas-fit disabled={!workspace || !showReference} onClick={() => { const rect = hostRef.current?.getBoundingClientRect(); if (rect) update(fitContent(reference, rect), true); }}>Ajustar contenido</button>
+      <button className="secondary" data-canvas-fit disabled={!workspace || !showReference && !workspace.placements.length && !workspace.drawings.length} onClick={fitScene}>Ajustar contenido</button>
       <button className="quiet" data-canvas-paste-text disabled={!workspace?.canWrite} onClick={() => void smartPaste('text')}>Pegar como texto</button>
       <button className="quiet" data-canvas-save disabled={!workspace?.canWrite || status === 'Vista guardada' || status === 'Guardando vista…'} onClick={() => { failed.current = false; setError(null); flush(); }}>Guardar vista</button>
       <label>Entidad <select aria-label="Entidad para nueva representación" data-canvas-entity value={selectedEntityId || workspace?.entityChoices[0]?.id || ''} disabled={!workspace?.canWrite || !workspace.entityChoices.length}
@@ -984,6 +1047,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     </div>}
     <div ref={hostRef} className="canvas-host" tabIndex={0} role="region" aria-label="Lienzo del workspace" data-canvas-drop-target data-canvas-ready={!!workspace} data-canvas-mode={tool}
       data-viewport-x={viewport.x} data-viewport-y={viewport.y} data-viewport-zoom={viewport.zoom}
+      onContextMenu={canvasMenu}
       onPointerDownCapture={beginStroke} onPointerMove={continueStroke} onPointerUpCapture={finishStroke} onPointerCancelCapture={cancelStroke}
       onPasteCapture={(event) => {
         if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"], .react-flow__node, .react-flow__edge')) return;
@@ -991,14 +1055,18 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
       }}
       onKeyDownCapture={(event) => {
         if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"], summary')) return;
+        if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') { canvasMenu(event); return; }
+        if (matchesShortcut(event.nativeEvent, shortcuts.duplicate)) { event.preventDefault(); event.stopPropagation(); duplicateSelection('content'); return; }
+        if (matchesShortcut(event.nativeEvent, shortcuts.group)) { event.preventDefault(); event.stopPropagation(); void createGroup(); return; }
+        if (matchesShortcut(event.nativeEvent, shortcuts.fit)) { event.preventDefault(); event.stopPropagation(); fitScene(); return; }
         if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'v') {
           if (event.target instanceof Element && event.target.closest('.react-flow__node, .react-flow__edge')) return;
           event.preventDefault(); event.stopPropagation(); void smartPaste('smart'); return;
         }
-        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
-          event.preventDefault(); event.stopPropagation(); changeHistory(event.shiftKey ? 'redo' : 'undo'); return;
+        if (matchesShortcut(event.nativeEvent, shortcuts.undo)) {
+          event.preventDefault(); event.stopPropagation(); changeHistory('undo'); return;
         }
-        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'y') {
+        if (matchesShortcut(event.nativeEvent, shortcuts.redo)) {
           event.preventDefault(); event.stopPropagation(); changeHistory('redo'); return;
         }
         if (event.key === 'Escape') {
@@ -1016,7 +1084,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
         if (!event.ctrlKey && !event.metaKey && ['v', 'c', 't', 'd'].includes(event.key.toLowerCase())) {
           event.preventDefault(); setTool(({ v: 'select', c: 'connect', t: 'text', d: 'draw' } as const)[event.key.toLowerCase() as 'v' | 'c' | 't' | 'd']); return;
         }
-        if (event.key === 'Delete') {
+        if (matchesShortcut(event.nativeEvent, shortcuts.remove)) {
           event.preventDefault(); event.stopPropagation();
           void (async () => {
             if (workspace?.canDeleteDrawings) for (const id of selection.drawingIds) await deleteDrawing(id);
@@ -1078,5 +1146,6 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     {workspace && <CanvasEdgeEditor workspace={workspace} edge={selectedEdge} tool={tool} onCreate={createVisualEdge} onUpdate={updateVisualEdge} onDelete={(id) => void deleteVisualEdge(id)}
       onRequestDeletePermission={() => void mutateCanvas(() => ({ action: 'approve-edge-delete', sessionId, workspaceId }))} />}
     {showReference && <p className="canvas-help">La referencia es un fixture aislado y no se añade al proyecto.</p>}
+    {menu && <ContextMenu menu={{ ...menu, actions: canvasActions() }} permissions={permissions} onClose={() => setMenu(null)} />}{promptDialog}
   </>;
 }

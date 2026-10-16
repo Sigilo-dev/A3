@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import type { AppInfo, LocalProjectsState } from '../../shared/desktop-api';
 import { ProjectsPanel } from './ProjectsPanel';
 import { FileExplorerPanel } from './FileExplorerPanel';
+import { ShortcutPreferences } from './shortcuts';
 import type { CodeEditorTarget, CodeEditorHandle } from './CodeEditor';
 import type { FocusWorkspaceHandle } from './FocusWorkspace';
 const FocusWorkspace = lazy(() => import('./FocusWorkspace').then((module) => ({ default: module.FocusWorkspace })));
@@ -104,7 +105,7 @@ export function App(): React.JSX.Element {
     <main id="content" className="content" tabIndex={-1}>
       <div className="breadcrumb">A3 <span>/</span> {section[1]}</div>
       {projects?.restoreNotice && <p role="status">{projects.restoreNotice}</p>}
-      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} beforeSwitch={beforeProjectSwitch} /> : active === 'canvas' ? !projects?.active && <p>Abre un proyecto para restaurar sus vistas.</p> : active === 'files' ? <FileExplorerPanel active={projects?.active} onOpenCode={openCode} contentVersion={contentVersion} /> : <><section className="intro" aria-labelledby="section-title">
+      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} beforeSwitch={beforeProjectSwitch} /> : active === 'canvas' ? !projects?.active && <p>Abre un proyecto para restaurar sus vistas.</p> : active === 'files' ? <FileExplorerPanel active={projects?.active} onOpenCode={openCode} contentVersion={contentVersion} onChanged={codeSaved} /> : active === 'preferences' ? <ShortcutPreferences /> : <><section className="intro" aria-labelledby="section-title">
         <p className="eyebrow">Un lugar para tus ideas</p>
         <h1 id="section-title">{section[1]}</h1>
         <p className="lead">{section[2]}</p>

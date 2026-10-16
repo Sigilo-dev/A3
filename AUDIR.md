@@ -1,5 +1,17 @@
 # Registro de trabajo y correcciones
 
+## 2026-10-16 — E2-F2
+
+Se continúa `codex/e2-canvas` desde `3c09828` (focus aceptado), con raíz y origin de A3 verificados y divergencia 0/0 tras fetch. Se conserva `pkr-site/` sin añadirlo al índice. La especificación local ignorada y los contratos E0 se consultan sin publicarlos ni cambiar schemas/fixtures aceptados. No se añaden dependencias ni se modifica el lock.
+
+El host incorpora un índice regenerable de páginas y referencias con resolución por ID, título/ruta, alias, encabezados y bloques; la ambigüedad exige selección. Focus integra backlinks, salientes, selector de vínculo por UUID y visitas atrás/adelante sin copiar documentos. Renombrar/mover desde página, explorador o comando genérico del dominio amplía el mismo plan del writer con referencias conocidas y revisiones, manteniendo el plan puro del dominio. Continúan las garantías de hash/read set, broker, journal y conflicto externo: la operación lógica de varios archivos no se anuncia atómica. Se conservan BOM UTF-8, CRLF, campos desconocidos y spans no afectados; las referencias de solo lectura no se reescriben.
+
+Se añaden menús por contexto de página/canvas/placement/grupo/trazo/archivo/carpeta, con acciones existentes, motivo de denegación, navegación por teclado y retorno de foco. Los atajos disponibles tienen registro por contexto, edición local, colisiones, reservas de edición y defaults restaurables. El manifiesto no puede moverse ni enviarse a papelera por el explorador. No se habilitan funciones futuras ni caminos sin broker. Se corrigieron en revisión el offset de destinos iguales a su etiqueta, la separación de fragmentos y nombres percent-escaped, la doble edición de destinos Markdown de referencia y un estado `busy` capturado antes de confirmar un renombrado de archivo.
+
+Evidencia Windows con fixtures/perfiles temporales: suite general `npm test` (34 contratos, 65 dominio, 151 store, 6 viewport, 4 lenguajes; 260 aprobadas); compilación y tipos del escritorio; regresión de focus en dos procesos; recorrido Electron de navegación/menús/atajos con red bloqueada e IPC de ventana ajena denegado; regresión de editores/explorador. Los casos dirigidos adicionales verifican destinos percent-escaped y etiqueta idéntica al destino. El nuevo recorrido de navegación sustituye el portapapeles por un adaptador para no leer ni reemplazar el de la persona. Se actualizó el smoke previo para confirmar el diálogo accesible en lugar de simular `window.prompt`.
+
+Decisiones y límites: [ADR 0012](docs/adr/0012-contextual-navigation.md) y [E2-F2](docs/e2/contextual-navigation.md). A3-010 y subconjunto de A3-044/A3-052; no se certifican todas las preferencias, extensiones Markdown arbitrarias, actualización de referencias de imagen/plugin, durabilidad física, Linux o instalador. Commit solicitado: `feat(ui): add contextual navigation and shortcuts`, publicación sin force push.
+
 ## 2026-10-15 — E1-F1
 
 Se verificaron raíz `C:/Users/VR/Documents/ChatGPT/A3`, origin fetch/push `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base`, base E1-E2 `f1cd2cf` y divergencia inicial 0/0 tras fetch. El directorio ajeno no rastreado `pkr-site/` se conserva intacto y fuera del commit. La especificación maestra sí está disponible como archivo local ignorado en esta revisión: se leyeron §§7–9, 21, 28 y aceptación A3-001–003, además de resumen, decisiones, contratos E0 y servicios E1. No se añade ese archivo local al commit ni se cambian schemas/fixtures aceptados.

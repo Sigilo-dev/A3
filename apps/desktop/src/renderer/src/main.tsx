@@ -1,6 +1,7 @@
 import { StrictMode, Component, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { ShortcutProvider } from './shortcuts';
 import './style.css';
 
 class StartupBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -17,5 +18,5 @@ class StartupBoundary extends Component<{ children: ReactNode }, { failed: boole
 }
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode><StartupBoundary><App /></StartupBoundary></StrictMode>
+  <StrictMode><StartupBoundary><ShortcutProvider><App /></ShortcutProvider></StartupBoundary></StrictMode>
 );

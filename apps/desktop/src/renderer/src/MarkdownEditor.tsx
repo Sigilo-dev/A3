@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
+import { matchesShortcut, useShortcuts } from './shortcuts';
 import { Plugin, TextSelection } from '@milkdown/prose/state';
 import type { Node as ProseNode } from '@milkdown/prose/model';
 import { Editor, defaultValueCtx, editorViewCtx, editorViewOptionsCtx, rootCtx } from '@milkdown/core';
@@ -46,7 +47,7 @@ const a3WikilinkSchema = $nodeSchema('a3Wikilink', () => ({
   inline: true, group: 'inline', atom: true, selectable: true,
   attrs: { target: { default: '' }, label: { default: null } },
   parseDOM: [{ tag: 'span[data-a3-wikilink]', getAttrs: (dom) => ({ target: (dom as HTMLElement).dataset.a3Wikilink ?? '', label: dom.textContent }) }],
-  toDOM: (node) => ['span', { class: 'a3-wikilink', 'data-a3-wikilink': node.attrs.target }, node.attrs.label || node.attrs.target],
+  toDOM: (node) => ['span', { class: 'a3-wikilink', role: 'link', tabindex: '0', 'data-a3-wikilink': node.attrs.target }, node.attrs.label || node.attrs.target],
   parseMarkdown: {
     match: (node) => node.type === 'a3Wikilink',
     runner: (state, node, type) => state.addNode(type, { target: node.target, label: node.label })
@@ -102,15 +103,19 @@ const a3TaskListItemView = $view(extendListItemSchemaForTask.node, () => (initia
 const editorPlugins = [...commonmark, ...gfm, a3WikilinkSchema[0], a3WikilinkSchema[1], a3WikilinkRemark[0], a3WikilinkRemark[1], a3TaskListItemView, listener];
 
 export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, onClose, embedded = false, active = true, initialView,
-  onViewChange, controllerRef, onSaved, contentVersion = 0, onLocate, onReference }: {
+  onViewChange, controllerRef, onSaved, contentVersion = 0, onLocate, onReference, onNavigate, navigationTarget }: {
   target: MarkdownEditorTarget; activeSessionId: string | null; onDirtyChange: (dirty: boolean) => void; onClose: () => void;
   embedded?: boolean; active?: boolean; initialView?: PageViewState; onViewChange?: (view: PageViewState) => void;
   controllerRef?: Ref<MarkdownViewHandle>; onSaved?: () => void; contentVersion?: number;
   onLocate?: () => Promise<boolean>; onReference?: () => void;
+  onNavigate?: (target: string, kind: 'wiki' | 'markdown') => void;
+  navigationTarget?: { offset: number; nonce: number };
 }): React.JSX.Element | null {
+  const shortcuts = useShortcuts();
   const root = useRef<HTMLDivElement>(null);
   const editor = useRef<Editor | null>(null);
   const sourceEditor = useRef<MarkdownSourceController | null>(null);
+  const [sourceReady, setSourceReady] = useState(0), consumedNavigation = useRef<number | null>(null);
   const armed = useRef(false);
   const visualChanged = useRef(false);
   const observedVisualDoc = useRef<ProseNode | null>(null);
@@ -319,7 +324,8 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
     } finally { setSaving(false); }
   }
 
-  function changeMode(next: 'visual' | 'source' | 'preview'): void {
+  function changeMode(next: 'visual' | 'source' | 'preview', fromNavigation = false): void {
+    if (!fromNavigation && navigationTarget) consumedNavigation.current = navigationTarget.nonce;
     captureView();
     const source = mode === 'source' ? sourceEditor.current?.read() : undefined;
     const content = source?.content ?? draftRef.current;
@@ -381,11 +387,25 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
     } finally { setSaving(false); }
   }
 
+  useEffect(() => {
+    if (!navigationTarget || consumedNavigation.current === navigationTarget.nonce || !active || loading) return;
+    if (visualChanged.current || document && draftRef.current !== document.content) { consumedNavigation.current = navigationTarget.nonce; setError('Guarda el borrador antes de saltar al encabezado o bloque indexado.'); return; }
+    // Source offsets also cover unsupported block IDs without normalizing Markdown.
+    if (mode !== 'source') { changeMode('source', true); return; }
+    if (!sourceEditor.current?.ready()) return;
+    consumedNavigation.current = navigationTarget.nonce; sourceEditor.current.reveal(navigationTarget.offset);
+  }, [navigationTarget, active, loading, mode, sourceReady]);
+  function followElement(element: EventTarget): boolean {
+    if (!(element instanceof Element)) return false;
+    const link = element.closest<HTMLElement>('[data-a3-wikilink], a[href]'); if (!link) return false;
+    const wiki = link.dataset.a3Wikilink; onNavigate?.(wiki ?? link.getAttribute('href') ?? '', wiki === undefined ? 'markdown' : 'wiki'); return true;
+  }
   if (!active) return null;
   return <div className={embedded ? 'markdown-focus' : 'markdown-backdrop'} onMouseDown={(event) => { if (!embedded && event.target === event.currentTarget) close(); }}>
     <section className={`markdown-dialog${embedded ? ' is-focus' : ''}`} role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-labelledby="markdown-title" aria-describedby="markdown-status"
       onKeyDown={(event) => {
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save(); }
+        if (matchesShortcut(event.nativeEvent, shortcuts.save)) { event.preventDefault(); event.stopPropagation(); void save(); }
+        if (event.key === 'Enter' && event.target instanceof Element && event.target.matches('[role="link"]') && followElement(event.target)) { event.preventDefault(); event.stopPropagation(); }
         if (event.key === 'Escape' && !embedded) { event.preventDefault(); close(); }
       }}>
       <header className="markdown-header"><div><p className="eyebrow">Página · Markdown</p><h2 id="markdown-title">{target.title}</h2>
@@ -409,10 +429,12 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
         <button data-focus-retry onClick={() => setReloadVersion((v) => v + 1)}>Reintentar lectura</button></div> :
         <>
         {mode === 'source' && <Suspense fallback={<p role="status">Cargando editor de fuente…</p>}><MarkdownSourceEditor key={`${document.resourceId}:${document.hash}:${visualGeneration}`} value={draft}
-          editable={document.canWrite && sessionCurrent && !saving} controllerRef={sourceEditor} initialView={viewState.current} onViewChange={(view) => { if (editorMode.current === 'source') recordView(view); }}
+          editable={document.canWrite && sessionCurrent && !saving} controllerRef={sourceEditor} initialView={viewState.current} onReady={() => setSourceReady((v) => v + 1)} onViewChange={(view) => { if (editorMode.current === 'source') recordView(view); }}
           onChange={(value) => { updateDraft(value); setStatus('Cambios sin guardar'); setError(null); }} onDiagnostic={setParseError} /></Suspense>}
-        {inspection.editable && <div hidden={mode === 'source'} className={`markdown-surface${mode === 'preview' ? ' is-preview' : ''}`} ref={root} tabIndex={0} aria-label="Contenido Markdown de la página" data-markdown-editor={mode} onScroll={() => { if (root.current && mode !== 'source') captureView(); }} onClickCapture={(event) => {
-          if ((event.target as HTMLElement).closest('a')) event.preventDefault();
+        {inspection.editable && <div hidden={mode === 'source'} className={`markdown-surface${mode === 'preview' ? ' is-preview' : ''}`} ref={root} tabIndex={0} aria-label="Contenido Markdown de la página" data-markdown-editor={mode} onScroll={() => { if (root.current && mode !== 'source') captureView(); }} onKeyDownCapture={(event) => {
+          if (event.key === 'Enter' && event.target instanceof Element && event.target.matches('[role="link"]') && followElement(event.target)) { event.preventDefault(); event.stopPropagation(); }
+        }} onClickCapture={(event) => {
+            if (followElement(event.target)) { event.preventDefault(); event.stopPropagation(); }
         }} onPasteCapture={(event) => {
           const pasted = event.clipboardData.getData('text/plain');
           const checked = inspectMarkdownSource(pasted);

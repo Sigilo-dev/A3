@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FilesRequest, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerOpen, LocalProjectSession } from '../../shared/desktop-api';
 import type { CodeEditorTarget } from './CodeEditor';
+import { ContextMenu, menuAt, useMenuPermissions, type MenuState, type ContextAction } from './ContextMenu';
+import { useTextPrompt } from './TextInputDialog';
+import { matchesShortcut, useShortcuts } from './shortcuts';
 
 type Crumb = { id: string; name: string };
-export function FileExplorerPanel({ active, onOpenCode, contentVersion }: { active: LocalProjectSession | null | undefined; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number }): React.JSX.Element {
+export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChanged }: { active: LocalProjectSession | null | undefined; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number; onChanged?: () => void }): React.JSX.Element {
+  const [menu, setMenu] = useState<MenuState | null>(null), permissions = useMenuPermissions(active?.sessionId), shortcuts = useShortcuts(), [ask, promptDialog] = useTextPrompt();
   const [stack, setStack] = useState<Crumb[]>([{ id: 'project-root', name: 'Proyecto' }]);
   const [listing, setListing] = useState<LocalExplorerListing | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusyState] = useState(false), busyRef = useRef(false);
+  function setBusy(value: boolean): void { busyRef.current = value; setBusyState(value); }
   const [error, setError] = useState<string | null>(null);
   const [opened, setOpened] = useState<LocalExplorerOpen | null>(null);
   const [deleting, setDeleting] = useState<LocalExplorerDeletePreview | null>(null);
@@ -41,17 +46,38 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion }: { acti
   }, [contentVersion]);
 
   async function mutate(request: FilesRequest, returnTo = current.id): Promise<void> {
-    const api = window.a3; if (busy || !active || !api) return;
+    const api = window.a3; if (busyRef.current || !active || !api) return;
     setBusy(true); setError(null);
     try {
       const result = await api.files(request);
       if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message} ${result.error.recovery}`);
-      if ('changed' in result.value) { setOpened(null); setDeleting(null); setSelected(null); await load(returnTo); }
+      if ('changed' in result.value) { setOpened(null); setDeleting(null); setSelected(null); await load(returnTo); onChanged?.(); }
       else if ('cancelled' in result.value) setDeleting(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'La operación no se completó.'); }
     finally { setBusy(false); }
   }
   const selectedEntry = listing?.entries.find((entry) => entry.id === selected);
+  async function rename(entry: LocalExplorerEntry): Promise<void> { const text = await ask('Nuevo nombre', entry.name); if (text && active) await mutate({ action: 'rename', sessionId: active.sessionId, itemId: entry.id, name: text }); }
+  async function move(entry: LocalExplorerEntry): Promise<void> { const destination = await ask('Mover a ruta relativa dentro del proyecto', entry.path); if (destination && destination !== entry.path && active) await mutate({ action: 'move', sessionId: active.sessionId, itemId: entry.id, destination }); }
+  function showMenu(event: React.MouseEvent | React.KeyboardEvent, entry?: LocalExplorerEntry): void {
+    if (!active) return; if (entry) setSelected(entry.id);
+    const unavailable = busy ? 'Hay una operación pendiente.' : entry?.kind === 'blocked-link' ? 'Enlace fuera de las raíces permitidas.' : '';
+    const managed = entry?.path === 'a3.project.json' ? 'Manifiesto administrado por A3. Usa la pantalla Proyectos para cambiar su nombre.' : '';
+    const actions: ContextAction[] = entry ? [
+      { id: 'open', label: 'Abrir', capability: 'read', reason: unavailable, run: () => void openEntry(entry) },
+      ...(entry.kind === 'file' ? [{ id: 'edit', label: 'Abrir editor de código', capability: 'read' as const, reason: unavailable, run: () => onOpenCode({ sessionId: active.sessionId, title: entry.name, target: { itemId: entry.id } }) }] : []),
+      { id: 'rename', label: 'Renombrar y actualizar referencias', capability: 'document', reason: unavailable || managed, run: () => void rename(entry) },
+      { id: 'move', label: 'Mover y actualizar referencias', capability: 'document', reason: unavailable || managed, run: () => void move(entry) },
+      { id: 'duplicate', label: 'Duplicar', capability: 'document', reason: unavailable, run: () => void mutate({ action: 'duplicate', sessionId: active.sessionId, itemId: entry.id }) },
+      { id: 'copy-absolute', label: 'Copiar ruta absoluta', capability: 'read', reason: unavailable, run: () => void mutate({ action: 'copy-path', sessionId: active.sessionId, itemId: entry.id, kind: 'absolute' }) },
+      { id: 'copy-relative', label: 'Copiar ruta relativa', capability: 'read', reason: unavailable, run: () => void mutate({ action: 'copy-path', sessionId: active.sessionId, itemId: entry.id, kind: 'relative' }) },
+      { id: 'trash', label: 'Enviar a papelera · revisar usos', capability: 'delete', reason: unavailable || managed, run: () => void startDelete(entry) },
+    ] : [];
+    if (!entry || entry.kind === 'directory') for (const kind of ['file', 'folder'] as const) actions.push({ id: `create-${kind}`, label: kind === 'file' ? 'Crear archivo' : 'Crear carpeta', capability: 'document', reason: unavailable, run: () => {
+      void ask(kind === 'file' ? 'Nombre del archivo' : 'Nombre de la carpeta').then((text) => { if (text) void mutate({ action: kind === 'file' ? 'create-file' : 'create-folder', sessionId: active.sessionId, parentId: entry?.id ?? current.id, name: text }); });
+    } });
+    setMenu(menuAt(event, entry?.kind === 'directory' ? 'folder' : entry ? 'file' : 'files', actions));
+  }
   async function openEntry(entry: LocalExplorerEntry): Promise<void> {
     setSelected(entry.id);
     if (entry.kind === 'directory') { setStack((items) => [...items, { id: entry.id, name: entry.name }]); setOpened(null); await load(entry.id); return; }
@@ -66,6 +92,7 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion }: { acti
     else if (!result.ok) setError(`${result.error.code}: ${result.error.message}`);
   }
   function onTreeKey(event: React.KeyboardEvent<HTMLButtonElement>, entry: LocalExplorerEntry, index: number): void {
+    if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') { showMenu(event, entry); return; }
     const rows = listing?.entries ?? [];
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault(); const delta = event.key === 'ArrowDown' ? 1 : -1;
@@ -73,15 +100,15 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion }: { acti
     } else if (event.key === 'ArrowRight' && entry.kind === 'directory') { event.preventDefault(); void openEntry(entry); }
     else if (event.key === 'ArrowLeft' && stack.length > 1) { event.preventDefault(); setStack((items) => items.slice(0, -1)); void load(stack.at(-2)!.id); }
     else if (event.key === 'Enter') { event.preventDefault(); void openEntry(entry); }
-    else if (event.key === 'F2' && writable && entry.kind !== 'blocked-link') {
-      event.preventDefault(); const next = window.prompt('Nuevo nombre', entry.name); if (next && active) void mutate({ action: 'rename', sessionId: active.sessionId, itemId: entry.id, name: next });
-    } else if (event.ctrlKey && event.key.toLowerCase() === 'd' && writable && entry.kind !== 'blocked-link') {
+    else if (matchesShortcut(event.nativeEvent, shortcuts['file-rename']) && writable && entry.kind !== 'blocked-link') {
+      event.preventDefault(); void rename(entry);
+    } else if (matchesShortcut(event.nativeEvent, shortcuts['file-duplicate']) && writable && entry.kind !== 'blocked-link') {
       event.preventDefault(); if (active) void mutate({ action: 'duplicate', sessionId: active.sessionId, itemId: entry.id });
-    } else if (event.key === 'Delete' && writable) { event.preventDefault(); setSelected(entry.id); void startDelete(entry); }
+    } else if (matchesShortcut(event.nativeEvent, shortcuts['file-trash']) && writable) { event.preventDefault(); setSelected(entry.id); void startDelete(entry); }
   }
 
   if (!active) return <section className="files-panel"><p className="eyebrow">Explorador</p><h1 id="section-title">Archivos.</h1><p className="lead">Abre un proyecto local desde Inicio para ver sus archivos.</p></section>;
-  return <section className="files-panel" aria-busy={busy}>
+  return <section className="files-panel" aria-busy={busy} onContextMenu={(event) => { if (event.target instanceof Element && !event.target.closest('input,textarea,.mount-row')) showMenu(event); }}>
     <div className="project-heading"><div><p className="eyebrow">Proyecto local · {active.mode === 'writer' ? 'lectura y escritura según permisos' : 'solo lectura'}</p><h1 id="section-title">Archivos.</h1></div>
       <button className="quiet" onClick={() => void load(current.id)} disabled={busy}>Actualizar</button></div>
     <p className="lead">{active.name} <span className="path">· {current.name === 'Proyecto' ? 'raíz' : current.name}</span></p>
@@ -102,7 +129,7 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion }: { acti
           {!listing?.entries.length && !busy && <p className="muted">Esta carpeta está vacía.</p>}
           {listing?.entries.map((entry, index) => <button role="treeitem" aria-selected={selected === entry.id} key={entry.id} data-file-entry data-file-item-id={entry.id} data-resource-id={entry.resourceId}
             ref={(element) => { if (element) rowRefs.current.set(entry.id, element); else rowRefs.current.delete(entry.id); }}
-            onClick={() => setSelected(entry.id)} onDoubleClick={() => void openEntry(entry)} onKeyDown={(event) => onTreeKey(event, entry, index)} className="file-row">
+            onContextMenu={(event) => showMenu(event, entry)} onClick={() => setSelected(entry.id)} onDoubleClick={() => void openEntry(entry)} onKeyDown={(event) => onTreeKey(event, entry, index)} className="file-row">
             <span className="file-kind" aria-hidden="true">{entry.kind === 'directory' ? '▰' : entry.kind === 'blocked-link' ? '↗' : '▧'}</span>
             <span className="file-name">{entry.name}</span><span className="file-state">{entry.kind === 'blocked-link' ? 'enlace bloqueado' : entry.readOnly ? 'solo lectura' : entry.resourceId ? 'recurso' : ''}</span>
           </button>)}
@@ -112,7 +139,7 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion }: { acti
           <button className="secondary" data-file-open onClick={() => void openEntry(selectedEntry)} disabled={busy || selectedEntry.kind === 'blocked-link'}>Abrir</button>
           {selectedEntry.kind === 'file' && <button className="secondary" data-file-edit onClick={() => onOpenCode({ sessionId: active.sessionId, title: selectedEntry.name, target: { itemId: selectedEntry.id } })} disabled={busy}>Abrir editor de código</button>}
           <button className="secondary" data-file-rename disabled={!writable || busy || selectedEntry.kind === 'blocked-link'} onClick={() => {
-            const next = window.prompt('Nuevo nombre', selectedEntry.name); if (next && active) void mutate({ action: 'rename', sessionId: active.sessionId, itemId: selectedEntry.id, name: next });
+            void rename(selectedEntry);
           }}>Renombrar</button>
           <button className="secondary" data-file-duplicate disabled={!writable || busy || selectedEntry.kind === 'blocked-link'} onClick={() => active && void mutate({ action: 'duplicate', sessionId: active.sessionId, itemId: selectedEntry.id })}>Duplicar</button>
           <button className="quiet" disabled={busy || selectedEntry.kind === 'blocked-link'} onClick={() => active && void mutate({ action: 'copy-path', sessionId: active.sessionId, itemId: selectedEntry.id, kind: 'absolute' })}>Copiar ruta absoluta</button>
@@ -149,5 +176,6 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion }: { acti
       <div className="input-row"><button className="primary" data-confirm-file-delete disabled={!deleting.deletable || !writable || busy} onClick={() => active && void mutate({ action: 'confirm-delete', sessionId: active.sessionId, token: deleting.token })}>Enviar a papelera</button>
         <button className="secondary" data-cancel-file-delete disabled={busy} onClick={() => active && void mutate({ action: 'cancel-delete', sessionId: active.sessionId, token: deleting.token })}>Cancelar</button></div>
     </section></div>}
+    {menu && <ContextMenu menu={menu} permissions={permissions} onClose={() => setMenu(null)} />}{promptDialog}
   </section>;
 }

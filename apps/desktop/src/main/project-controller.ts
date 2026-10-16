@@ -8,6 +8,24 @@ import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasRe
 import { validViewport } from '../shared/world-viewport';
 import { validCanvasView, validPageView } from '@a3/project-store';
 import type { WorkspaceSessionRequest, WorkspaceSessionResult } from '../shared/desktop-api';
+import type { NavigationRequest, NavigationResult } from '../shared/desktop-api';
+import { validateShortcuts } from '@a3/domain';
+
+function validNavigationRequest(value: unknown): value is NavigationRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>, id = (s: unknown): boolean => typeof s === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(s);
+  const keys = (names: string[]): boolean => Object.keys(v).length === names.length + 1 && names.every((n) => n in v);
+  if (v.action === 'shortcuts-load' || v.action === 'shortcuts-reset') return keys([]);
+  if (v.action === 'shortcuts-save') return keys(['bindings']) && validateShortcuts(v.bindings).ok;
+  if (!id(v.sessionId)) return false;
+  if (v.action === 'index' || v.action === 'permissions') return keys(['sessionId']);
+  if (v.action === 'resolve') return keys(['sessionId', 'sourceId', 'target', 'kind']) && id(v.sourceId) && typeof v.target === 'string' && v.target.length <= 2048 && ['wiki', 'markdown'].includes(String(v.kind));
+  if (!id(v.entityId)) return false;
+  if (v.action === 'copy-link') return keys(['sessionId', 'entityId']);
+  if (!Number.isSafeInteger(v.expectedRevision) || Number(v.expectedRevision) < 1) return false;
+  return v.action === 'rename-page' && keys(['sessionId', 'entityId', 'expectedRevision', 'title']) && typeof v.title === 'string' && v.title.length <= 200 ||
+    v.action === 'move-page' && keys(['sessionId', 'entityId', 'expectedRevision', 'destination']) && typeof v.destination === 'string' && v.destination.length <= 1024;
+}
 
 function validSessionRequest(value: unknown): value is WorkspaceSessionRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -248,12 +266,13 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       list: { required: ['sessionId'], optional: ['directoryId', 'cursor'] }, open: { required: ['sessionId', 'itemId'] }, 'open-mount': { required: ['sessionId', 'resourceId'] },
       'create-file': { required: ['sessionId', 'parentId', 'name'] }, 'create-folder': { required: ['sessionId', 'parentId', 'name'] },
       rename: { required: ['sessionId', 'itemId', 'name'] }, duplicate: { required: ['sessionId', 'itemId'], optional: ['name'] },
+      move: { required: ['sessionId', 'itemId', 'destination'] },
       'preview-delete': { required: ['sessionId', 'itemId'] }, 'cancel-delete': { required: ['sessionId', 'token'] }, 'confirm-delete': { required: ['sessionId', 'token'] },
       'copy-path': { required: ['sessionId', 'itemId', 'kind'] }, 'copy-mount-path': { required: ['sessionId', 'resourceId', 'kind'] }
     };
     const shape = typeof input.action === 'string' && Object.hasOwn(shapes, input.action) ? shapes[input.action]! : undefined;
     if (!shape || Object.keys(input).some((key) => key !== 'action' && !shape.required.includes(key) && !shape.optional?.includes(key)) ||
-        shape.required.some((key) => typeof input[key] !== 'string' || input[key] === '' || (input[key] as string).length > (key === 'name' ? 255 : 128)) ||
+        shape.required.some((key) => typeof input[key] !== 'string' || input[key] === '' || (input[key] as string).length > (key === 'destination' ? 1024 : key === 'name' ? 255 : 128)) ||
         shape.optional?.some((key) => Object.hasOwn(input, key) && (typeof input[key] !== 'string' || (input[key] as string).length > 512))) return false;
     if (['copy-path', 'copy-mount-path'].includes(String(input.action)) && input.kind !== 'absolute' && input.kind !== 'relative') return false;
     return Object.keys(input).length >= shape.required.length + 1 && (!shape.optional || Object.keys(input).length <= shape.required.length + shape.optional.length + 1);
@@ -488,6 +507,26 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       }
     },
     stageDrop,
+    async handleNavigation(value: unknown): Promise<NavigationResult> {
+      if (!validNavigationRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de enlaces o atajos inválida.', recovery: 'Revisa el contexto y las colisiones de atajos.' } };
+      try {
+        switch (value.action) {
+          case 'index': return { ok: true, value: await manager.navigationIndex(value.sessionId) };
+          case 'permissions': return { ok: true, value: await manager.menuPermissions(value.sessionId) };
+          case 'resolve': return { ok: true, value: await manager.resolvePageLink(value.sessionId, value.sourceId, value.target, value.kind) };
+          case 'copy-link': {
+            const index = await manager.navigationIndex(value.sessionId), page = index.pages.find((p) => p.entityId === value.entityId);
+            if (!page) throw new LocalProjectError('PAGE_MISSING', 'La página no está disponible en el índice.');
+            await clipboard.writeText(`[[${page.entityId}|${page.title.replace(/[\[\]|\r\n]/g, ' ')}]]`); return { ok: true, value: { changed: true } };
+          }
+          case 'rename-page': await manager.renamePage(value.sessionId, value.entityId, value.expectedRevision, value.title); return { ok: true, value: { changed: true } };
+          case 'move-page': await manager.movePage(value.sessionId, value.entityId, value.expectedRevision, value.destination); return { ok: true, value: { changed: true } };
+          case 'shortcuts-load': return { ok: true, value: await manager.shortcuts() };
+          case 'shortcuts-save': return { ok: true, value: await manager.shortcuts(value.bindings) };
+          case 'shortcuts-reset': return { ok: true, value: await manager.shortcuts('reset') };
+        }
+      } catch (error) { return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED', message: error instanceof Error ? error.message : 'La operación no se completó.', recovery: 'El borrador se conserva. Relee las revisiones y el índice antes de reintentar.' } }; }
+    },
     async handleWorkspaceSession(value: unknown): Promise<WorkspaceSessionResult> {
       if (!validSessionRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de pestañas inválida.', recovery: 'Recarga la sesión local.' } };
       try {
@@ -524,12 +563,13 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'create-file': await manager.createExplorerItem(value.parentId, value.name, 'file', value.sessionId); return { ok: true, value: { changed: true } };
           case 'create-folder': await manager.createExplorerItem(value.parentId, value.name, 'directory', value.sessionId); return { ok: true, value: { changed: true } };
           case 'rename': await manager.renameExplorerItem(value.itemId, value.name, value.sessionId); return { ok: true, value: { changed: true } };
+          case 'move': await manager.moveExplorerItem(value.itemId, value.destination, value.sessionId); return { ok: true, value: { changed: true } };
           case 'duplicate': await manager.duplicateExplorerItem(value.itemId, value.name, value.sessionId); return { ok: true, value: { changed: true } };
           case 'preview-delete': return { ok: true, value: await manager.previewExplorerDelete(value.itemId, value.sessionId) };
           case 'cancel-delete': await manager.cancelExplorerDelete(value.token, value.sessionId); return { ok: true, value: { cancelled: true } };
           case 'confirm-delete': await manager.confirmExplorerDelete(value.token, value.sessionId); return { ok: true, value: { changed: true } };
-          case 'copy-path': clipboard.writeText(await manager.copyExplorerPath(value.itemId, value.kind, value.sessionId)); return { ok: true, value: { copied: true } };
-          case 'copy-mount-path': clipboard.writeText(await manager.copyMountedExplorerPath(value.resourceId, value.kind, value.sessionId)); return { ok: true, value: { copied: true } };
+          case 'copy-path': await clipboard.writeText(await manager.copyExplorerPath(value.itemId, value.kind, value.sessionId)); return { ok: true, value: { copied: true } };
+          case 'copy-mount-path': await clipboard.writeText(await manager.copyMountedExplorerPath(value.resourceId, value.kind, value.sessionId)); return { ok: true, value: { copied: true } };
         }
       } catch (error) {
         const code = error instanceof LocalProjectError ? error.code : error && typeof error === 'object' && 'code' in error ? String(error.code) : 'IO_FAILED';

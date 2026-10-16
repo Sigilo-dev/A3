@@ -314,3 +314,18 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .focus-workspace button:focus-visible { outline: 2px solid #c3ed82; outline-offset: 2px; }
 @media (max-width: 1100px) { .shell { grid-template-columns: 194px minmax(360px, 1fr) 220px; } .inspector { padding: 28px 18px; } .breadcrumb { margin-bottom: 40px; } }
 @media (max-width: 1000px) { .file-layout { grid-template-columns: 1fr; } .file-toolbar form { flex: 1; } .file-toolbar input { flex: 1; } }
+.context-menu { position: fixed; z-index: 1200; display: flex; flex-direction: column; min-width: 240px; max-width: min(420px, 95vw); max-height: 85vh; overflow: auto; padding: 6px; background: #17221f; border: 1px solid #687c70; border-radius: 8px; box-shadow: 0 10px 30px #0008; }
+.context-menu button { display: flex; flex-direction: column; align-items: flex-start; text-align: left; border: none; background: transparent; color: #e6ede8; padding: 8px 12px; }
+.context-menu button:hover, .context-menu button:focus-visible { background: #304738; }
+.context-menu button[aria-disabled="true"] { color: #abb5ad; cursor: help; }
+.context-menu small { font-size: 11px; max-width: 38ch; }
+.context-menu button:focus-visible, .a3-wikilink:focus-visible, .page-links button:focus-visible { outline: 2px solid #b6df8b; outline-offset: 2px; }
+.a3-wikilink { cursor: pointer; text-decoration: underline; }
+.page-links { border-top: 1px solid #34463b; padding: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+.page-links ul { margin: 0; padding-left: 20px; overflow-wrap: anywhere; }
+.page-links label { display: flex; flex-direction: column; gap: 4px; }
+.page-links h3 { margin: 8px 0; }
+.shortcut-preferences label { display: grid; grid-template-columns: minmax(190px, 1fr) 90px 200px; align-items: center; gap: 12px; max-width: 800px; margin: 8px 0; }
+.shortcut-preferences input { width: 100%; }
+[data-link-choices] button { display: block; width: 100%; text-align: left; margin-top: 8px; }
+[data-link-choices] small { display: block; overflow-wrap: anywhere; }

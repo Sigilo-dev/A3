@@ -7,6 +7,8 @@ import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
 import { initialPageView, insertFocusTab, readWorkspaceSession, writeWorkspaceSession, validCanvasView, validPageView, type WorkspaceSession, type WorkspaceSessionAction, type PageReference } from './workspace-session.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
+import { defaultShortcuts, validateShortcuts, type ShortcutBindings } from '@a3/domain';
+import { resolvePageLink, type NavigationIndex, type PageLink } from './navigation.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
 import { checkedPath, fileBytes } from './reader.js';
 import { acquireOwnership, projectIdentity, type Ownership } from './ownership.js';
@@ -85,6 +87,7 @@ export interface MarkdownDocument {
   canWrite: boolean; readOnlyReason: string | null; unsupported: readonly string[];
 }
 export interface MarkdownAsset { reference: string; mediaType: string; bytes: Uint8Array; }
+export type MenuPermissions = Record<'read' | 'document' | 'diagram' | 'delete', { allowed: boolean; reason: string }>;
 export interface LocalCanvasWorkspace {
   sessionId: string; workspaceId: string; name: string; revision: number;
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
@@ -453,6 +456,51 @@ export class LocalProjectManager {
       return this.#focusSession = state;
     } catch (error) { throw new LocalProjectError('LOCAL_SESSION_INVALID', error instanceof Error ? error.message : 'No se pudo leer la sesión local.'); }
   }
+  navigationIndex(sessionId: string): Promise<NavigationIndex> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId), result = await active.lease.service.navigationIndex();
+    demand(result.ok, result.diagnostics[0]?.code ?? 'INDEX_UNAVAILABLE', result.diagnostics.map((d) => d.message).join('\n'));
+    return result.value;
+  }); }
+  shortcuts(input?: ShortcutBindings | 'reset'): Promise<ShortcutBindings> { return this.#queue(async () => {
+    await this.#load(); const path = join(this.#stateRoot, 'shortcuts.json');
+    if (input === undefined) {
+      try { const info = await lstat(path); demand(info.isFile() && !info.isSymbolicLink() && info.size <= 16384, 'SHORTCUTS_INVALID', 'El archivo local de atajos no es válido.');
+        const handle = await open(path, 'r'); let parsed: unknown; try { parsed = JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
+        const result = validateShortcuts(parsed); demand(result.ok, 'SHORTCUTS_INVALID', result.ok ? '' : result.message); return result.bindings;
+      } catch (error) { if (missing(error)) return defaultShortcuts(); throw error; }
+    }
+    const result = validateShortcuts(input === 'reset' ? defaultShortcuts() : input); demand(result.ok, 'SHORTCUT_COLLISION', result.ok ? '' : result.message);
+    const temp = join(this.#stateRoot, `${randomUUID()}.tmp`), handle = await open(temp, 'wx', 0o600);
+    try { await handle.writeFile(jsonBytes(result.bindings)); await handle.sync(); } finally { await handle.close(); }
+    await rename(temp, path); return result.bindings;
+  }); }
+  async resolvePageLink(sessionId: string, sourceId: string, target: string, kind: 'wiki' | 'markdown'): Promise<Omit<PageLink, 'start' | 'end' | 'label'>> {
+    return resolvePageLink(await this.navigationIndex(sessionId), sourceId, target, kind);
+  }
+  menuPermissions(sessionId: string): Promise<MenuPermissions> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId), capabilities = { read: 'project.read', document: 'document.edit', diagram: 'diagram.edit', delete: 'delete' } as const;
+    return Object.fromEntries(Object.entries(capabilities).map(([name, capability]) => {
+      const decision = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root, projectId: active.projectId,
+        operation: name === 'read' ? 'read-resource' : 'write', paths: [], refs: [], resources: [], requiredCapabilities: [capability], stage: 'prepare' });
+      const state = active.lease.service.state, allowed = decision.allowed && (name === 'read' || state.mode === 'writer' && !state.externalConflict);
+      return [name, { allowed, reason: allowed ? '' : `${capability}: ${decision.allowed ? state.externalConflict ? 'Cambios externos pendientes de resolver' : 'Proyecto en solo lectura' : decision.reason}` }];
+    })) as MenuPermissions;
+  }); }
+  renamePage(sessionId: string, entityId: string, expectedRevision: number, title: string): Promise<void> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId), prepared = await active.lease.service.preparePageRename({ operationId: randomUUID(), entityId, expectedRevision, title });
+    demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'PAGE_RENAME_REJECTED', prepared.diagnostics.map((d) => d.message).join('\n'));
+    const applied = await active.lease.service.commit(prepared.value); demand(applied.ok, applied.diagnostics[0]?.code ?? 'PAGE_RENAME_FAILED', applied.diagnostics.map((d) => d.message).join('\n'));
+    if (this.#focusSession) { const next = structuredClone(this.#focusSession); for (const tab of next.tabs) if (tab.kind === 'page' && tab.entityId === entityId) tab.title = title.trim(); next.revision++; await writeWorkspaceSession(this.#stateRoot, next); this.#focusSession = next; }
+  }); }
+  movePage(sessionId: string, entityId: string, expectedRevision: number, destination: string): Promise<void> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+    const entity = snapshot.records.find((r) => r.kind === 'entity' && r.value.id === entityId);
+    demand(entity?.kind === 'entity' && entity.value.revision === expectedRevision, 'REVISION_CONFLICT', 'La página cambió; relee antes de mover.');
+    const resource = snapshot.records.find((r) => r.kind === 'resource' && r.value.id === entity.value.contentResourceId);
+    demand(resource?.kind === 'resource' && resource.value.kind === 'project-file', 'PAGE_READ_ONLY', 'La referencia externa no se puede mover.');
+    demand(destination.toLowerCase().endsWith('.md'), 'MARKDOWN_PATH_REQUIRED', 'El destino debe ser una ruta relativa Markdown dentro del proyecto.');
+    await this.#commitExplorer(active, 'rename', { sourcePath: resource.value.path, targetPath: destination });
+  }); }
   workspaceSession(sessionId: string, action: WorkspaceSessionAction, expectedRevision?: number): Promise<WorkspaceSession> {
     return this.#queue(async () => {
       const active = this.#active; demand(active?.sessionId === sessionId, 'STALE_SESSION', 'Las pestañas pertenecen a otra sesión del proyecto.');
@@ -1590,6 +1638,12 @@ export class LocalProjectManager {
     demand(item.kind !== 'blocked-link', 'LINK_BLOCKED', 'Los enlaces no se renombran desde el explorador.');
     const parent = item.path.split('/').slice(0, -1).join('/');
     await this.#commitExplorer(active, 'rename', { sourcePath: item.path, targetPath: parent ? `${parent}/${name}` : name, identity: item.identity, cleanupDirectory: item.kind === 'directory' });
+    this.#explorerItems.delete(itemId); this.#explorerPaths.delete(item.path.toLowerCase());
+  }); }
+  moveExplorerItem(itemId: string, destination: string, sessionId: string): Promise<void> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId), item = this.#explorerPath(itemId, sessionId);
+    demand(item.kind !== 'blocked-link', 'LINK_BLOCKED', 'Los enlaces no se mueven desde el explorador.');
+    await this.#commitExplorer(active, 'rename', { sourcePath: item.path, targetPath: destination, identity: item.identity, cleanupDirectory: item.kind === 'directory' });
     this.#explorerItems.delete(itemId); this.#explorerPaths.delete(item.path.toLowerCase());
   }); }
   duplicateExplorerItem(itemId: string, name: string | undefined, sessionId?: string): Promise<void> { return this.#queue(async () => {

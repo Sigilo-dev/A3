@@ -4,6 +4,8 @@ A3 será una aplicación de escritorio local para organizar documentación, recu
 
 Tecnologías previstas: Electron, React, TypeScript, Vite, React Flow, Milkdown y CodeMirror 6. El formato propio de dominio usa JSON y Markdown, independiente del estado de esas bibliotecas.
 
+E2-F2 conecta los enlaces y backlinks regenerables con focus, las referencias transaccionales al renombrar/mover, los menús de las operaciones existentes y los atajos editables. Consulta [uso, pruebas y límites](docs/e2/contextual-navigation.md).
+
 La especificación y los prompts de planificación se mantienen localmente y no se publican. E0-A aporta contratos, JSON Schemas y fixtures comprobables, sin UI ni servicios de producción.
 
 Contratos: [dominio e invariantes](docs/e0/contracts/domain.md), [comandos y migración](docs/e0/contracts/commands-and-migrations.md), [extensiones](docs/e0/contracts/extensions.md). El trabajo realizado y los errores corregidos están en [AUDIR.md](AUDIR.md).

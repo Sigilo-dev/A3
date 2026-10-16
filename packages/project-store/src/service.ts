@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePlan, reversibleCanvasCommand, validateSnapshot, type CommandContext, type Diagnostic, type DomainRecord, type JsonValue, type PreparedPlan, type Resource, type TypeRegistry } from '@a3/domain';
 import { decodeDocument, encodeDocument, issue, serializeRecord, sha256 } from './codec.js';
+import { decodeCodeText, encodeCodeText } from './code-text.js';
+import { buildNavigationIndex, rewritePageReferences, type NavigationIndex, type NavigationSource } from './navigation.js';
 import { MountPathError, inspectLocalMountFile, readLocalMountFile, readMountedResource, readMountedResourceDetailed, type MountActionPreview } from './mounts.js';
 import { canonicalJson, freeze, object, pointerToken } from './json.js';
 import { acquireOwnership, projectIdentity, type Ownership } from './ownership.js';
@@ -605,6 +607,87 @@ export class ProjectService {
     }
     return { images, refs };
   }
+  async #navigationSources(scan: Scan): Promise<NavigationSource[]> {
+    const sources: NavigationSource[] = [];
+    for (const record of scan.project.snapshot.records) if (record.kind === 'entity' && ['a3.core.page', 'a3.content.markdown', 'a3.content.short-text'].includes(record.value.type)) {
+      const resource = scan.project.snapshot.records.find((r) => r.kind === 'resource' && r.value.id === record.value.contentResourceId);
+      if (resource?.kind !== 'resource' || resource.value.kind === 'remote-url') continue;
+      const mounted = resource.value.kind === 'mounted-file';
+      if (resource.value.mediaType !== 'text/markdown' && !resource.value.path.toLowerCase().endsWith('.md')) throw new PathError('navigation-format', 'La página no referencia Markdown.');
+      if (resource.value.path.split('/').some((part) => forbiddenExplorerName.test(part)) || !mounted && await this.#isHiddenExplorerPath(resource.value.path, false, await this.#ignoreRulesFor(resource.value.path.split('/').slice(0, -1).join('/')))) throw new PathError('navigation-hidden-source', 'La fuente de página está oculta o excluida; no se indexa.');
+      if (!this.#authorized('read-resource', mounted ? [] : [resource.value.path], [refOf(resource)], [resource.value])) throw new PathError(mounted ? 'mount-permission-denied' : 'permission-denied', 'No se puede indexar este recurso.');
+      const limit = Math.min(this.#resourceLimit, 2 * 1024 * 1024);
+      let bytes: Uint8Array;
+      if (mounted) {
+        const opened = await readMountedResource({ projectRoot: this.root, projectId: this.#projectId()!, actor: this.options.host.authenticatedActor, broker: this.options.host.capabilities, resource: resource.value, maxBytes: limit });
+        if (!opened.ok) throw new PathError('mount-unavailable', opened.diagnostics.map((d) => d.message).join('\n')); bytes = opened.value.bytes;
+      } else { bytes = await fileBytes(this.root, resource.value.path, limit); if (sha256(bytes) !== scan.files.get(resource.value.path)?.hash) throw new PathError('external-conflict', 'El Markdown cambió mientras se indexaba.'); }
+      const decoded = decodeCodeText(bytes);
+      if (decoded.content === null || !decoded.encoding?.startsWith('utf-8')) throw new PathError('navigation-encoding', 'El índice de páginas requiere Markdown UTF-8.');
+      sources.push({ entityId: record.value.id, resourceId: resource.value.id, title: record.value.title, path: resource.value.kind === 'mounted-file' ? `@mount/${resource.value.mountId}/${resource.value.path}` : resource.value.path, content: decoded.content, revision: record.value.revision, resourceRevision: resource.value.revision, ...(mounted ? { mounted: true } : {}) });
+    }
+    return sources;
+  }
+  navigationIndex(): Promise<StoreResult<NavigationIndex>> { return this.#queue(async () => {
+    try {
+      const scan = await this.#scan(true); const sources: NavigationSource[] = [], diagnostics: string[] = [];
+      // A missing/corrupt resource does not fabricate a blank page or erase other backlinks.
+      for (const record of scan.project.snapshot.records.filter((r) => r.kind === 'entity')) {
+        try { sources.push(...await this.#navigationSources({ ...scan, project: { ...scan.project, snapshot: { records: scan.project.snapshot.records.filter((r) => r.kind !== 'entity' || r === record) } } })); }
+        catch (error) { if (error instanceof PathError && error.detail === 'permission-denied') return failure([this.#denied('navigation')]); diagnostics.push(`${refOf(record).id}: ${error instanceof Error ? error.message : 'Recurso no disponible'}`); }
+      }
+      return { ok: true, value: buildNavigationIndex(sources, diagnostics), diagnostics: [] };
+    } catch (error) { return failure([this.#operationError('navigation', error)]); }
+  }); }
+  async #rewriteNavigation(scan: Scan, nextRecords: DomainRecord[], images: Image[]): Promise<void> {
+    const sources = await this.#navigationSources(scan);
+    const replacements = sources.map((s) => {
+      const entity = nextRecords.find((r) => r.kind === 'entity' && r.value.id === s.entityId);
+      const resource = nextRecords.find((r) => r.kind === 'resource' && r.value.id === s.resourceId);
+      return { ...s, title: entity?.kind === 'entity' ? entity.value.title : s.title, path: resource?.kind === 'resource' && resource.value.kind === 'project-file' ? resource.value.path : s.path };
+    });
+    for (const [resourceId, content] of rewritePageReferences(sources, replacements)) {
+      const record = nextRecords.find((r) => r.kind === 'resource' && r.value.id === resourceId);
+      const source = sources.find((s) => s.resourceId === resourceId)!;
+      if (source.mounted) throw new PathError('navigation-read-only', 'Una referencia conocida pertenece a un montaje de solo lectura. No se modificó ningún archivo; usa vínculos por ID o copia la página al proyecto.');
+      if (record?.kind !== 'resource' || record.value.kind !== 'project-file') continue;
+      this.#sourcePath(record.value.path); this.#sourcePath(source.path);
+      const bytes = await fileBytes(this.root, source.path, this.#resourceLimit), decoded = decodeCodeText(bytes);
+      if (sha256(bytes) !== scan.files.get(source.path)?.hash) throw new PathError('external-conflict', 'Cambió una referencia antes de preparar la transacción.');
+      if (!decoded.encoding || decoded.readOnlyReason) throw new PathError('navigation-read-only', 'Una referencia conocida requiere edición pero su codificación o finales de línea son de solo lectura.');
+      const updated = encodeCodeText(content, decoded.encoding), existing = images.find((image) => image.path === record.value.path);
+      if (existing) existing.bytes = updated; else images.push({ path: record.value.path, bytes: updated, ref: refOf(record) });
+      const before = scan.project.snapshot.records.find((r) => r.kind === 'resource' && r.value.id === resourceId)!;
+      record.value.revision = Math.max(record.value.revision, (before.value as Resource).revision + 1);
+    }
+  }
+  #navigationChanged(before: readonly DomainRecord[], after: readonly DomainRecord[]): boolean {
+    const next = new Map(after.map((r) => [refKey(refOf(r)), r]));
+    return before.some((record) => {
+      if (record.kind !== 'entity' || !['a3.core.page', 'a3.content.markdown', 'a3.content.short-text'].includes(record.value.type)) return false;
+      const entity = next.get(refKey(refOf(record))), resource = before.find((r) => r.kind === 'resource' && r.value.id === record.value.contentResourceId);
+      const replacement = resource && next.get(refKey(refOf(resource)));
+      return entity?.kind === 'entity' && entity.value.title !== record.value.title || resource?.kind === 'resource' && resource.value.kind === 'project-file' && replacement?.kind === 'resource' && replacement.value.kind === 'project-file' && resource.value.path !== replacement.value.path;
+    });
+  }
+  preparePageRename(input: { operationId: string; entityId: string; expectedRevision: number; title: string }): Promise<StoreResult<PreparedWrite>> { return this.#queue(async () => {
+    try {
+      const current = await this.#currentForWrite(); if (!current.ok) return current; const scan = current.value;
+      const before = scan.project.snapshot.records, next = structuredClone(before) as DomainRecord[];
+      const entity = next.find((r) => r.kind === 'entity' && r.value.id === input.entityId);
+      if (entity?.kind !== 'entity' || !['a3.core.page', 'a3.content.markdown', 'a3.content.short-text'].includes(entity.value.type) || !input.title.trim() || input.title.length > 200 || /[\r\n]/.test(input.title)) return failure([issue('page', 'schema', 'invalid-page-title', 'Elige un título de página de 1 a 200 caracteres, sin saltos de línea.')]);
+      if (entity.value.revision !== input.expectedRevision) return failure([conflict('page')]);
+      entity.value.title = input.title.trim(); entity.value.revision++;
+      const images: Image[] = []; await this.#rewriteNavigation(scan, next, images);
+      const document = scan.project.documents.find((d) => d.record?.kind === 'entity' && d.record.value.id === entity.value.id)!;
+      const encoded = encodeDocument(document, [{ op: 'set', pointer: '/title', value: entity.value.title }, { op: 'set', pointer: '/revision', value: entity.value.revision }]);
+      if (!encoded.ok) return encoded;
+      images.push({ path: document.location.path, bytes: encoded.bytes, ref: refOf(entity) });
+      const resources = this.#resourceDocumentImages(before, next, scan.project.documents); if ('detail' in resources) return failure([resources]); images.push(...resources.images);
+      const invalid = validateSnapshot({ records: next }, this.#registry); if (invalid.some((d) => d.severity === 'error')) return failure(domainIssues(invalid));
+      return this.#makePlan(scan, input.operationId, images, next, next.flatMap((r) => r.kind === 'resource' ? [r.value] : []), sha256(jsonBytes(input)));
+    } catch (error) { return failure([this.#operationError('page', error)]); }
+  }); }
   prepareExplorerOperation(input: ExplorerOperationRequest): Promise<StoreResult<PreparedWrite>> {
     const request = { ...input, ...(input.bytes ? { bytes: Uint8Array.from(input.bytes) } : {}) };
     return this.#queue(async () => {
@@ -683,6 +766,7 @@ export class ProjectService {
           }
         } else {
           await ensureSource();
+          if (request.action === 'rename' || request.action === 'trash') for (const file of sourceFiles) this.#sourcePath(file.path);
           if (request.action === 'write-file') {
             this.#sourcePath(request.sourcePath!);
             if (sourceIsDirectory || sourceFiles.length !== 1 || !request.bytes || request.bytes.length > 2 * 1024 * 1024 ||
@@ -786,6 +870,7 @@ export class ProjectService {
             }
           }
         }
+        if (request.action === 'rename' && this.#navigationChanged(originalRecords, nextRecords)) await this.#rewriteNavigation(current.value, nextRecords, fileImages);
         const encodedResources = this.#resourceDocumentImages(originalRecords, nextRecords, current.value.project.documents);
         if ('detail' in encodedResources) return failure([encodedResources]);
         const allImages = [...fileImages, ...encodedResources.images];
@@ -1154,7 +1239,20 @@ export class ProjectService {
           if (effect.kind === 'move') images.push({ path: source.value.path, bytes: null, ref: refOf(source) });
           resources.push(source.value, target.value);
         }
-        return this.#makePlan(scan, domain.operationId, images, domain.nextSnapshot.records, resources,
+        let nextRecords = domain.nextSnapshot.records;
+        if (this.#navigationChanged(scan.project.snapshot.records, nextRecords)) {
+          // Preserve the sealed pure-domain plan for revalidation. The host appends
+          // derived reference edits to the SAME journal/optimistic read set.
+          const augmented = structuredClone(nextRecords) as DomainRecord[];
+          await this.#rewriteNavigation(scan, augmented, images);
+          const descriptors = this.#resourceDocumentImages(scan.project.snapshot.records, augmented, scan.project.documents);
+          if ('detail' in descriptors) return failure([descriptors]);
+          for (const image of descriptors.images) { const at = images.findIndex((i) => i.path === image.path); if (at >= 0) images[at] = image; else images.push(image); }
+          const invalid = validateSnapshot({ records: augmented }, this.#registry); if (invalid.some((d) => d.severity === 'error')) return failure(domainIssues(invalid));
+          nextRecords = augmented;
+          for (const record of augmented) if (record.kind === 'resource' && images.some((image) => image.ref?.id === record.value.id) && !resources.some((r) => r.id === record.value.id)) resources.push(record.value);
+        }
+        return this.#makePlan(scan, domain.operationId, images, nextRecords, resources,
           sha256(Buffer.from(domain.requestFingerprint)), { domain });
       } catch (error) { return failure([this.#operationError('operation', error)]); }
     });

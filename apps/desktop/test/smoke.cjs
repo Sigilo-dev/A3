@@ -41,7 +41,7 @@ async function healthy() {
   assert.equal(probe.process, 'undefined');
   assert.equal(probe.require, 'undefined');
   assert.equal(probe.ipcRenderer, 'undefined');
-  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'workspaceSession', 'files', 'canvas', 'markdown', 'code', 'onFileDrop']);
+  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'workspaceSession', 'navigation', 'files', 'canvas', 'markdown', 'code', 'onFileDrop']);
   assert.equal(probe.url, expectedURL);
   const preferences = win.webContents.getLastWebPreferences();
   for (const [name, value] of Object.entries({ nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, webSecurity: true })) {
@@ -90,7 +90,7 @@ async function healthy() {
       if (failure || fileFailure || canvasFailure) throw new Error(failure || fileFailure || canvasFailure);
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    throw new Error('UI timed out: ' + condition);
+    throw new Error('UI timed out: ' + condition + '\n' + await js("document.querySelector('#content')?.innerText.slice(-1600)"));
   };
   const input = (selector, value) => js(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(element, ${JSON.stringify(value)}); element.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await click('[data-section="projects"]');
@@ -128,9 +128,9 @@ async function healthy() {
   await input('#new-file-name', 'keyboard-note.md'); await waitFor("document.querySelector('[data-create-file]') && !document.querySelector('[data-create-file]').disabled"); await click('[data-create-file]');
   await waitFor("Boolean([...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('keyboard-note.md'))?.dataset.resourceId)");
   const resourceId = await js("[...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('keyboard-note.md')).dataset.resourceId");
-  await js("window.prompt = () => 'renamed-note.md'; undefined");
   const noteRow = "[...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('keyboard-note.md'))";
   await js(`(() => { const row = ${noteRow}; row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true })); })()`);
+  await waitFor("Boolean(document.querySelector('[data-text-prompt]'))"); await input('[data-text-prompt]', 'renamed-note.md'); await click('[data-text-confirm]');
   await waitFor("Boolean([...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('renamed-note.md')))");
   assert.equal(await js("[...document.querySelectorAll('[data-file-entry]')].find((item) => item.textContent.includes('renamed-note.md')).dataset.resourceId"), resourceId);
   const renamedPath = join(existing, 'renamed-note.md');

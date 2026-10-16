@@ -2,6 +2,10 @@ import { createRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle,
 import type { FocusTab, LocalProjectSession, PageReference, PageViewState, CanvasViewState, WorkspaceSession, WorkspaceSessionAction } from '../../shared/desktop-api';
 import type { MarkdownEditorTarget, MarkdownViewHandle } from './MarkdownEditor';
 import type { CodeEditorTarget } from './CodeEditor';
+import type { NavigationIndex, NavigationPage, PageAnchor, NavigationRequest } from '../../shared/desktop-api';
+import { ContextMenu, menuAt, useMenuPermissions, type MenuState } from './ContextMenu';
+import { matchesShortcut, useShortcuts } from './shortcuts';
+import { useTextPrompt } from './TextInputDialog';
 const CanvasPanel = lazy(() => import('./CanvasPanel').then((m) => ({ default: m.CanvasPanel })));
 const MarkdownEditor = lazy(() => import('./MarkdownEditor').then((m) => ({ default: m.MarkdownEditorDialog })));
 export interface FocusWorkspaceHandle {
@@ -24,6 +28,65 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
   const tail = useRef<Promise<unknown>>(Promise.resolve()), live = useRef(true), tabButtons = useRef(new Map<string, HTMLButtonElement>());
   const callbacks = useRef({ onReveal, onSaved }); callbacks.current = { onReveal, onSaved };
   const selected = session?.tabs.find((t) => t.id === session.selectedId);
+  const [index, setIndex] = useState<NavigationIndex | null>(null), [choices, setChoices] = useState<{ sourceId: string; target: string; kind: 'wiki' | 'markdown'; candidates: string[] } | null>(null);
+  const [menu, setMenu] = useState<MenuState | null>(null), permissions = useMenuPermissions(project.sessionId), shortcuts = useShortcuts();
+  const [ask, promptDialog] = useTextPrompt();
+  const [anchorTarget, setAnchorTarget] = useState<{ tabId: string; offset: number; nonce: number } | null>(null);
+  const [linkTarget, setLinkTarget] = useState('');
+  const history = useRef<{ entries: { tabId: string; entityId?: string; workspaceId?: string }[]; at: number }>({ entries: [], at: -1 });
+  const [, setHistoryVersion] = useState(0);
+  function remember(value: WorkspaceSession): void {
+    const tab = value.tabs.find((t) => t.id === value.selectedId); if (!tab) return;
+    const h = history.current; if (h.entries[h.at]?.tabId === tab.id) return;
+    h.entries.splice(h.at + 1); h.entries.push({ tabId: tab.id, ...(tab.kind === 'page' ? { entityId: tab.entityId } : { workspaceId: tab.workspaceId }) });
+    if (h.entries.length > 256) h.entries.shift(); h.at = h.entries.length - 1; setHistoryVersion((v) => v + 1);
+  }
+  async function refreshIndex(): Promise<void> { const r = await window.a3?.navigation({ action: 'index', sessionId: project.sessionId }); if (!live.current) return; if (r?.ok && 'pages' in r.value) setIndex(r.value); else if (r && !r.ok) report(new Error(r.error.message)); }
+  async function visit(entityId: string, anchor?: PageAnchor): Promise<void> {
+    await flush(); const value = await run({ action: 'open-page', entityId }); remember(value); callbacks.current.onReveal();
+    if (anchor && value.selectedId) setAnchorTarget({ tabId: value.selectedId, offset: anchor.offset, nonce: Date.now() }); else setAnchorTarget(null);
+    requestAnimationFrame(() => tabButtons.current.get(value.selectedId ?? '')?.focus());
+  }
+  async function follow(sourceId: string, target: string, kind: 'wiki' | 'markdown'): Promise<void> {
+    const r = await window.a3?.navigation({ action: 'resolve', sessionId: project.sessionId, sourceId, target, kind });
+    if (!r?.ok) { if (r) report(new Error(r.error.message)); return; }
+    if (!('status' in r.value)) return; const link = r.value;
+    if (link.status === 'resolved' && link.entityId) { setChoices(null); await visit(link.entityId, link.anchor); }
+    else if (link.status === 'ambiguous' && link.candidates.length > 1) { await refreshIndex(); dialogOrigin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setChoices({ sourceId, target, kind, candidates: link.candidates }); }
+    else if (link.status === 'ambiguous') report(new Error('El identificador de bloque o encabezado está repetido. Corrige la fuente antes de navegar.'));
+    else report(new Error(link.status === 'external' ? 'Este enlace externo no se abre automáticamente. Copia su URL para abrirlo en tu navegador.' : `Destino o ancla no disponible: ${target}. La referencia se conserva.`));
+  }
+  async function travel(offset: number): Promise<void> {
+    const h = history.current, at = h.at + offset, entry = h.entries[at]; if (!entry) return;
+    await flush(); const existing = sessionRef.current?.tabs.find((t) => t.id === entry.tabId);
+    const value = await run(existing ? { action: 'activate', tabId: existing.id } : entry.entityId ? { action: 'open-page', entityId: entry.entityId } : { action: 'open-workspace', workspaceId: entry.workspaceId! });
+    entry.tabId = value.selectedId!; h.at = at; setHistoryVersion((v) => v + 1); setAnchorTarget(null); callbacks.current.onReveal(); tabButtons.current.get(value.selectedId!)?.focus();
+  }
+  async function pageCommand(page: NavigationPage, kind: 'rename' | 'move' | 'copy'): Promise<void> {
+    if (!window.a3) return;
+    let request: NavigationRequest;
+    if (kind === 'copy') request = { action: 'copy-link', sessionId: project.sessionId, entityId: page.entityId };
+    else {
+      if (!await settle('actualizar las referencias de la página')) return;
+      const text = await ask(kind === 'rename' ? 'Nuevo título de página' : 'Mover a ruta relativa dentro del proyecto', kind === 'rename' ? page.title : page.path);
+      if (!text || text === (kind === 'rename' ? page.title : page.path)) return;
+      request = kind === 'rename' ? { action: 'rename-page', sessionId: project.sessionId, entityId: page.entityId, expectedRevision: page.revision, title: text } : { action: 'move-page', sessionId: project.sessionId, entityId: page.entityId, expectedRevision: page.revision, destination: text };
+    }
+    const r = await window.a3.navigation(request); if (!r.ok) throw new Error(`${r.error.code}: ${r.error.message}`);
+    if (kind !== 'copy') { await run({ action: 'load' }); callbacks.current.onSaved(); await refreshIndex(); }
+  }
+  function pageMenu(event: React.MouseEvent | React.KeyboardEvent, tab: FocusTab): void {
+    if (tab.kind !== 'page') return; const page = index?.pages.find((p) => p.entityId === tab.entityId);
+    setMenu(menuAt(event, 'page', [
+      { id: 'open', label: 'Abrir', capability: 'read', run: () => void activate(tab.id).catch(report) },
+      { id: 'another-view', label: 'Abrir otra vista', capability: 'read', run: () => void run({ action: 'open-page', entityId: tab.entityId, anotherView: true }).catch(report) },
+      ...(page ? [{ id: 'copy-link', label: 'Copiar vínculo por ID', capability: 'read' as const, run: () => void pageCommand(page, 'copy').catch(report) },
+        { id: 'rename', label: 'Renombrar página y referencias', capability: 'document' as const, run: () => void pageCommand(page, 'rename').catch(report) },
+        { id: 'move', label: 'Mover archivo y referencias', capability: 'document' as const, run: () => void pageCommand(page, 'move').catch(report) }] : []),
+      { id: 'reference', label: 'Ver referencia', capability: 'read', run: () => void showReference(tab.id) },
+      { id: 'close', label: 'Cerrar pestaña', run: () => void close(tab.id).catch(report) },
+    ]));
+  }
   function accept(value: WorkspaceSession): void { sessionRef.current = value; if (live.current) setSession(value); }
   async function request(action: WorkspaceSessionAction): Promise<WorkspaceSession> {
     if (!window.a3) throw new Error('El host no está disponible.');
@@ -63,7 +126,7 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
   function viewRef(id: string): RefObject<MarkdownViewHandle | null> {
     let ref = views.current.get(id); if (!ref) { ref = createRef<MarkdownViewHandle>(); views.current.set(id, ref); } return ref;
   }
-  async function activate(tabId: string): Promise<void> { await flush(); await run({ action: 'activate', tabId }); callbacks.current.onReveal(); }
+  async function activate(tabId: string): Promise<void> { await flush(); const value = await run({ action: 'activate', tabId }); remember(value); callbacks.current.onReveal(); }
   async function settle(reason: string, ids = [...views.current.keys()]): Promise<boolean> {
     await flush(); const dirty = ids.filter((id) => views.current.get(id)?.current?.isDirty());
     if (!dirty.length) return true;
@@ -90,7 +153,7 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
     tabButtons.current.get(sessionRef.current?.selectedId ?? '')?.focus();
   }
   useImperativeHandle(controllerRef, () => ({
-    openPage: async (target, anotherView = false) => { if (target.sessionId !== project.sessionId) throw new Error('La página pertenece a otra sesión.'); await flush(); await run({ action: 'open-page', entityId: target.entityId, anotherView }); callbacks.current.onReveal(); },
+    openPage: async (target, anotherView = false) => { if (target.sessionId !== project.sessionId) throw new Error('La página pertenece a otra sesión.'); await flush(); remember(await run({ action: 'open-page', entityId: target.entityId, anotherView })); callbacks.current.onReveal(); },
     openCanvas: async () => {
       const workspace = sessionRef.current?.tabs.find((t) => t.kind === 'workspace');
       if (workspace) await activate(workspace.id);
@@ -99,13 +162,24 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
   }));
   useEffect(() => {
     live.current = true;
-    void run({ action: 'load' }).then((value) => { if (value.revision > 0 && live.current) callbacks.current.onReveal(); }).catch(report);
+    void run({ action: 'load' }).then((value) => { if (live.current) { remember(value); if (value.revision > 0) callbacks.current.onReveal(); } }).catch(report);
     const flushOnClose = (event: Event): void => { (event as CustomEvent<Promise<void>[]>).detail.push(flush()); };
     window.addEventListener('a3:flush-session', flushOnClose);
     return () => { live.current = false; clearTimeout(timer.current); window.removeEventListener('a3:flush-session', flushOnClose); guardRef.current?.resolve(false); };
   // This component is keyed by the host session ID; no view/buffer is reused in another project.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => { void refreshIndex().catch(report); const refresh = (): void => { void refreshIndex().catch(report); }; window.addEventListener('focus', refresh); return () => window.removeEventListener('focus', refresh); }, [contentVersion, selected?.id]);
+  useEffect(() => {
+    if (!visible) return;
+    const handler = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || document.querySelector('[aria-modal="true"], [data-context-menu]')) return;
+      if (matchesShortcut(event, shortcuts.close) && sessionRef.current?.selectedId) { event.preventDefault(); void close(sessionRef.current.selectedId).catch(report); }
+      else if (matchesShortcut(event, shortcuts.back)) { event.preventDefault(); void travel(-1).catch(report); }
+      else if (matchesShortcut(event, shortcuts.forward)) { event.preventDefault(); void travel(1).catch(report); }
+    };
+    window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler);
+  }, [visible, shortcuts]);
   async function showReference(tabId: string): Promise<void> {
     const result = await window.a3?.workspaceSession({ action: 'reference', sessionId: project.sessionId, tabId });
     if (result?.ok && 'resourceId' in result.value) { dialogOrigin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setReference(result.value); } else if (result && !result.ok) setError(result.error.message);
@@ -118,7 +192,7 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
   // The component is keyed by project session. Keep the canvas handler stable while view state is persisted.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const openPageFromCanvas = useCallback((target: MarkdownEditorTarget): void => {
-    void flush().then(() => run({ action: 'open-page', entityId: target.entityId })).then(() => callbacks.current.onReveal()).catch(report);
+    void visit(target.entityId).catch(report);
   }, [project.sessionId]);
   return <>
     <section className="focus-workspace" hidden={!visible} data-focus-workspace aria-label="Pestañas del proyecto">
@@ -128,20 +202,24 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
           {session.tabs.map((tab, index) => <div key={tab.id} className="focus-tab-item">
             <button role="tab" id={`tab-${tab.id}`} data-focus-tab={tab.id} data-tab-kind={tab.kind} data-tab-entity={tab.kind === 'page' ? tab.entityId : undefined}
               aria-selected={session.selectedId === tab.id} aria-controls={`panel-${tab.id}`} tabIndex={session.selectedId === tab.id ? 0 : -1}
+              onContextMenu={(event) => pageMenu(event, tab)}
               ref={(element) => { if (element) tabButtons.current.set(tab.id, element); else tabButtons.current.delete(tab.id); }}
               onClick={() => void activate(tab.id).catch(report)} onKeyDown={(event) => {
+                if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') { pageMenu(event, tab); return; }
                 let at: number | undefined;
                 if (event.key === 'ArrowRight') at = (index + 1) % session.tabs.length;
                 if (event.key === 'ArrowLeft') at = (index - 1 + session.tabs.length) % session.tabs.length;
                 if (event.key === 'Home') at = 0; if (event.key === 'End') at = session.tabs.length - 1;
                 if (at !== undefined) { event.preventDefault(); tabButtons.current.get(session.tabs[at]!.id)?.focus(); }
                 if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void activate(tab.id).catch(report); }
-                if (event.key === 'Delete' || (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'w') { event.preventDefault(); void close(tab.id).catch(report); }
+                if (matchesShortcut(event.nativeEvent, shortcuts.close)) { event.preventDefault(); event.stopPropagation(); void close(tab.id).catch(report); }
               }}>{tab.kind === 'workspace' ? '▦ ' : '▤ '}{tab.title}{dirtyIds.has(tab.id) ? ' ●' : ''}</button>
             <button className="focus-tab-close" data-close-tab={tab.id} aria-label={`Cerrar ${tab.title}`} tabIndex={session.selectedId === tab.id ? 0 : -1} onClick={() => void close(tab.id).catch(report)}>×</button>
           </div>)}
         </div></div>
         <div className="focus-tab-tools" role="toolbar" aria-label="Acciones de pestaña">
+          <button data-navigation-back disabled={history.current.at <= 0} onClick={() => void travel(-1).catch(report)}>Volver</button>
+          <button data-navigation-forward disabled={history.current.at >= history.current.entries.length - 1} onClick={() => void travel(1).catch(report)}>Avanzar</button>
           {selected?.kind === 'page' && <button className="quiet" data-open-another-view onClick={() => void flush().then(() => run({ action: 'open-page', entityId: selected.entityId, anotherView: true })).catch(report)}>Abrir otra vista</button>}
           {selected && [-1, 1].map((offset) => <button key={offset} className="quiet" aria-label={`Mover pestaña a la ${offset < 0 ? 'izquierda' : 'derecha'}`} disabled={session.tabs.findIndex((t) => t.id === selected.id) + offset < 0 || session.tabs.findIndex((t) => t.id === selected.id) + offset >= session.tabs.length} onClick={() => {
             const ids = session.tabs.map((t) => t.id), at = ids.indexOf(selected.id); [ids[at], ids[at + offset]] = [ids[at + offset]!, ids[at]!];
@@ -155,14 +233,34 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
         </div>}
         {!selected && <p>No hay vistas abiertas. <button onClick={() => void run({ action: 'open-workspace', workspaceId: project.workspaces[0]!.id }).catch(report)} disabled={!project.workspaces.length}>Abrir workspace</button></p>}
       </>}
-      {session?.tabs.filter((t): t is Extract<FocusTab, { kind: 'page' }> => t.kind === 'page').map((tab) => <div key={tab.id} className="focus-panel" role="tabpanel" hidden={!visible || tab.id !== session.selectedId} id={`panel-${tab.id}`} aria-labelledby={`tab-${tab.id}`}><Suspense fallback={visible && tab.id === session.selectedId ? <p role="status">Preparando página…</p> : null}>
+      {session?.tabs.filter((t): t is Extract<FocusTab, { kind: 'page' }> => t.kind === 'page').map((tab) => <div key={tab.id} className="focus-panel" role="tabpanel" hidden={!visible || tab.id !== session.selectedId} id={`panel-${tab.id}`} aria-labelledby={`tab-${tab.id}`} onContextMenu={(e) => { if (e.target instanceof Element && !e.target.closest('input,textarea,[contenteditable="true"],.cm-editor')) pageMenu(e, tab); }}><Suspense fallback={visible && tab.id === session.selectedId ? <p role="status">Preparando página…</p> : null}>
         <MarkdownEditor target={{ sessionId: project.sessionId, entityId: tab.entityId, resourceId: tab.resourceId, title: tab.title }} activeSessionId={project.sessionId}
           embedded active={visible && tab.id === session.selectedId} initialView={tab.view} controllerRef={viewRef(tab.id)} contentVersion={contentVersion}
           onViewChange={(value) => stageView(tab.id, value)} onSaved={onSaved} onClose={() => void close(tab.id).catch(report)}
           onDirtyChange={(dirty) => setDirtyIds((old) => { if (old.has(tab.id) === dirty) return old; const next = new Set(old); if (dirty) next.add(tab.id); else next.delete(tab.id); return next; })}
-          onLocate={() => locate(tab.id)} onReference={() => void showReference(tab.id)} />
+          onLocate={() => locate(tab.id)} onReference={() => void showReference(tab.id)}
+          onNavigate={(target, kind) => void follow(tab.entityId, target, kind).catch(report)}
+          navigationTarget={anchorTarget?.tabId === tab.id ? anchorTarget : undefined} />
       </Suspense></div>)}
+      {selected?.kind === 'page' && <aside className="page-links" aria-label="Enlaces de la página" data-page-links>
+        <button data-index-refresh className="quiet" onClick={() => void refreshIndex().catch(report)}>Actualizar índice</button>
+        <label>Abrir página por identidad <select data-page-selector value="" onChange={(e) => { if (e.target.value) void visit(e.target.value).catch(report); }}><option value="">Selecciona una página</option>{index?.pages.map((p) => <option key={p.entityId} value={p.entityId}>{p.title} · {p.path}</option>)}</select></label>
+        <label>Crear vínculo por identidad <select data-link-target value={linkTarget} onChange={(e) => setLinkTarget(e.target.value)}><option value="">Elige el destino</option>{index?.pages.map((p) => <option key={p.entityId} value={p.entityId}>{p.title} · {p.path}</option>)}</select></label>
+        <button data-link-copy disabled={!linkTarget} onClick={() => { const p = index?.pages.find((p) => p.entityId === linkTarget); if (p) void pageCommand(p, 'copy').catch(report); }}>Copiar vínculo para pegar en Markdown</button>
+        <h3>Enlaces salientes</h3><ul data-outgoing>{index?.links.filter((l) => l.sourceId === selected.entityId).map((link, i) => <li key={`${link.start}:${i}`}><button className="quiet" data-link-status={link.status} onClick={() => void follow(link.sourceId, link.target, link.kind).catch(report)}>{link.label} <small>({link.status})</small></button></li>)}</ul>
+        <h3>Backlinks</h3><ul data-backlinks>{index?.links.filter((l) => l.status === 'resolved' && l.entityId === selected.entityId).map((link, i) => <li key={`${link.sourceId}:${link.start}:${i}`}><button className="quiet" data-backlink-source={link.sourceId} onClick={() => void visit(link.sourceId).catch(report)}>{index.pages.find((p) => p.entityId === link.sourceId)?.title} · {link.label}</button></li>)}</ul>
+        {index?.diagnostics.map((d) => <p key={d} role="status">{d}</p>)}
+      </aside>}
     </section>
+    {promptDialog}
+    {menu && <ContextMenu menu={menu} permissions={permissions} onClose={() => setMenu(null)} />}
+    {choices && <div className="modal-backdrop"><section className="delete-dialog" role="dialog" aria-modal="true" aria-label="Elegir destino ambiguo" data-link-choices onKeyDown={(e) => dialogKey(e, () => { setChoices(null); restoreFocus(); })}>
+      <h2>Elige el destino de «{choices.target}»</h2><p>Hay varias coincidencias. A3 no elige una automáticamente.</p>
+      {choices.candidates.map((id, i) => { const page = index?.pages.find((p) => p.entityId === id); return <button key={id} autoFocus={i === 0} data-link-choice={id} onClick={() => {
+        const hash = choices.target.search(/[#^]/), fragment = hash < 0 ? '' : choices.target.slice(hash); void follow(choices.sourceId, id + fragment, 'wiki').catch(report);
+      }}>{page?.title ?? id} · {page?.path}<small>{id}</small></button>; })}
+      <button onClick={() => { setChoices(null); restoreFocus(); }}>Cancelar</button>
+    </section></div>}
     {guard && <div className="markdown-confirm-backdrop focus-guard"><section className="markdown-confirm" role="alertdialog" aria-modal="true" aria-labelledby="focus-guard-title" data-focus-guard onKeyDown={(event) => dialogKey(event, () => { if (!guardBusy) void resolveGuard('cancel'); })}>
       <h3 id="focus-guard-title">Guardar antes de {guard.reason}</h3><p>{guard.ids.length} vista(s) tienen cambios. Cancelar conserva el proyecto y los borradores abiertos.</p>
       <button data-focus-guard-cancel disabled={guardBusy} autoFocus onClick={() => void resolveGuard('cancel')}>Cancelar</button><button data-focus-guard-discard disabled={guardBusy} onClick={() => void resolveGuard('discard')}>Descartar borradores</button>

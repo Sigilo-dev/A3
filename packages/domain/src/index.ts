@@ -6,3 +6,5 @@ export { validateRecord, validateDefinition, validateRegistry, validateSnapshot,
 export { resolveVariable, type VariableContext } from './variables.js';
 export { findA3Wikilinks, inspectMarkdownParse, inspectMarkdownSource, type A3WikilinkToken, type MarkdownParseIssue, type MarkdownSourceInspection } from './markdown.js';
 export { refOf, refKey, revisionsOf, getRecord, indexSnapshot } from './data.js';
+export { SHORTCUTS, defaultShortcuts, normalizeShortcut, validateShortcuts, matchesShortcut } from './shortcuts.js';
+export type { ShortcutId, ShortcutBindings } from './shortcuts.js';

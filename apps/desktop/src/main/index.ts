@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
 import { createProjectController } from './project-controller';
-import { WORKSPACE_SESSION_CHANNEL } from '../shared/desktop-api';
+import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL } from '../shared/desktop-api';
 
 const APP_URL = 'a3://desktop/index.html';
 const editorStyleNonce = randomBytes(24).toString('base64');
@@ -135,6 +135,13 @@ async function startDesktop(): Promise<void> {
       electron: process.versions.electron, chromium: process.versions.chrome, node: process.versions.node
     } };
   });
+  ipcMain.handle(NAVIGATION_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) {
+      return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Solicitud de navegación no autorizada.', recovery: 'Reabre A3.' } };
+    }
+    return projects.handleNavigation(args[0]);
+  });
   ipcMain.handle(WORKSPACE_SESSION_CHANNEL, (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
         !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || quitting || closing && (args[0] as { action?: string })?.action !== 'view') {
@@ -231,7 +238,7 @@ async function startDesktop(): Promise<void> {
 
 app.on('before-quit', (event) => { if (!quitting) { event.preventDefault(); void finishQuit(); } });
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => { ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); });
+app.on('will-quit', () => { ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); ipcMain.removeHandler(NAVIGATION_CHANNEL); });
 process.on('uncaughtException', fatalStartup);
 process.on('unhandledRejection', fatalStartup);
 void app.whenReady().then(() => { if (primaryInstance) return startDesktop(); }).catch(fatalStartup);

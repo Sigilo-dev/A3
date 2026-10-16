@@ -1,3 +1,4 @@
+import { matchesShortcut, useShortcuts } from './shortcuts';
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { Compartment, EditorState } from '@codemirror/state';
 import { indentUnit } from '@codemirror/language';
@@ -50,6 +51,7 @@ export function CodeEditorDialog({ target, activeSessionId, onDirtyChange, onSav
   target: CodeEditorTarget; activeSessionId: string | null; onDirtyChange: (dirty: boolean) => void; onSaved: () => void; onClose: () => void;
   controllerRef?: Ref<CodeEditorHandle>;
 }): React.JSX.Element {
+  const shortcuts = useShortcuts();
   const [document, setDocument] = useState<CodeDocument | null>(null), [draft, setDraft] = useState('');
   const draftRef = useRef(''), controller = useRef<CodeBuffer | null>(null);
   const [language, setLanguage] = useState<CodeLanguage>('text'), [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
@@ -100,7 +102,7 @@ export function CodeEditorDialog({ target, activeSessionId, onDirtyChange, onSav
   }
   const close = (): void => { if (dirty) setConfirmClose(true); else onClose(); };
   return <div className="markdown-backdrop"><section className="markdown-dialog code-dialog" role="dialog" aria-modal="true" aria-labelledby="code-title" onKeyDown={(event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save(); }
+    if (matchesShortcut(event.nativeEvent, shortcuts.save)) { event.preventDefault(); event.stopPropagation(); void save(); }
     if (event.key === 'Escape' && !compare) { event.preventDefault(); close(); }
   }}>
     <header className="markdown-header"><div><p className="eyebrow">Archivo · código fuente</p><h2 id="code-title">{document?.name ?? target.title}</h2><small>{document?.relativePath ?? 'Lectura por identidad del host'}</small></div>

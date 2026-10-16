@@ -11,6 +11,8 @@ export interface MarkdownParseDiagnostic { line: number; column: number; message
 export interface MarkdownSourceController {
   read(): { content: string; diagnostic: MarkdownParseDiagnostic | null };
   view(): PageViewState;
+  reveal(offset: number): void;
+  ready(): boolean;
 }
 
 function sourceText(view: EditorView): string {
@@ -34,10 +36,11 @@ function parseDiagnostic(view: EditorView): MarkdownParseDiagnostic | null {
   return { line: line.number, column: offset - line.from + 1, message: 'El parser Markdown encontró una construcción incompleta.' };
 }
 
-export function MarkdownSourceEditor({ value, editable, controllerRef, onChange, onDiagnostic, initialView, onViewChange }: {
+export function MarkdownSourceEditor({ value, editable, controllerRef, onChange, onDiagnostic, initialView, onViewChange, onReady }: {
   value: string; editable: boolean; controllerRef: React.MutableRefObject<MarkdownSourceController | null>;
   onChange: (value: string) => void; onDiagnostic: (value: MarkdownParseDiagnostic | null) => void;
   initialView?: PageViewState; onViewChange?: (view: PageViewState) => void;
+  onReady?: () => void;
 }): React.JSX.Element {
   const host = useRef<HTMLDivElement>(null);
   const current = useRef<EditorView | null>(null), permissions = useRef(new Compartment());
@@ -71,13 +74,15 @@ export function MarkdownSourceEditor({ value, editable, controllerRef, onChange,
     }
     const scroll = (): void => { if (!restoring) callbacks.current.onViewChange?.(capture()); };
     current.current = view; view.scrollDOM.addEventListener('scroll', scroll);
-    controllerRef.current = { read: () => ({ content: sourceText(view), diagnostic: parseDiagnostic(view) }), view: capture };
+    controllerRef.current = { read: () => ({ content: sourceText(view), diagnostic: parseDiagnostic(view) }), view: capture, ready: () => !restoring,
+      reveal: (offset) => { const at = Math.min(view.state.doc.length, sourceText(view).slice(0, offset).replace(/\r\n/g, '\n').length); view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: 'center' }) }); view.focus(); } };
     callbacks.current.onDiagnostic(parseDiagnostic(view));
     const frame = requestAnimationFrame(() => {
       if (initialView?.mode === 'source' && initialView.selection) view.dispatch({ selection: { anchor: Math.min(view.state.doc.length, initialView.selection.anchor), head: Math.min(view.state.doc.length, initialView.selection.head) } });
       if (editable) view.focus();
       view.scrollDOM.scrollTop = initialView?.scrollTop ?? 0; view.scrollDOM.scrollLeft = initialView?.scrollLeft ?? 0;
       restoring = false;
+      onReady?.();
     });
     return () => { cancelAnimationFrame(frame); callbacks.current.onViewChange?.(capture()); controllerRef.current = null; current.current = null; callbacks.current.onDiagnostic(null); view.scrollDOM.removeEventListener('scroll', scroll); view.destroy(); };
   // The component is mounted for one source-mode session; parent state receives each document change.
