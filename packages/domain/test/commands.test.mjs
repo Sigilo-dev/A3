@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { prepareCommand, revalidatePlan, getRecord, resolveVariable } from '../dist/src/index.js';
+import { prepareCommand, revalidatePlan, reversibleCanvasCommand, getRecord, refKey, resolveVariable } from '../dist/src/index.js';
 import { fixture, context, id, W1, W2, E1, E2, R1, P1, P2, P3, REL, hash, find, group, collection, variableSet, literal, freshDocument, refOf, request, run, success, rejection, duplicatePayload } from './fixture.mjs';
 
 test('workspace camera command preserves opaque data, identities and all geometry outside its own viewport', () => {
@@ -146,6 +146,69 @@ test('duplicate references copies only placements and view edges, sharing canoni
   assert.deepEqual(plan.contentEffects, []);
 });
 
+test('duplicating a selected group remaps placements, nested groups and drawings with fresh IDs', () => {
+  const state = fixture(), drawingId = id(810), groupId = id(811), childId = id(812);
+  state.records.push({ kind: 'drawing', workspaceId: W1, value: freshDocument(810, {
+    points: [{ x: 10, y: 20, pressure: 0.4 }, { x: 15, y: 29, pressure: 0.8 }],
+    parameters: { size: 4, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: false }, style: { 'future.keep': true }
+  }) });
+  state.records.push(group(811, [{ kind: 'placement', id: P1 }, { kind: 'drawing', id: drawingId }, { kind: 'group', id: childId }], W1));
+  state.records.push(group(812, [{ kind: 'placement', id: P2 }], W1));
+  const selectedPlacementIds = new Set([P1.toLowerCase(), P2.toLowerCase()]);
+  const internalEdges = state.records.filter((record) => ['visual-edge', 'relation-view'].includes(record.kind) &&
+    selectedPlacementIds.has(record.value.sourcePlacementId.toLowerCase()) && selectedPlacementIds.has(record.value.targetPlacementId.toLowerCase()));
+  const payload = { workspaceId: W1, placementIds: [], drawingIds: [], groupIds: [groupId], mode: 'representation', offset: { x: 40, y: -7 },
+    includeExternalRelations: false, ids: { entities: {}, placements: { [P1]: id(820), [P2]: id(823) }, relations: {}, visualEdges: {}, relationViews: {},
+      drawings: { [drawingId]: id(821) }, groups: { [groupId]: id(822), [childId]: id(824) } }, resourceCopies: [] };
+  internalEdges.forEach((record, index) => (record.kind === 'visual-edge' ? payload.ids.visualEdges : payload.ids.relationViews)[record.value.id] = id(830 + index));
+  const refs = [{ kind: 'placement', id: id(820), workspaceId: W1 }, { kind: 'placement', id: id(823), workspaceId: W1 },
+    { kind: 'drawing', id: id(821), workspaceId: W1 }, { kind: 'group', id: id(822), workspaceId: W1 }, { kind: 'group', id: id(824), workspaceId: W1 },
+    ...internalEdges.map((record, index) => ({ kind: record.kind, id: id(830 + index), workspaceId: W1 }))];
+  const plan = success(run(state, 'a3.core.duplicate-selection', payload, refs));
+  assert.equal(find(plan.nextSnapshot, 'placement', id(820), W1).value.entityId, find(state, 'placement', P1, W1).value.entityId,
+    'representation duplication keeps the canonical entity identity');
+  assert.deepEqual(find(plan.nextSnapshot, 'drawing', id(821), W1).value.points, [{ x: 50, y: 13, pressure: 0.4 }, { x: 55, y: 22, pressure: 0.8 }]);
+  assert.deepEqual(find(plan.nextSnapshot, 'drawing', id(821), W1).value.style, { 'future.keep': true });
+  assert.deepEqual(find(plan.nextSnapshot, 'group', id(822), W1).value.members, [
+    { kind: 'placement', id: id(820) }, { kind: 'drawing', id: id(821) }, { kind: 'group', id: id(824) }
+  ]);
+  assert.equal(find(plan.nextSnapshot, 'group', id(824), W1).value.members[0].id, id(823));
+  assert.equal(plan.nextSnapshot.records.filter((record) => record.kind === 'visual-edge').length,
+    state.records.filter((record) => record.kind === 'visual-edge').length + internalEdges.filter((record) => record.kind === 'visual-edge').length,
+    'only visual edges with both placements selected are duplicated');
+});
+
+test('batch placement view commands support z order and lock toggles but preserve locked geometry', () => {
+  const state = fixture(); find(state, 'placement', P1, W1).value.style['a3.ui.locked'] = true;
+  const locked = find(state, 'placement', P1, W1);
+  const reordered = success(run(state, 'a3.core.update-placement-views', { workspaceId: W1,
+    placements: [{ id: P1, style: { 'a3.ui.z-index': 5 } }, { id: P2, style: { 'a3.ui.z-index': 6 } }] })).nextSnapshot;
+  assert.equal(find(reordered, 'placement', P1, W1).value.style['a3.ui.z-index'], 5);
+  assert.deepEqual(find(reordered, 'placement', P1, W1).value.position, locked.value.position);
+  const unlocked = success(run(reordered, 'a3.core.update-placement-views', { workspaceId: W1,
+    placements: [{ id: P1, style: { 'a3.ui.locked': false } }] })).nextSnapshot;
+  assert.equal(find(unlocked, 'placement', P1, W1).value.style['a3.ui.locked'], false);
+  rejection(run(reordered, 'a3.core.update-placement-views', { workspaceId: W1,
+    placements: [{ id: P1, position: { x: 5, y: 6 } }] }), 'placement-locked');
+});
+
+test('canvas history applies inverse and redo as fresh revisioned domain commands', () => {
+  const state = fixture(), ref = { kind: 'placement', id: P1, workspaceId: W1 };
+  const moved = success(run(state, 'a3.core.move-placement', { ref, position: { x: 900, y: -250 } }));
+  const event = reversibleCanvasCommand(moved, W1), floorKey = refKey(ref);
+  const undo = success(run(moved.nextSnapshot, 'a3.core.apply-canvas-history', { workspaceId: W1, direction: 'undo', changes: event.changes,
+    contentEffects: [], revisionFloors: { [floorKey]: 2 } }, [], context(), { scope: { entityIds: [E1] } }));
+  assert.deepEqual(find(undo.nextSnapshot, 'placement', P1, W1).value.position, find(state, 'placement', P1, W1).value.position);
+  assert.equal(find(undo.nextSnapshot, 'placement', P1, W1).value.revision, 3);
+  const redo = success(run(undo.nextSnapshot, 'a3.core.apply-canvas-history', { workspaceId: W1, direction: 'redo', changes: event.changes,
+    contentEffects: [], revisionFloors: { [floorKey]: 3 } }, [], context(), { scope: { entityIds: [E1] } }));
+  assert.deepEqual(find(redo.nextSnapshot, 'placement', P1, W1).value.position, { x: 900, y: -250 });
+  assert.equal(find(redo.nextSnapshot, 'placement', P1, W1).value.revision, 4);
+  const changed = success(run(redo.nextSnapshot, 'a3.core.move-placement', { ref, position: { x: 5, y: 8 } })).nextSnapshot;
+  rejection(run(changed, 'a3.core.apply-canvas-history', { workspaceId: W1, direction: 'undo', changes: event.changes,
+    contentEffects: [], revisionFloors: { [floorKey]: 4 } }, [], context(), { scope: { entityIds: [E1] } }), 'history-state-conflict');
+});
+
 test('external semantic relations stay untouched by default and clone only explicitly', () => {
   const state = fixture();
   state.records.push({ kind: 'entity', value: { ...find(state, 'entity', E2).value, id: id(200) } },
@@ -164,6 +227,9 @@ test('external semantic relations stay untouched by default and clone only expli
 test('duplicate refuses reused IDs, shared target content and stale hashes without changing input', () => {
   const state = fixture(); const before = structuredClone(state);
   const { payload, refs } = duplicatePayload(state);
+  payload.placementIds.push(payload.placementIds[0]);
+  rejection(run(state, 'a3.core.duplicate-selection', payload, refs), 'invalid-selection');
+  payload.placementIds.pop();
   payload.ids.entities[E1] = E1;
   rejection(run(state, 'a3.core.duplicate-selection', payload, refs), 'new-id-required');
   payload.ids.entities[E1] = id(102);

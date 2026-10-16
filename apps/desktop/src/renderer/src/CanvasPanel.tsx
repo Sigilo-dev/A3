@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { applyEdgeChanges, applyNodeChanges, Background, BackgroundVariant, Handle, NodeResizer, Position, ReactFlow, SelectionMode, ViewportPortal, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { CanvasEntitySummary, CanvasGroupView, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
+import type { CanvasEntitySummary, CanvasGroupView, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, CanvasSelection, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
 import { CanvasEdgeEditor, edgeAppearance, edgeTypes, toFlowEdges, type CanvasEdge, type CanvasTool } from './CanvasVisualEdges';
 import { CanvasDrawingLayer, type StrokePreview } from './CanvasDrawings';
 import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffset, panViewport, renderOrigin, screenToWorld, toVisualViewport, wheelViewport, worldToScreen, zoomAt, type WorldViewport } from '../../shared/world-viewport';
@@ -184,6 +184,7 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
         existing.data.canWrite === workspace.canWrite && existing.data.tool === tool) return [existing];
     return [{ id: placement.id, type: 'a3Entity', position: { x: placement.position.x - origin.x, y: placement.position.y - origin.y },
       style: { width: placement.size.width, height: placement.size.height }, draggable: workspace.canWrite && tool === 'select' && placement.style['a3.ui.locked'] !== true,
+      zIndex: typeof placement.style['a3.ui.z-index'] === 'number' ? placement.style['a3.ui.z-index'] : 1,
       dragHandle: '.canvas-entity-header', selectable: true, focusable: true, selected: existing?.selected,
       ariaLabel: `${entity.title || entity.type}${placement.style['a3.ui.locked'] === true ? ', bloqueado' : ''}`,
       data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, tool, onResizeEnd } }];
@@ -602,7 +603,109 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   const hiddenDrawingIds = canvasGroupLayout?.hiddenDrawings ?? new Set<string>();
   const visibleDrawings = workspace?.drawings.filter((drawing) => !hiddenDrawingIds.has(drawing.id.toLowerCase())) ?? [];
   const visiblePlacementCount = workspace?.placements.filter((placement) => !canvasGroupLayout?.hiddenPlacements.has(placement.id.toLowerCase())).length ?? 0;
+  function duplicateSelectionSnapshot(latest: LocalCanvasWorkspace): CanvasSelection {
+    const placementIds = new Set(selection.nodeIds.map((id) => id.toLowerCase()));
+    const drawingIds = new Set(selection.drawingIds.map((id) => id.toLowerCase()));
+    const groupIds = new Set(selection.groupIds.map((id) => id.toLowerCase()));
+    const groups = new Map(latest.groups.map((group) => [group.id.toLowerCase(), group]));
+    const visitedGroups = new Set<string>();
+    const visit = (id: string, path = new Set<string>()): void => {
+      const key = id.toLowerCase(); if (path.has(key) || visitedGroups.has(key)) return;
+      const group = groups.get(key); if (!group) return;
+      visitedGroups.add(key); groupIds.add(key); const nextPath = new Set(path); nextPath.add(key);
+      for (const member of group.members) {
+        if (member.kind === 'placement') placementIds.add(member.id.toLowerCase());
+        else if (member.kind === 'drawing') drawingIds.add(member.id.toLowerCase());
+        else visit(member.id, nextPath);
+      }
+    };
+    for (const id of selection.groupIds) visit(id);
+    return {
+      placements: [...placementIds].flatMap((id) => { const item = latest.placements.find((placement) => placement.id.toLowerCase() === id); return item ? [{ id: item.id, expectedRevision: item.revision }] : []; }),
+      drawings: [...drawingIds].flatMap((id) => { const item = latest.drawings.find((drawing) => drawing.id.toLowerCase() === id); return item ? [{ id: item.id, expectedRevision: item.revision }] : []; }),
+      groups: [...groupIds].flatMap((id) => { const item = latest.groups.find((group) => group.id.toLowerCase() === id); return item ? [{ id: item.id, expectedRevision: item.revision }] : []; })
+    };
+  }
+  function duplicateSelection(mode: 'representation' | 'content'): void {
+    const before = workspaceRef.current; if (!before) return;
+    const existing = { placements: new Set(before.placements.map((item) => item.id.toLowerCase())), drawings: new Set(before.drawings.map((item) => item.id.toLowerCase())), groups: new Set(before.groups.map((item) => item.id.toLowerCase())) };
+    const selected = duplicateSelectionSnapshot(before);
+    if (!selected.placements.length && !selected.drawings.length && !selected.groups.length) return;
+    void mutateCanvas((latest) => ({ action: 'duplicate-selection', sessionId, workspaceId, expectedWorkspaceRevision: latest.revision, selection: selected, mode }),
+      mode === 'content' ? 'Contenido duplicado' : 'Representación duplicada').then((ok) => {
+      if (!ok || !live.current) return;
+      const latest = workspaceRef.current; if (!latest) return;
+      const nodeIds = latest.placements.filter((item) => !existing.placements.has(item.id.toLowerCase())).map((item) => item.id);
+      const drawingIds = latest.drawings.filter((item) => !existing.drawings.has(item.id.toLowerCase())).map((item) => item.id);
+      const groupIds = latest.groups.filter((item) => !existing.groups.has(item.id.toLowerCase())).map((item) => item.id);
+      setSelection({ nodeIds, groupIds, drawingIds, edgeIds: [] }); setSelectedGroupId(groupIds[0] ?? '');
+      setNodes((previous) => previous.map((node) => ({ ...node, selected: node.type === 'a3Entity' ? nodeIds.includes(node.id) : groupIds.includes(node.data.group.id) })));
+      setEdges((previous) => previous.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
+    });
+  }
+  function alignSelection(kind: 'left' | 'center-x' | 'right' | 'top' | 'center-y' | 'bottom' | 'distribute-x' | 'distribute-y'): void {
+    void mutateCanvas((latest) => {
+      const selected = selection.nodeIds.flatMap((id) => { const item = latest.placements.find((placement) => placement.id === id); return item ? [item] : []; });
+      const items = selected.filter((item) => item.style['a3.ui.locked'] !== true);
+      const distribute = kind.startsWith('distribute');
+      if (items.length < (distribute ? 3 : 2)) throw new Error(distribute ? 'Distribuir requiere tres representaciones desbloqueadas.' : 'Alinear requiere dos representaciones desbloqueadas.');
+      const positions = new Map(items.map((item) => [item.id, { ...item.position }]));
+      if (!distribute) {
+        const horizontal = ['left', 'center-x', 'right'].includes(kind);
+        if (horizontal) {
+          const target = kind === 'left' ? Math.min(...items.map((item) => item.position.x)) : kind === 'right'
+            ? Math.max(...items.map((item) => item.position.x + item.size.width))
+            : items.reduce((sum, item) => sum + item.position.x + item.size.width / 2, 0) / items.length;
+          for (const item of items) positions.get(item.id)!.x = kind === 'left' ? target : kind === 'right' ? target - item.size.width : target - item.size.width / 2;
+        } else {
+          const target = kind === 'top' ? Math.min(...items.map((item) => item.position.y)) : kind === 'bottom'
+            ? Math.max(...items.map((item) => item.position.y + item.size.height))
+            : items.reduce((sum, item) => sum + item.position.y + item.size.height / 2, 0) / items.length;
+          for (const item of items) positions.get(item.id)!.y = kind === 'top' ? target : kind === 'bottom' ? target - item.size.height : target - item.size.height / 2;
+        }
+      } else {
+        const horizontal = kind === 'distribute-x';
+        const sorted = [...items].sort((a, b) => horizontal ? a.position.x - b.position.x : a.position.y - b.position.y);
+        const first = sorted[0]!, last = sorted.at(-1)!;
+        const span = horizontal ? last.position.x + last.size.width - first.position.x : last.position.y + last.size.height - first.position.y;
+        const total = sorted.reduce((sum, item) => sum + (horizontal ? item.size.width : item.size.height), 0);
+        const gap = (span - total) / (sorted.length - 1);
+        let cursor = horizontal ? first.position.x : first.position.y;
+        for (const item of sorted) {
+          if (horizontal) positions.get(item.id)!.x = cursor; else positions.get(item.id)!.y = cursor;
+          cursor += (horizontal ? item.size.width : item.size.height) + gap;
+        }
+      }
+      return { action: 'move-placements', sessionId, workspaceId, placements: items.map((item) => ({ id: item.id, expectedRevision: item.revision, position: positions.get(item.id)! })) };
+    }, 'Disposición guardada');
+  }
+  function updateSelectedPlacementStyles(patches: (items: CanvasPlacementView[]) => { id: string; style: CanvasPlacementView['style'] }[]): void {
+    void mutateCanvas((latest) => {
+      const items = selection.nodeIds.flatMap((id) => { const item = latest.placements.find((placement) => placement.id === id); return item ? [item] : []; });
+      const changes = patches(items);
+      if (!changes.length) throw new Error('Selecciona al menos una representación.');
+      return { action: 'update-placement-views', sessionId, workspaceId, placements: changes.map((patch) => ({ ...patch,
+        expectedRevision: items.find((item) => item.id === patch.id)!.revision })) };
+    }, 'Orden y bloqueo guardados');
+  }
+  function lockSelection(locked: boolean): void {
+    updateSelectedPlacementStyles((items) => items.filter((item) => (item.style['a3.ui.locked'] === true) !== locked)
+      .map((item) => ({ id: item.id, style: { 'a3.ui.locked': locked } })));
+  }
+  function reorderSelection(direction: 'front' | 'back'): void {
+    updateSelectedPlacementStyles((items) => {
+      const all = workspaceRef.current?.placements ?? [];
+      const selectedIds = new Set(items.map((item) => item.id));
+      const layer = (item: CanvasPlacementView): number => typeof item.style['a3.ui.z-index'] === 'number' && Number.isFinite(item.style['a3.ui.z-index']) ? item.style['a3.ui.z-index'] : 1;
+      const ordered = [...all].sort((a, b) => layer(a) - layer(b) || all.indexOf(a) - all.indexOf(b));
+      const selected = ordered.filter((item) => selectedIds.has(item.id));
+      if (!selected.length) return [];
+      const min = Math.min(...ordered.map(layer)), max = Math.max(...ordered.map(layer));
+      return selected.map((item, index) => ({ id: item.id, style: { 'a3.ui.z-index': direction === 'front' ? max + index + 1 : min - selected.length + index } }));
+    });
+  }
   const hasGroupSelection = selection.nodeIds.length + selection.groupIds.length + selection.drawingIds.length > 0;
+  function changeHistory(action: 'undo' | 'redo'): void { void mutateCanvas(() => ({ action, sessionId, workspaceId }), action === 'undo' ? 'Cambio deshecho' : 'Cambio rehecho'); }
   const visual = toVisualViewport(viewport, origin);
   const topLeft = screenToWorld({ x: 0, y: 0 }, viewport);
   const referenceScreen = worldToScreen(reference, viewport);
@@ -625,6 +728,23 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
         onChange={(event) => setSelectedEntityId(event.target.value)}>{workspace?.entityChoices.map((entity) => <option key={entity.id} value={entity.id}>{entity.title} · {entity.type}</option>)}</select></label>
       <button className="secondary" data-canvas-create-placement disabled={!workspace?.canWrite || !workspace.entityChoices.length} onClick={() => void createPlacement()}>Crear representación</button>
       <label className="canvas-fixture"><input type="checkbox" data-canvas-fixture checked={showReference} onChange={(event) => setShowReference(event.target.checked)} />Referencia de prueba</label>
+    </div>
+    <div className="canvas-arrange-toolbar" role="toolbar" aria-label="Duplicación, disposición e historial">
+      <button data-canvas-undo disabled={!workspace?.canWrite || !workspace.history.canUndo || workspace.history.undoRequiresDelete && !workspace.history.deleteAvailable} onClick={() => changeHistory('undo')}>Deshacer</button>
+      <button data-canvas-redo disabled={!workspace?.canWrite || !workspace.history.canRedo || workspace.history.redoRequiresDelete && !workspace.history.deleteAvailable} onClick={() => changeHistory('redo')}>Rehacer</button>
+      {workspace?.canWrite && (workspace.history.undoRequiresDelete && !workspace.history.deleteAvailable || workspace.history.redoRequiresDelete && !workspace.history.deleteAvailable) &&
+        <button data-canvas-request-history-delete onClick={() => void mutateCanvas(() => ({ action: 'approve-history-delete', sessionId, workspaceId }), 'Permiso para historial aprobado')}>Habilitar eliminaciones para el historial</button>}
+      <button data-canvas-duplicate-representation disabled={!workspace?.canWrite || !hasGroupSelection} onClick={() => duplicateSelection('representation')}>Duplicar representación</button>
+      <button data-canvas-duplicate-content disabled={!workspace?.canWrite || selection.nodeIds.length === 0} onClick={() => duplicateSelection('content')}>Duplicar contenido</button>
+      <button data-canvas-align-left disabled={!workspace?.canWrite || selection.nodeIds.length < 2} onClick={() => alignSelection('left')}>Alinear izquierda</button>
+      <button data-canvas-align-center disabled={!workspace?.canWrite || selection.nodeIds.length < 2} onClick={() => alignSelection('center-x')}>Alinear centros</button>
+      <button data-canvas-align-top disabled={!workspace?.canWrite || selection.nodeIds.length < 2} onClick={() => alignSelection('top')}>Alinear arriba</button>
+      <button data-canvas-distribute-x disabled={!workspace?.canWrite || selection.nodeIds.length < 3} onClick={() => alignSelection('distribute-x')}>Distribuir horizontal</button>
+      <button data-canvas-distribute-y disabled={!workspace?.canWrite || selection.nodeIds.length < 3} onClick={() => alignSelection('distribute-y')}>Distribuir vertical</button>
+      <button data-canvas-order-front disabled={!workspace?.canWrite || selection.nodeIds.length === 0} onClick={() => reorderSelection('front')}>Traer al frente</button>
+      <button data-canvas-order-back disabled={!workspace?.canWrite || selection.nodeIds.length === 0} onClick={() => reorderSelection('back')}>Enviar atrás</button>
+      <button data-canvas-lock-selection disabled={!workspace?.canWrite || selection.nodeIds.length === 0} onClick={() => lockSelection(true)}>Bloquear selección</button>
+      <button data-canvas-unlock-selection disabled={!workspace?.canWrite || selection.nodeIds.length === 0} onClick={() => lockSelection(false)}>Desbloquear selección</button>
     </div>
     <div className="canvas-group-toolbar" role="group" aria-label="Grupos espaciales">
       <label>Nombre <input aria-label="Nombre del grupo" data-canvas-group-name value={groupName} onChange={(event) => setGroupName(event.target.value)} maxLength={120} /></label>
@@ -690,6 +810,12 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       onPointerDownCapture={beginStroke} onPointerMove={continueStroke} onPointerUpCapture={finishStroke} onPointerCancelCapture={cancelStroke}
       onKeyDownCapture={(event) => {
         if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"], summary')) return;
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
+          event.preventDefault(); event.stopPropagation(); changeHistory(event.shiftKey ? 'redo' : 'undo'); return;
+        }
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'y') {
+          event.preventDefault(); event.stopPropagation(); changeHistory('redo'); return;
+        }
         if (event.key === 'Escape') {
           event.preventDefault(); event.stopPropagation(); setTool('select');
           setNodes((previous) => previous.map((node) => node.selected ? { ...node, selected: false } : node));

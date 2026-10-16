@@ -1,6 +1,6 @@
-import type { CanvasDrawingPatch, CanvasPlacementMove, CanvasVisualEdgePatch, LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
+import type { CanvasDrawingPatch, CanvasPlacementMove, CanvasPlacementViewPatch, CanvasSelection, CanvasVisualEdgePatch, LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
 import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
-export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourcePreview, LocalCanvasWorkspace } from '@a3/project-store';
+export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourcePreview, LocalCanvasWorkspace } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
@@ -8,12 +8,15 @@ export const PROJECTS_CHANNEL = 'a3.projects:command';
 export const FILES_CHANNEL = 'a3.files:command';
 export const CANVAS_CHANNEL = 'a3.canvas:command';
 export type CanvasRequest =
-  | { action: 'load' | 'flush' | 'discard' | 'approve-edge-delete' | 'approve-drawing-delete'; sessionId: string; workspaceId: string }
+  | { action: 'load' | 'flush' | 'discard' | 'approve-edge-delete' | 'approve-drawing-delete' | 'approve-history-delete'; sessionId: string; workspaceId: string }
   | { action: 'stage'; sessionId: string; workspaceId: string; expectedRevision: number; viewport: WorkspaceViewport }
   | { action: 'create-placement'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; entityId: string; position: { x: number; y: number } }
+  | { action: 'duplicate-selection'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; selection: CanvasSelection; mode: 'content' | 'representation' }
+  | { action: 'undo' | 'redo'; sessionId: string; workspaceId: string }
   | { action: 'update-placement'; sessionId: string; workspaceId: string; placementId: string; expectedRevision: number;
       patch: { position?: { x: number; y: number }; size?: { width: number; height: number }; style?: Record<string, unknown> } }
   | { action: 'move-placements'; sessionId: string; workspaceId: string; placements: CanvasPlacementMove[] }
+  | { action: 'update-placement-views'; sessionId: string; workspaceId: string; placements: CanvasPlacementViewPatch[] }
   | { action: 'create-group'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; name: string; members: GroupMember[] }
   | { action: 'set-group-members'; sessionId: string; workspaceId: string; groupId: string; expectedRevision: number; members: GroupMember[] }
   | { action: 'rename-group'; sessionId: string; workspaceId: string; groupId: string; expectedRevision: number; name: string }

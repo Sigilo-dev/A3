@@ -13,7 +13,7 @@ E2-B1 implementa las anotaciones del lienzo de A3-007 y la conversión vectorial
 
 ## Comandos reversibles e historial
 
-No hay una pila de undo/redo común en E2-A. El dominio expone `ReversibleCanvasCommand`, que proyecta las modificaciones `before`/`after` y los efectos de contenido de un `PreparedPlan` validado y confirma que pertenecen a un solo workspace. Así, E2-B3 podrá invertir tanto documentos como el archivo vectorial creado al convertir. Las acciones actuales pasan por los comandos de dominio y el journal/store existentes; E2-B1 no añade una segunda historia ni afirma que ya haya undo/redo.
+El dominio expone `ReversibleCanvasCommand`, que proyecta las modificaciones `before`/`after` y los efectos de contenido de un `PreparedPlan` validado y confirma que pertenecen a un solo workspace. E2-B3 conecta esos eventos con el historial local del store para invertir documentos y el archivo vectorial creado al convertir, sujeto a revisiones y a la capacidad de borrado requerida.
 
 ## Dependencias
 

@@ -1,8 +1,8 @@
-import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir } from 'node:fs/promises';
+import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { defaultRegistry, revisionsOf, validateSnapshot, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type Entity, type Group, type GroupMember, type Placement, type Project, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
+import { defaultRegistry, refKey, refOf, revisionsOf, validateSnapshot, type ContentEffect, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
@@ -48,11 +48,15 @@ export type CanvasDrawingView = Pick<Drawing, 'id' | 'revision' | 'points' | 'pa
 export type CanvasDrawingPatch = Omit<Partial<Pick<Drawing, 'points' | 'parameters' | 'style'>>, 'parameters'> & { parameters?: Partial<DrawingParameters> };
 export type CanvasGroupView = Pick<Group, 'id' | 'revision' | 'name' | 'members'> & { collapsed: boolean };
 export interface CanvasPlacementMove { id: string; expectedRevision: number; position: { x: number; y: number }; }
+export interface CanvasPlacementViewPatch { id: string; expectedRevision: number; position?: { x: number; y: number }; style?: ExtensionMap; }
+export interface CanvasSelectionRef { id: string; expectedRevision: number; }
+export interface CanvasSelection { placements: CanvasSelectionRef[]; drawings: CanvasSelectionRef[]; groups: CanvasSelectionRef[]; }
 export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; }
 export interface LocalCanvasWorkspace {
   sessionId: string; workspaceId: string; name: string; revision: number;
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
   placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[]; drawings: readonly CanvasDrawingView[]; groups: readonly CanvasGroupView[];
+  history: { canUndo: boolean; canRedo: boolean; undoRequiresDelete: boolean; redoRequiresDelete: boolean; deleteAvailable: boolean };
   canDeleteEdges: boolean; canDeleteDrawings: boolean; canConvertDrawings: boolean;
 }
 export interface LocalExplorerEntry extends Omit<ExplorerDirectoryPage['entries'][number], 'path' | 'identity'> { id: string; path: string; }
@@ -63,12 +67,30 @@ export interface LocalExplorerDeletePreview extends Omit<ExplorerDeletePreview, 
 interface ExplorerItemBinding { sessionId: string; path: string; identity: string; kind: 'file' | 'directory' | 'blocked-link'; resourceId?: string; }
 interface ExplorerPageBinding { sessionId: string; path: string; offset: number; }
 interface ExplorerDeleteBinding { sessionId: string; itemId: string; path: string; identity: string; }
-interface ActiveProjectBinding { lease: ProjectLease; sessionId: string; projectId: string; name: string; }
+interface ActiveProjectBinding { lease: ProjectLease; sessionId: string; projectId: string; name: string; rootIdentity: string; }
 interface Initialization {
   root: string; rootIdentity: string; project: Project; workspace: Workspace;
 }
 interface Catalog { version: 1; recents: RecentProject[]; pending: Initialization[]; }
 interface PreviewData { public: ProjectInitializationPreview; parent: string; identity: string; initialization: Initialization; resume: boolean; }
+interface CanvasHistoryPending { action: 'push' | 'undo' | 'redo'; event: ReversibleCanvasCommand; cursorBefore: number; }
+interface CanvasHistoryState {
+  schemaVersion: '1.0.0'; projectId: string; rootIdentity: string; workspaceId: string;
+  entries: ReversibleCanvasCommand[]; cursor: number; revisionFloors: Record<string, number>; pending?: CanvasHistoryPending; blocked?: string;
+}
+function historyRequiresDelete(event: ReversibleCanvasCommand, direction: 'undo' | 'redo'): boolean {
+  const removesRecord = event.changes.some((change) => {
+    const source = direction === 'undo' ? change.after : change.before;
+    const target = direction === 'undo' ? change.before : change.after;
+    return !!source && !target;
+  });
+  const removesResource = event.contentEffects.some((effect) => direction === 'undo'
+    ? effect.kind === 'create' || effect.kind === 'copy'
+    : effect.kind === 'remove');
+  return removesRecord || removesResource;
+}
+const canvasHistoryLimit = 50;
+const canvasHistoryByteLimit = 16 * 1024 * 1024;
 export interface LocalProjectsOptions {
   stateDirectory: string; host: StoreHost;
   /** Trusted host registry; project documents cannot install or activate their own node renderers. */
@@ -133,6 +155,15 @@ function initialFiles(value: Initialization): { path: string; bytes: Uint8Array;
   // Publish the manifest last. The multi-file operation remains explicitly non-atomic.
   return [{ path: '.a3/.gitignore', bytes: Buffer.from('/local/\n') }, files[1]!, files[0]!];
 }
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+function comparableHistoryRecord(value: DomainRecord | null): string {
+  if (!value) return 'null';
+  const copy = structuredClone(value); copy.value.revision = 0; return stableJson(copy);
+}
 
 /** Main-process lifecycle; renderer receives summaries and opaque preview/session IDs only. */
 export class LocalProjectManager {
@@ -152,6 +183,7 @@ export class LocalProjectManager {
   #explorerPages = new Map<string, ExplorerPageBinding>();
   #explorerDeletes = new Map<string, ExplorerDeleteBinding>();
   #viewportDrafts = new Map<string, { sessionId: string; expectedRevision: number; viewport: WorkspaceViewport }>();
+  #canvasHistories = new Map<string, CanvasHistoryState>();
   constructor(private readonly options: LocalProjectsOptions) {
     demand(isProjectCapabilityBroker(options.host.capabilities), 'BROKER_REQUIRED', 'Se requiere el broker de permisos del host.');
   }
@@ -245,7 +277,7 @@ export class LocalProjectManager {
         pending: this.#catalog.pending.filter((p) => p.root.toLowerCase() !== root.toLowerCase()) };
       await this.#persist();
       await previous?.lease.close();
-      this.#active = { lease: candidate.value, sessionId: randomUUID(), projectId, name };
+      this.#active = { lease: candidate.value, sessionId: randomUUID(), projectId, name, rootIdentity: await projectIdentity(root) };
       this.#viewportDrafts.clear();
       this.#nameDraft = undefined;
       this.#preview = undefined;
@@ -355,6 +387,97 @@ export class LocalProjectManager {
     demand(this.#active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión ya cambió.'); await this.#allowSwitch();
     await this.#active.lease.close(); this.#active = undefined; this.#preview = undefined; this.#nameDraft = undefined; this.#clearExplorer(); return this.#state();
   }); }
+  #canvasHistoryLocation(rootIdentity: string, projectId: string, workspaceId: string): { key: string; directory: string; path: string } {
+    const directory = join(this.#stateRoot, 'canvas-history');
+    const key = sha256(Buffer.from(`${rootIdentity}:${projectId}:${workspaceId}`));
+    return { key, directory, path: join(directory, `${key}.json`) };
+  }
+  async #persistCanvasHistory(history: CanvasHistoryState): Promise<void> {
+    const { directory, path } = this.#canvasHistoryLocation(history.rootIdentity, history.projectId, history.workspaceId);
+    const bytes = Buffer.from(JSON.stringify(history) + '\n', 'utf8');
+    demand(bytes.byteLength <= canvasHistoryByteLimit, 'CANVAS_HISTORY_LIMIT', 'El historial alcanzó el límite local de 16 MiB; elimina historial antiguo antes de continuar.');
+    await mkdir(directory, { recursive: true });
+    try {
+      const existing = await lstat(path);
+      demand(existing.isFile() && !existing.isSymbolicLink(), 'CANVAS_HISTORY_INVALID', 'El historial local no es un archivo regular; se conserva para revisión.');
+    } catch (error) { if (!missing(error)) throw error; }
+    const temporary = join(directory, `${randomUUID()}.tmp`);
+    const handle = await open(temporary, 'wx', 0o600);
+    try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+    try { await rename(temporary, path); } catch (error) { await unlink(temporary).catch(() => undefined); throw error; }
+  }
+  #historyMatches(event: ReversibleCanvasCommand, side: 'before' | 'after', snapshot: { records: DomainRecord[] }): boolean {
+    return event.changes.every((change) => {
+      const current = snapshot.records.find((record) => refKey(refOf(record)) === refKey(change.ref)) ?? null;
+      return comparableHistoryRecord(current) === comparableHistoryRecord(change[side]);
+    });
+  }
+  async #resolveCanvasHistoryPending(active: ActiveProjectBinding, history: CanvasHistoryState): Promise<void> {
+    if (history.blocked) throw new LocalProjectError('CANVAS_HISTORY_CONFLICT', history.blocked);
+    const pending = history.pending;
+    if (!pending) return;
+    const snapshot = active.lease.service.state.project.snapshot;
+    const before = this.#historyMatches(pending.event, 'before', snapshot);
+    const after = this.#historyMatches(pending.event, 'after', snapshot);
+    if (pending.action === 'push') {
+      if (after) {
+        history.entries.splice(pending.cursorBefore);
+        history.entries.push(pending.event);
+        if (history.entries.length > canvasHistoryLimit) history.entries.splice(0, history.entries.length - canvasHistoryLimit);
+        history.cursor = history.entries.length;
+      } else if (!before) {
+        history.blocked = 'El store recuperó un estado que no coincide con ninguno de los lados del último comando; se conserva el historial y se requiere revisión.';
+      }
+    } else if (pending.action === 'undo') {
+      if (before) history.cursor = Math.max(0, pending.cursorBefore - 1);
+      else if (!after) history.blocked = 'El estado actual difiere del comando de undo pendiente; se conserva el historial para revisión.';
+    } else {
+      if (after) history.cursor = Math.min(history.entries.length, pending.cursorBefore + 1);
+      else if (!before) history.blocked = 'El estado actual difiere del comando de redo pendiente; se conserva el historial para revisión.';
+    }
+    for (const change of pending.event.changes) {
+      const current = snapshot.records.find((record) => refKey(refOf(record)) === refKey(change.ref));
+      if (current) history.revisionFloors[refKey(change.ref)] = Math.max(history.revisionFloors[refKey(change.ref)] ?? 0, current.value.revision);
+    }
+    delete history.pending;
+    await this.#persistCanvasHistory(history);
+    if (history.blocked) throw new LocalProjectError('CANVAS_HISTORY_CONFLICT', history.blocked);
+  }
+  async #canvasHistory(active: ActiveProjectBinding, workspaceId: string): Promise<CanvasHistoryState> {
+    const root = active.lease.service.root;
+    this.#assertLocalState(root);
+    const rootIdentity = active.rootIdentity;
+    const { key, path } = this.#canvasHistoryLocation(rootIdentity, active.projectId, workspaceId);
+    let history = this.#canvasHistories.get(key);
+    if (!history) {
+      history = { schemaVersion: '1.0.0', projectId: active.projectId, rootIdentity, workspaceId, entries: [], cursor: 0, revisionFloors: {} };
+      try {
+        const stat = await lstat(path);
+        demand(stat.isFile() && !stat.isSymbolicLink() && stat.size <= canvasHistoryByteLimit, 'CANVAS_HISTORY_INVALID', 'El historial local es inválido o demasiado grande; sus bytes se conservaron.');
+        const handle = await open(path, 'r'); let parsed: unknown;
+        try { parsed = JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
+        demand(parsed && typeof parsed === 'object' && !Array.isArray(parsed), 'CANVAS_HISTORY_INVALID', 'El historial local tiene un formato desconocido; se conservó sin cambios.');
+        const saved = parsed as CanvasHistoryState;
+        demand(saved.schemaVersion === '1.0.0' && saved.projectId === active.projectId && saved.rootIdentity === rootIdentity && saved.workspaceId === workspaceId &&
+          Array.isArray(saved.entries) && saved.entries.length <= canvasHistoryLimit && Number.isSafeInteger(saved.cursor) && saved.cursor >= 0 && saved.cursor <= saved.entries.length &&
+          saved.entries.every((event) => event && event.projectId === active.projectId && event.workspaceId === workspaceId && Array.isArray(event.changes) && Array.isArray(event.contentEffects)) &&
+          saved.revisionFloors && typeof saved.revisionFloors === 'object' && !Array.isArray(saved.revisionFloors),
+        'CANVAS_HISTORY_INVALID', 'El historial local no coincide con este proyecto/workspace; se conservaron sus bytes.');
+        history = saved;
+      } catch (error) { if (!missing(error)) throw error; }
+      this.#canvasHistories.set(key, history);
+    }
+    await this.#resolveCanvasHistoryPending(active, history);
+    return history;
+  }
+  #refreshHistoryRevisionFloors(history: CanvasHistoryState, event: ReversibleCanvasCommand, snapshot: { records: DomainRecord[] }): void {
+    for (const change of event.changes) {
+      const current = snapshot.records.find((record) => refKey(refOf(record)) === refKey(change.ref));
+      if (current) history.revisionFloors[refKey(change.ref)] = Math.max(history.revisionFloors[refKey(change.ref)] ?? 0, current.value.revision);
+      else history.revisionFloors[refKey(change.ref)] = Math.max(history.revisionFloors[refKey(change.ref)] ?? 0,
+        change.before?.value.revision ?? 0, change.after?.value.revision ?? 0);
+    }
+  }
   #canvasContext(sessionId: string, workspaceId: string): { active: ActiveProjectBinding; workspace: Workspace } {
     const active = this.#active;
     demand(active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión cambió; vuelve a abrir el lienzo.');
@@ -391,24 +514,32 @@ export class LocalProjectManager {
       requiredCapabilities: ['delete', 'diagram.edit'], stage: 'prepare' });
     const drawingConversion = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
       projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [],
-      requiredCapabilities: ['document.edit', 'diagram.edit'], stage: 'prepare' });
+      requiredCapabilities: ['document.edit', 'diagram.edit', 'delete'], stage: 'prepare' });
     const drawings = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'drawing' }> => record.kind === 'drawing' && record.workspaceId === workspaceId)
       .map(({ value }) => ({ id: value.id, revision: value.revision, points: value.points, parameters: value.parameters, style: value.style }));
     const groups = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'group' }> => record.kind === 'group' && record.workspaceId === workspaceId)
       .map(({ value }) => ({ id: value.id, revision: value.revision, name: value.name, members: value.members, collapsed: value.collapsed === true }));
     const draft = this.#viewportDrafts.get(workspaceId);
     const { x, y, zoom } = draft?.viewport ?? workspace.viewport;
+    const history = this.#canvasHistories.get(this.#canvasHistoryLocation(active.rootIdentity, active.projectId, workspaceId).key);
+    const undoEvent = history?.entries[history.cursor - 1], redoEvent = history?.entries[history.cursor];
+    const historyDelete = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+      projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: ['delete'], stage: 'prepare' });
     return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, placements, visualEdges, drawings, groups,
+      history: { canUndo: !!undoEvent && !history?.blocked, canRedo: !!redoEvent && !history?.blocked,
+        undoRequiresDelete: !!undoEvent && historyRequiresDelete(undoEvent, 'undo'), redoRequiresDelete: !!redoEvent && historyRequiresDelete(redoEvent, 'redo'),
+        deleteAvailable: historyDelete.allowed },
       canDeleteEdges: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && deletion.allowed,
       canDeleteDrawings: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && drawingDeletion.allowed,
       canConvertDrawings: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && drawingConversion.allowed,
       canWrite: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && edit.allowed };
   }
   loadCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
-    return this.#queue(async () => this.#canvasWorkspace(sessionId, workspaceId));
+    return this.#queue(async () => { const { active } = this.#canvasContext(sessionId, workspaceId); await this.#canvasHistory(active, workspaceId); return this.#canvasWorkspace(sessionId, workspaceId); });
   }
   stageCanvasViewport(sessionId: string, workspaceId: string, expectedRevision: number, viewport: WorkspaceViewport): Promise<LocalCanvasWorkspace> {
     return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId); await this.#canvasHistory(active, workspaceId);
       const view = this.#canvasWorkspace(sessionId, workspaceId);
       demand(view.canWrite, 'PERMISSION_DENIED', 'La vista puede navegarse, pero el proyecto no permite guardar el viewport.');
       demand(viewport && Object.keys(viewport).length === 3 && [viewport.x, viewport.y, viewport.zoom].every(Number.isFinite) && viewport.zoom > 0,
@@ -454,12 +585,125 @@ export class LocalProjectManager {
       const id = randomUUID();
       const record: DomainRecord = { kind: 'placement', workspaceId, value: { schemaVersion: '1.0.0', id, revision: 1, entityId: entity.value.id,
         position: { x: position.x, y: position.y }, size: { width: 300, height: 190 }, style: {}, extensions: {} } };
-      const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
-        command: 'a3.core.create-document', payload: { record }, expectedRevisions: [...revisionsOf(snapshot), { kind: 'placement', id, workspaceId, revision: null }],
-        expectedContentHashes: [], scope: { entityIds: [entity.value.id] } });
-      demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'PLACEMENT_CREATE_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
-      const committed = await active.lease.service.commit(prepared.value);
-      demand(committed.ok, committed.diagnostics[0]?.code ?? 'PLACEMENT_CREATE_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+      await this.#commitCanvasCommand(active, { command: 'a3.core.create-document', payload: { record } }, [entity.value.id], { kind: 'placement', id, workspaceId });
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  duplicateCanvasSelection(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, selection: CanvasSelection,
+    mode: 'content' | 'representation', offset = { x: 40, y: 40 }): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && expectedWorkspaceRevision === workspace.revision, 'REVISION_CONFLICT', 'El workspace cambió; recarga antes de duplicar.');
+      demand(selection && Array.isArray(selection.placements) && Array.isArray(selection.drawings) && Array.isArray(selection.groups) &&
+        [offset?.x, offset?.y].every(Number.isFinite) && ['content', 'representation'].includes(mode), 'INVALID_SELECTION', 'La selección de duplicación no es válida.');
+      const snapshot = active.lease.service.state.project.snapshot;
+      const placements = new Map(snapshot.records.filter((r): r is Extract<DomainRecord, { kind: 'placement' }> => r.kind === 'placement' && r.workspaceId === workspaceId).map((r) => [r.value.id.toLowerCase(), r]));
+      const drawings = new Map(snapshot.records.filter((r): r is Extract<DomainRecord, { kind: 'drawing' }> => r.kind === 'drawing' && r.workspaceId === workspaceId).map((r) => [r.value.id.toLowerCase(), r]));
+      const groups = new Map(snapshot.records.filter((r): r is Extract<DomainRecord, { kind: 'group' }> => r.kind === 'group' && r.workspaceId === workspaceId).map((r) => [r.value.id.toLowerCase(), r]));
+      const selected = { placements: new Map<string, number>(), drawings: new Map<string, number>(), groups: new Map<string, number>() };
+      for (const [kind, items] of Object.entries(selection) as [keyof typeof selected, CanvasSelectionRef[]][]) {
+        for (const item of items) {
+          const key = item.id.toLowerCase(); const record = (kind === 'placements' ? placements : kind === 'drawings' ? drawings : groups).get(key);
+          demand(record && record.value.revision === item.expectedRevision, 'REVISION_CONFLICT', 'Un miembro de la selección cambió; recarga el canvas antes de duplicar.');
+          demand(!selected[kind].has(key), 'INVALID_SELECTION', 'La selección no puede repetir miembros.');
+          selected[kind].set(key, item.expectedRevision);
+        }
+      }
+      const visitedGroups = new Set<string>();
+      const visitGroup = (id: string, path = new Set<string>()): void => {
+        const key = id.toLowerCase();
+        demand(!path.has(key), 'INVALID_GROUP_CYCLE', 'No se puede duplicar un grupo cíclico.');
+        if (visitedGroups.has(key)) return;
+        const group = groups.get(key); demand(group, 'GROUP_MISSING', 'Un subgrupo de la selección ya no está disponible.');
+        visitedGroups.add(key); selected.groups.set(key, group.value.revision);
+        const nextPath = new Set(path); nextPath.add(key);
+        for (const member of group.value.members) {
+          if (member.kind === 'group') visitGroup(member.id, nextPath);
+          else if (member.kind === 'placement') {
+            const placement = placements.get(member.id.toLowerCase()); demand(placement, 'PLACEMENT_MISSING', 'Una representación del grupo ya no está disponible.');
+            selected.placements.set(placement.value.id.toLowerCase(), placement.value.revision);
+          } else {
+            const drawing = drawings.get(member.id.toLowerCase()); demand(drawing, 'DRAWING_MISSING', 'Un trazo del grupo ya no está disponible.');
+            selected.drawings.set(drawing.value.id.toLowerCase(), drawing.value.revision);
+          }
+        }
+      };
+      for (const id of [...selected.groups.keys()]) visitGroup(id);
+      demand(selected.placements.size + selected.drawings.size + selected.groups.size > 0, 'INVALID_SELECTION', 'Selecciona al menos una representación, trazo o grupo.');
+      demand(selected.placements.size + selected.drawings.size + selected.groups.size <= 512, 'SELECTION_TOO_LARGE', 'La selección expandida supera el límite reversible de 512 miembros.');
+      const placementIds = [...selected.placements.keys()], drawingIds = [...selected.drawings.keys()], groupIds = [...selected.groups.keys()];
+      const entityIds = [...new Set(placementIds.map((id) => placements.get(id)!.value.entityId))];
+      const ids: DuplicateSelection['ids'] = { entities: {}, placements: {}, relations: {}, visualEdges: {}, relationViews: {}, drawings: {}, groups: {} };
+      const newRefs: DocumentRef[] = [];
+      const newEntityIds: string[] = [];
+      const resourceMap = new Map<string, string>();
+      const resourceCopies: DuplicateSelection['resourceCopies'] = [];
+      const expectedContentHashes: { resourceId: string; hash: string }[] = [];
+      const addMap = (table: Record<string, string>, sourceId: string, ref: DocumentRef): string => {
+        const next = randomUUID(); table[sourceId] = next; newRefs.push({ ...ref, id: next }); return next;
+      };
+      if (mode === 'content') {
+        for (const id of entityIds) {
+          const entity = snapshot.records.find((r): r is Extract<DomainRecord, { kind: 'entity' }> => r.kind === 'entity' && r.value.id.toLowerCase() === id.toLowerCase());
+          demand(entity, 'ENTITY_MISSING', 'Una entidad de la selección ya no existe.');
+          const newId = addMap(ids.entities, entity.value.id, { kind: 'entity', id: entity.value.id });
+          newEntityIds.push(newId);
+          if (entity.value.contentResourceId) {
+            const resource = snapshot.records.find((r): r is Extract<DomainRecord, { kind: 'resource' }> => r.kind === 'resource' && r.value.id.toLowerCase() === entity.value.contentResourceId!.toLowerCase());
+            demand(resource, 'RESOURCE_MISSING', 'El recurso de una entidad ya no existe.');
+            const sourceId = resource.value.id;
+            let resourceCopy = resourceMap.get(sourceId.toLowerCase());
+            if (!resourceCopy) {
+              resourceCopy = randomUUID(); resourceMap.set(sourceId.toLowerCase(), resourceCopy);
+              newRefs.push({ kind: 'resource', id: resourceCopy });
+              if (resource.value.kind === 'remote-url') {
+                resourceCopies.push({ sourceId, id: resourceCopy, location: { kind: 'remote-url', url: resource.value.url } });
+              } else {
+                demand(resource.value.kind === 'project-file', 'CONTENT_DUPLICATE_UNAVAILABLE', 'Duplicar contenido desde un montaje requiere copiarlo explícitamente al proyecto primero.');
+                const opened = await active.lease.service.openResource(sourceId);
+                demand(opened.ok, opened.diagnostics[0]?.code ?? 'RESOURCE_READ_FAILED', opened.diagnostics.map((item) => item.message).join('\n'));
+                expectedContentHashes.push({ resourceId: sourceId, hash: opened.value.sha256 });
+                const sourcePath = resource.value.path, slash = sourcePath.lastIndexOf('/'), directory = slash < 0 ? '' : sourcePath.slice(0, slash + 1);
+                const leaf = slash < 0 ? sourcePath : sourcePath.slice(slash + 1), dot = leaf.lastIndexOf('.');
+                const stem = dot > 0 ? leaf.slice(0, dot) : leaf, extension = dot > 0 ? leaf.slice(dot) : '';
+                const targetPath = `${directory}${stem} copy ${resourceCopy.slice(0, 8)}${extension}`;
+                resourceCopies.push({ sourceId, id: resourceCopy, location: { kind: 'project-file', path: targetPath } });
+              }
+            }
+          }
+          const variableSet = snapshot.records.find((r) => r.kind === 'variable-set' && r.value.scope.kind === 'entity' && r.value.scope.ownerId.toLowerCase() === entity.value.id.toLowerCase());
+          if (variableSet) newRefs.push({ kind: 'variable-set', id: newId, variableScope: 'entity' });
+        }
+      }
+      for (const id of placementIds) addMap(ids.placements, id, { kind: 'placement', id, workspaceId });
+      for (const id of drawingIds) addMap(ids.drawings!, id, { kind: 'drawing', id, workspaceId });
+      for (const id of groupIds) addMap(ids.groups!, id, { kind: 'group', id, workspaceId });
+      const placementSet = new Set(placementIds);
+      for (const record of snapshot.records) {
+        if (record.kind === 'relation' && mode === 'content' && entityIds.some((id) => id.toLowerCase() === record.value.source.entityId.toLowerCase()) &&
+            entityIds.some((id) => id.toLowerCase() === record.value.target.entityId.toLowerCase())) addMap(ids.relations, record.value.id, { kind: 'relation', id: record.value.id });
+        if ((record.kind === 'visual-edge' || record.kind === 'relation-view') && record.workspaceId === workspaceId &&
+            placementSet.has(record.value.sourcePlacementId.toLowerCase()) && placementSet.has(record.value.targetPlacementId.toLowerCase())) {
+          addMap(record.kind === 'visual-edge' ? ids.visualEdges : ids.relationViews, record.value.id,
+            { kind: record.kind, id: record.value.id, workspaceId });
+        }
+      }
+      const payload: DuplicateSelection = { workspaceId, placementIds, drawingIds, groupIds, mode, offset, ids, resourceCopies, includeExternalRelations: false };
+      await this.#commitCanvasCommand(active, { command: 'a3.core.duplicate-selection', payload }, [...entityIds, ...newEntityIds], newRefs, expectedContentHashes);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  updateCanvasPlacementViews(sessionId: string, workspaceId: string, patches: CanvasPlacementViewPatch[]): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      demand(Array.isArray(patches) && patches.length > 0 && patches.length <= 512 && new Set(patches.map((item) => item.id.toLowerCase())).size === patches.length,
+        'INVALID_PLACEMENT_VIEW_BATCH', 'Selecciona representaciones únicas para ordenar o bloquear.');
+      const entities = patches.map((item) => {
+        const record = active.lease.service.state.project.snapshot.records.find((r) => r.kind === 'placement' && r.workspaceId === workspaceId && r.value.id.toLowerCase() === item.id.toLowerCase());
+        demand(record?.kind === 'placement' && record.value.revision === item.expectedRevision, 'REVISION_CONFLICT', 'Una representación cambió; recarga antes de aplicar el lote.');
+        return record.value.entityId;
+      });
+      await this.#commitCanvasCommand(active, { command: 'a3.core.update-placement-views', payload: { workspaceId, placements: patches.map(({ id, position, style }) => ({ id, ...(position ? { position } : {}), ...(style ? { style } : {}) })) } }, entities);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }
@@ -471,14 +715,9 @@ export class LocalProjectManager {
       const record = snapshot.records.find((item) => item.kind === 'placement' && item.workspaceId === workspaceId && item.value.id.toLowerCase() === placementId.toLowerCase());
       demand(record?.kind === 'placement', 'PLACEMENT_MISSING', 'La representación ya no existe en este workspace.');
       demand(Number.isSafeInteger(expectedRevision) && expectedRevision === record.value.revision, 'REVISION_CONFLICT', 'La representación cambió; vuelve a cargar el placement antes de guardarlo.');
-      const payload = { ...patch, ref: { kind: 'placement' as const, id: record.value.id, workspaceId } };
-      const command = patch.position && !patch.size && !patch.style ? 'a3.core.move-placement' : 'a3.core.update-placement-view';
-      const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
-        command, payload: command === 'a3.core.move-placement' ? { ref: payload.ref, position: patch.position } : payload,
-        expectedRevisions: revisionsOf(snapshot), expectedContentHashes: [], scope: { entityIds: [record.value.entityId] } });
-      demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'PLACEMENT_UPDATE_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
-      const committed = await active.lease.service.commit(prepared.value);
-      demand(committed.ok, committed.diagnostics[0]?.code ?? 'PLACEMENT_UPDATE_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+      const ref = { kind: 'placement' as const, id: record.value.id, workspaceId };
+      const command = patch.position && !patch.size && !patch.style ? 'a3.core.move-placement' as const : 'a3.core.update-placement-view' as const;
+      await this.#commitCanvasCommand(active, { command, payload: command === 'a3.core.move-placement' ? { ref, position: patch.position! } : { ...patch, ref } }, [record.value.entityId]);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }
@@ -499,14 +738,112 @@ export class LocalProjectManager {
       catch { return { entityId, resourceId, text: null, state: 'binary' }; }
     });
   }
-  async #commitCanvasCommand(active: ActiveProjectBinding, operation: Pick<DomainCommand, 'command' | 'payload'>, entityIds: string[], absent?: DocumentRef | readonly DocumentRef[]): Promise<void> {
+  async #commitCanvasCommand(active: ActiveProjectBinding, operation: Pick<DomainCommand, 'command' | 'payload'>, entityIds: string[], absent?: DocumentRef | readonly DocumentRef[], expectedContentHashes: { resourceId: string; hash: string }[] = []): Promise<void> {
     const absentRefs = !absent ? [] : Array.isArray(absent) ? absent : [absent];
+    const payload = operation.payload as unknown as Record<string, unknown>;
+    const reference = payload.ref as { workspaceId?: unknown } | undefined;
+    const record = payload.record as DomainRecord | undefined;
+    const workspaceId = typeof payload.workspaceId === 'string' ? payload.workspaceId : typeof reference?.workspaceId === 'string' ? reference.workspaceId :
+      record && 'workspaceId' in record ? record.workspaceId : undefined;
+    if (typeof workspaceId === 'string' && uuid.test(workspaceId)) await this.#canvasHistory(active, workspaceId);
     const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
       ...operation, expectedRevisions: [...revisionsOf(active.lease.service.state.project.snapshot), ...absentRefs.map((ref) => ({ ...ref, revision: null }))],
-      expectedContentHashes: [], scope: { entityIds: [...new Set(entityIds)] } });
+      expectedContentHashes, scope: { entityIds: [...new Set(entityIds)] } });
     demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
+    const event = prepared.value.canvasCommand;
+    let history: CanvasHistoryState | undefined;
+    if (event?.changes.length) {
+      demand(event.changes.length <= 1024 && event.contentEffects.length <= 1024, 'CANVAS_HISTORY_LIMIT', 'El cambio supera el límite reversible de 1024 documentos o recursos y no se ha escrito.');
+      history = await this.#canvasHistory(active, event.workspaceId);
+      const pendingState = structuredClone(history);
+      pendingState.pending = { action: 'push', event, cursorBefore: history.cursor };
+      await this.#persistCanvasHistory(pendingState);
+      history.pending = pendingState.pending;
+    }
     const committed = await active.lease.service.commit(prepared.value);
     demand(committed.ok, committed.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+    if (history && event) {
+      this.#refreshHistoryRevisionFloors(history, event, active.lease.service.state.project.snapshot);
+      await this.#resolveCanvasHistoryPending(active, history);
+    }
+  }
+  #canvasHistoryEntityIds(active: ActiveProjectBinding, event: ReversibleCanvasCommand): string[] {
+    const records = [...active.lease.service.state.project.snapshot.records, ...event.changes.flatMap((change) => [change.before, change.after].filter((record): record is DomainRecord => !!record))];
+    const placements = new Map(records.filter((r): r is Extract<DomainRecord, { kind: 'placement' }> => r.kind === 'placement').map((r) => [r.value.id.toLowerCase(), r]));
+    const groups = new Map(records.filter((r): r is Extract<DomainRecord, { kind: 'group' }> => r.kind === 'group').map((r) => [refKey(refOf(r)), r]));
+    const entities = new Set<string>();
+    const visitGroup = (record: Extract<DomainRecord, { kind: 'group' }>, visited = new Set<string>()): void => {
+      const key = refKey(refOf(record)); if (visited.has(key)) return; visited.add(key);
+      for (const member of record.value.members) {
+        if (member.kind === 'placement') { const placement = placements.get(member.id.toLowerCase()); if (placement) entities.add(placement.value.entityId); }
+        else if (member.kind === 'group') { const group = groups.get(refKey({ kind: 'group', id: member.id, workspaceId: record.workspaceId })); if (group) visitGroup(group, visited); }
+      }
+    };
+    for (const change of event.changes) for (const record of [change.before, change.after]) {
+      if (!record) continue;
+      if (record.kind === 'entity') entities.add(record.value.id);
+      else if (record.kind === 'placement') entities.add(record.value.entityId);
+      else if (record.kind === 'relation') { entities.add(record.value.source.entityId); entities.add(record.value.target.entityId); }
+      else if (record.kind === 'variable-set' && record.value.scope.kind === 'entity') entities.add(record.value.scope.ownerId);
+      else if (record.kind === 'group') visitGroup(record);
+      else if (record.kind === 'visual-edge' || record.kind === 'relation-view') for (const id of [record.value.sourcePlacementId, record.value.targetPlacementId]) {
+        const placement = placements.get(id.toLowerCase()); if (placement) entities.add(placement.value.entityId);
+      }
+      else if (record.kind === 'resource') for (const candidate of records) {
+        if (candidate.kind === 'entity' && candidate.value.contentResourceId?.toLowerCase() === record.value.id.toLowerCase()) entities.add(candidate.value.id);
+      }
+    }
+    return [...entities];
+  }
+  async #historyEffects(active: ActiveProjectBinding, event: ReversibleCanvasCommand, direction: 'undo' | 'redo'): Promise<ContentEffect[]> {
+    if (direction === 'redo') return structuredClone(event.contentEffects) as ContentEffect[];
+    const snapshot = active.lease.service.state.project.snapshot;
+    const effects: ContentEffect[] = [];
+    for (const effect of event.contentEffects) {
+      if (effect.kind === 'create' || effect.kind === 'copy') {
+        const resourceId = effect.kind === 'create' ? effect.resourceId : effect.targetId;
+        const expectedHash = effect.kind === 'create' ? sha256(Buffer.from(effect.content, 'utf8')) : effect.expectedHash;
+        const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === resourceId.toLowerCase());
+        demand(resource?.kind === 'resource' && resource.value.kind === 'project-file', 'REVISION_CONFLICT', 'El recurso que creó el comando ya no está disponible para deshacer.');
+        const opened = await active.lease.service.openResource(resourceId);
+        demand(opened.ok && opened.value.sha256 === expectedHash, 'REVISION_CONFLICT', 'Los bytes del recurso creado cambiaron; se conserva el archivo y se detiene el undo.');
+        effects.push({ kind: 'remove', resourceId, path: resource.value.path, expectedHash });
+      } else if (effect.kind === 'move') effects.push({ ...effect, before: effect.after, after: effect.before });
+      else throw new LocalProjectError('CANVAS_HISTORY_UNSUPPORTED', 'El historial contiene un efecto que esta versión no puede invertir con seguridad.');
+    }
+    return effects;
+  }
+  async #replayCanvasHistory(sessionId: string, workspaceId: string, direction: 'undo' | 'redo'): Promise<LocalCanvasWorkspace> {
+    const { active } = this.#canvasContext(sessionId, workspaceId);
+    const history = await this.#canvasHistory(active, workspaceId);
+    demand(active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict, 'PERMISSION_DENIED', 'El historial requiere un proyecto escribible y sin conflicto externo.');
+    const event = direction === 'undo' ? history.entries[history.cursor - 1] : history.entries[history.cursor];
+    demand(event, direction === 'undo' ? 'NOTHING_TO_UNDO' : 'NOTHING_TO_REDO', direction === 'undo' ? 'No hay cambios para deshacer.' : 'No hay cambios para rehacer.');
+    const snapshot = active.lease.service.state.project.snapshot;
+    const contentEffects = await this.#historyEffects(active, event, direction);
+    const missingRefs = event.changes.filter((change) => !snapshot.records.some((record) => refKey(refOf(record)) === refKey(change.ref)))
+      .map((change) => ({ ...change.ref, revision: null }));
+    const request: DomainCommand = { operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
+      command: 'a3.core.apply-canvas-history', payload: { workspaceId, direction, changes: structuredClone(event.changes) as RecordChange[], contentEffects,
+        revisionFloors: { ...history.revisionFloors } }, expectedRevisions: [...revisionsOf(snapshot), ...missingRefs], expectedContentHashes: [],
+      scope: { entityIds: this.#canvasHistoryEntityIds(active, event) } };
+    const prepared = await active.lease.service.prepare(request);
+    demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'CANVAS_HISTORY_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
+    const pendingState = structuredClone(history);
+    pendingState.pending = { action: direction, event, cursorBefore: history.cursor };
+    await this.#persistCanvasHistory(pendingState);
+    history.pending = pendingState.pending;
+    const committed = await active.lease.service.commit(prepared.value);
+    demand(committed.ok, committed.diagnostics[0]?.code ?? 'CANVAS_HISTORY_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+    this.#refreshHistoryRevisionFloors(history, event, active.lease.service.state.project.snapshot);
+    await this.#resolveCanvasHistoryPending(active, history);
+    return this.#canvasWorkspace(sessionId, workspaceId);
+  }
+  undoCanvas(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(() => this.#replayCanvasHistory(sessionId, workspaceId, 'undo'));
+  }
+  redoCanvas(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(() => this.#replayCanvasHistory(sessionId, workspaceId, 'redo'));
   }
   #canvasEndpointEntities(active: ActiveProjectBinding, workspaceId: string, placementIds: string[]): string[] {
     return placementIds.map((id) => {
@@ -661,6 +998,15 @@ export class LocalProjectManager {
       demand(this.options.host.authenticatedActor.kind === 'user', 'PERMISSION_DENIED', 'Solo una persona puede solicitar permisos locales.');
       demand(await this.options.host.capabilities.setGrant({ root: active.lease.service.root, projectId: active.projectId, capability: 'delete', mode: 'approval' }),
         'PERMISSION_DENIED', 'El permiso de eliminación no fue aprobado.');
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  approveCanvasHistoryDeletion(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      demand(this.options.host.authenticatedActor.kind === 'user', 'PERMISSION_DENIED', 'Solo una persona puede solicitar permisos locales.');
+      demand(await this.options.host.capabilities.setGrant({ root: active.lease.service.root, projectId: active.projectId, capability: 'delete', mode: 'approval' }),
+        'PERMISSION_DENIED', 'El permiso de eliminación para el historial no fue aprobado.');
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }

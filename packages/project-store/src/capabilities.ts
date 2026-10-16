@@ -256,6 +256,7 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
     } else if (request.command === 'a3.core.set-collection-members') {
       caps.add('task.edit');
     } else {
+      if (request.changes.some((change) => !change.after) || request.contentEffects.some((effect) => effect.kind === 'remove')) caps.add('delete');
       if (request.refs.some((ref) => domainRefCapabilities.has(ref.kind)) || request.changes.some((change) => change.ref && domainRefCapabilities.has(change.ref.kind))) caps.add('diagram.edit');
       if (!caps.size || request.changes.some((change) => change.ref && !domainRefCapabilities.has(change.ref.kind)) || request.contentEffects.length) caps.add('document.edit');
     }

@@ -29,6 +29,22 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
     input.placements.every((item: unknown) => !!item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length === 3 &&
       uuid.test(String((item as Record<string, unknown>).id)) && Number.isSafeInteger((item as Record<string, unknown>).expectedRevision) &&
       Number((item as Record<string, unknown>).expectedRevision) >= 1 && validPoint((item as Record<string, unknown>).position));
+  const validSelectionRefs = (items: unknown): boolean => Array.isArray(items) && items.length <= 512 && items.every((item: unknown) => !!item && typeof item === 'object' &&
+    !Array.isArray(item) && Object.keys(item).length === 2 && uuid.test(String((item as Record<string, unknown>).id)) &&
+    Number.isSafeInteger((item as Record<string, unknown>).expectedRevision) && Number((item as Record<string, unknown>).expectedRevision) >= 1);
+  if (input.action === 'duplicate-selection') return Object.keys(input).length === 6 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 &&
+    ['content', 'representation'].includes(String(input.mode)) && !!input.selection && typeof input.selection === 'object' && !Array.isArray(input.selection) &&
+    Object.keys(input.selection).length === 3 && validSelectionRefs((input.selection as Record<string, unknown>).placements) &&
+    validSelectionRefs((input.selection as Record<string, unknown>).drawings) && validSelectionRefs((input.selection as Record<string, unknown>).groups) &&
+    ((input.selection as Record<string, unknown>).placements as unknown[]).length + ((input.selection as Record<string, unknown>).drawings as unknown[]).length +
+      ((input.selection as Record<string, unknown>).groups as unknown[]).length > 0;
+  if (input.action === 'undo' || input.action === 'redo') return Object.keys(input).length === 3;
+  if (input.action === 'update-placement-views') return Object.keys(input).length === 4 && Array.isArray(input.placements) && input.placements.length > 0 && input.placements.length <= 512 &&
+    input.placements.every((item: unknown) => !!item && typeof item === 'object' && !Array.isArray(item) &&
+      ['id', 'expectedRevision', 'position', 'style'].filter((key) => key in (item as Record<string, unknown>)).length === Object.keys(item).length &&
+      uuid.test(String((item as Record<string, unknown>).id)) && Number.isSafeInteger((item as Record<string, unknown>).expectedRevision) && Number((item as Record<string, unknown>).expectedRevision) >= 1 &&
+      ('position' in item || 'style' in item) && (!('position' in item) || validPoint((item as Record<string, unknown>).position)) &&
+      (!('style' in item) || validStyle((item as Record<string, unknown>).style)));
   const validMembers = (members: unknown, allowEmpty = false): boolean => Array.isArray(members) && (allowEmpty || members.length > 0) && members.length <= 512 &&
     members.every((member: unknown) => !!member && typeof member === 'object' && !Array.isArray(member) &&
       ['placement', 'group', 'drawing'].includes(String((member as Record<string, unknown>).kind)) && uuid.test(String((member as Record<string, unknown>).id)));
@@ -72,7 +88,7 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
     input.drawings.every((item: unknown) => !!item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length === 2 &&
       uuid.test(String((item as Record<string, unknown>).id)) && Number.isSafeInteger((item as Record<string, unknown>).expectedRevision) &&
       Number((item as Record<string, unknown>).expectedRevision) >= 1);
-  return ['load', 'flush', 'discard', 'approve-edge-delete', 'approve-drawing-delete'].includes(String(input.action)) && Object.keys(input).length === 3;
+  return ['load', 'flush', 'discard', 'approve-edge-delete', 'approve-drawing-delete', 'approve-history-delete'].includes(String(input.action)) && Object.keys(input).length === 3;
 }
 function validDrawingPoints(value: unknown): boolean {
   return Array.isArray(value) && value.length > 0 && value.length <= 100000 && value.every((item) => {
@@ -156,9 +172,13 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'flush': return { ok: true, value: await manager.flushCanvasWorkspace(value.sessionId, value.workspaceId) };
           case 'discard': return { ok: true, value: await manager.discardCanvasViewport(value.sessionId, value.workspaceId) };
           case 'create-placement': return { ok: true, value: await manager.createCanvasPlacement(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.entityId, value.position) };
+          case 'duplicate-selection': return { ok: true, value: await manager.duplicateCanvasSelection(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.selection, value.mode) };
+          case 'undo': return { ok: true, value: await manager.undoCanvas(value.sessionId, value.workspaceId) };
+          case 'redo': return { ok: true, value: await manager.redoCanvas(value.sessionId, value.workspaceId) };
           case 'update-placement': return { ok: true, value: await manager.updateCanvasPlacement(value.sessionId, value.workspaceId, value.placementId, value.expectedRevision, value.patch) };
           case 'content': return { ok: true, value: await manager.loadCanvasContent(value.sessionId, value.workspaceId, value.entityId, value.resourceId) };
           case 'move-placements': return { ok: true, value: await manager.moveCanvasPlacements(value.sessionId, value.workspaceId, value.placements) };
+          case 'update-placement-views': return { ok: true, value: await manager.updateCanvasPlacementViews(value.sessionId, value.workspaceId, value.placements) };
           case 'create-group': return { ok: true, value: await manager.createCanvasGroup(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.name, value.members) };
           case 'set-group-members': return { ok: true, value: await manager.setCanvasGroupMembers(value.sessionId, value.workspaceId, value.groupId, value.expectedRevision, value.members) };
           case 'rename-group': return { ok: true, value: await manager.renameCanvasGroup(value.sessionId, value.workspaceId, value.groupId, value.expectedRevision, value.name) };
@@ -173,6 +193,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'convert-drawings-to-node': return { ok: true, value: await manager.createCanvasDrawingNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.drawings) };
           case 'approve-edge-delete': return { ok: true, value: await manager.approveCanvasEdgeDeletion(value.sessionId, value.workspaceId) };
           case 'approve-drawing-delete': return { ok: true, value: await manager.approveCanvasDrawingDeletion(value.sessionId, value.workspaceId) };
+          case 'approve-history-delete': return { ok: true, value: await manager.approveCanvasHistoryDeletion(value.sessionId, value.workspaceId) };
         }
       } catch (error) {
         return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED', message: error instanceof LocalProjectError ? error.message : 'No se pudo completar la operación del lienzo.',

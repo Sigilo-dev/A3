@@ -2,7 +2,7 @@ import { watch, type FSWatcher } from 'node:fs';
 import { lstat, mkdir, readdir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import { defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePlan, validateSnapshot, type CommandContext, type Diagnostic, type DomainRecord, type JsonValue, type PreparedPlan, type Resource, type TypeRegistry } from '@a3/domain';
+import { defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePlan, reversibleCanvasCommand, validateSnapshot, type CommandContext, type Diagnostic, type DomainRecord, type JsonValue, type PreparedPlan, type Resource, type TypeRegistry } from '@a3/domain';
 import { decodeDocument, encodeDocument, issue, serializeRecord, sha256 } from './codec.js';
 import { MountPathError, inspectLocalMountFile, readLocalMountFile, readMountedResource, readMountedResourceDetailed, type MountActionPreview } from './mounts.js';
 import { canonicalJson, freeze, object, pointerToken } from './json.js';
@@ -128,7 +128,7 @@ function domainCapabilities(plan: PreparedPlan): Capability[] {
   const command = plan.request.command;
   if (command === 'a3.core.register-node-type' || command === 'a3.core.unregister-node-type') return ['package.install'];
   const caps = new Set<Capability>();
-  if (command === 'a3.core.delete') caps.add('delete');
+  if (command === 'a3.core.delete' || plan.changes.some((change) => !change.after) || plan.contentEffects.some((effect) => effect.kind === 'remove')) caps.add('delete');
   const refs = plan.changes.map((change) => change.ref);
   if (refs.some((ref) => diagramRefKinds.has(ref.kind))) caps.add('diagram.edit');
   if (refs.some((ref) => !diagramRefKinds.has(ref.kind))) caps.add('document.edit');
@@ -1035,7 +1035,14 @@ export class ProjectService {
     if (!this.#authorized('write', images.map((i) => i.path), changes.flatMap((c) => c.ref ? [c.ref] : []), resources, requiredCapabilities, 'prepare')) return failure([this.#denied('operation')]);
     const projectId = this.#projectId();
     if (!projectId) return failure([issue('a3.project.json', 'compatibility', 'project-id-unavailable', 'No se pudo validar la identidad del proyecto.')]);
-    const plan: PreparedWrite = freeze({ status: 'prepared', operationId, projectId, changes,
+    const requestPayload = extra.domain?.request.payload as unknown as Record<string, unknown> | undefined;
+    const referencedDocument = requestPayload?.record as DomainRecord | undefined;
+    const reference = requestPayload?.ref as { workspaceId?: unknown } | undefined;
+    const workspaceId = typeof requestPayload?.workspaceId === 'string' ? requestPayload.workspaceId :
+      typeof reference?.workspaceId === 'string' ? reference.workspaceId : referencedDocument && 'workspaceId' in referencedDocument ? referencedDocument.workspaceId : undefined;
+    const canvasCommand = extra.domain && typeof workspaceId === 'string' && uuid.test(workspaceId)
+      ? reversibleCanvasCommand(extra.domain, workspaceId) : undefined;
+    const plan: PreparedWrite = freeze({ status: 'prepared', operationId, projectId, changes, ...(canvasCommand ? { canvasCommand } : {}),
       proposedBytes: (path: string) => { const bytes = images.find((i) => i.path === path)?.bytes; return bytes ? Uint8Array.from(bytes) : null; } });
     this.#plans.set(plan, { scan, images, nextRecords, resources, requestHash, actor: JSON.stringify(this.options.host.authenticatedActor), requiredCapabilities, ...extra });
     return { ok: true, value: plan, diagnostics: [] };
@@ -1072,6 +1079,20 @@ export class ProjectService {
             catch (error) { if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error; }
             images.push({ path: effect.path, bytes: Buffer.from(effect.content, 'utf8'), ref: refOf(target) });
             resources.push(target.value);
+            continue;
+          }
+          if (effect.kind === 'remove') {
+            const source = getRecord(scan.project.snapshot, { kind: 'resource', id: effect.resourceId });
+            const target = getRecord(domain.nextSnapshot, { kind: 'resource', id: effect.resourceId });
+            if (source?.kind !== 'resource' || source.value.kind !== 'project-file' || source.value.path !== effect.path || target) {
+              return failure([issue(effect.path, 'schema', 'resource-remove-effect-invalid', 'El efecto debe retirar el archivo de un recurso local que deja de existir.')]);
+            }
+            this.#sourcePath(effect.path);
+            const bytes = await readProjectResource(this.root, source.value, this.#resourceLimit);
+            if (!bytes.ok) return bytes;
+            if (bytes.value.sha256 !== effect.expectedHash) return failure([conflict(source.value.path, 'history-content-conflict')]);
+            images.push({ path: effect.path, bytes: null, ref: refOf(source) });
+            resources.push(source.value);
             continue;
           }
           const sourceId = effect.kind === 'copy' ? effect.sourceId : effect.resourceId;

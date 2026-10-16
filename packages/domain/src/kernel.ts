@@ -9,8 +9,8 @@ function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnost
   throw new DomainFault(diagnostic(detail, message, ref, code));
 }
 const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity',
-  'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-visual-edge', 'a3.core.update-drawing', 'a3.core.convert-drawings-to-node', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-group-collapsed', 'a3.core.set-collection-members',
-  'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
+  'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-placement-views', 'a3.core.update-visual-edge', 'a3.core.update-drawing', 'a3.core.convert-drawings-to-node', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-group-collapsed', 'a3.core.set-collection-members',
+  'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.apply-canvas-history', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
 const kinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
 const scoped = new Set(['placement', 'visual-edge', 'relation-view', 'group', 'drawing']);
 
@@ -109,6 +109,15 @@ class Draft {
     this.require(ref);
     this.snapshot.records = this.snapshot.records.filter((record) => refKey(refOf(record)) !== refKey(ref));
     this.currentIndex.delete(refKey(ref));
+  }
+  restore(record: DomainRecord, revision: number): void {
+    const key = refKey(refOf(record));
+    const restored = copy(record);
+    restored.value.revision = revision;
+    const index = this.snapshot.records.findIndex((item) => refKey(refOf(item)) === key);
+    if (index < 0) this.snapshot.records.push(restored);
+    else this.snapshot.records[index] = restored;
+    this.currentIndex.set(key, restored);
   }
   requireHash(resourceId: string): string {
     const expected = this.request.expectedContentHashes.find((h) => sameId(h.resourceId, resourceId));
@@ -251,14 +260,51 @@ function mapped(table: Record<string, string>, id: string): string {
 }
 
 function duplicate(draft: Draft, payload: DuplicateSelection): void {
-  if (!Array.isArray(payload.placementIds) || !payload.placementIds.length ||
-      new Set(payload.placementIds.map((id) => id.toLowerCase())).size !== payload.placementIds.length ||
+  const selectedPlacementIds = payload.placementIds;
+  const selectedDrawingIds = payload.drawingIds ?? [];
+  const selectedGroupIds = payload.groupIds ?? [];
+  if (!Array.isArray(selectedPlacementIds) || !Array.isArray(selectedDrawingIds) || !Array.isArray(selectedGroupIds) ||
+      !selectedPlacementIds.length && !selectedDrawingIds.length && !selectedGroupIds.length ||
+      selectedPlacementIds.length + selectedDrawingIds.length + selectedGroupIds.length > 512 ||
+      [...selectedPlacementIds, ...selectedDrawingIds, ...selectedGroupIds].some((id) => !UUID_PATTERN.test(id)) ||
+      [selectedPlacementIds, selectedDrawingIds, selectedGroupIds].some((ids) => new Set(ids.map((id) => id.toLowerCase())).size !== ids.length) ||
       !['content', 'representation'].includes(payload.mode) || !isObject(payload.ids) || !Array.isArray(payload.resourceCopies) ||
-      typeof payload.includeExternalRelations !== 'boolean') fail('invalid-selection', 'La selección no es válida.');
+      !Number.isFinite(payload.offset?.x) || !Number.isFinite(payload.offset?.y) || typeof payload.includeExternalRelations !== 'boolean') {
+    fail('invalid-selection', 'La selección requiere placements, trazos o grupos válidos.');
+  }
   const originals = copy(draft.original.records);
-  const placements = payload.placementIds.map((id) => {
+  const placementIds = new Set(selectedPlacementIds.map((id) => id.toLowerCase()));
+  const drawingIds = new Set(selectedDrawingIds.map((id) => id.toLowerCase()));
+  const groupIds = new Set<string>();
+  const visitGroup = (id: string, visiting = new Set<string>()): void => {
+    const key = id.toLowerCase();
+    if (visiting.has(key)) fail('group-cycle', 'No se puede duplicar un grupo cíclico.', { kind: 'group', id, workspaceId: payload.workspaceId });
+    if (groupIds.has(key)) return;
+    const record = draft.require({ kind: 'group', id, workspaceId: payload.workspaceId });
+    if (record.kind !== 'group') fail('wrong-document-kind', 'La selección debe contener grupos del mismo workspace.');
+    groupIds.add(key);
+    const path = new Set(visiting); path.add(key);
+    for (const member of record.value.members) {
+      if (member.kind === 'group') visitGroup(member.id, path);
+      else if (member.kind === 'placement') placementIds.add(member.id.toLowerCase());
+      else if (member.kind === 'drawing') drawingIds.add(member.id.toLowerCase());
+    }
+  };
+  for (const id of selectedGroupIds) visitGroup(id);
+  if (placementIds.size + drawingIds.size + groupIds.size > 512) fail('selection-too-large', 'La selección expandida del grupo supera el límite reversible de 512 miembros.');
+  const placements = [...placementIds].map((id) => {
     const record = draft.require({ kind: 'placement', id, workspaceId: payload.workspaceId });
-    if (record.kind !== 'placement') fail('wrong-document-kind', 'La selección debe contener placements.');
+    if (record.kind !== 'placement') fail('wrong-document-kind', 'La selección debe contener representaciones del mismo workspace.');
+    return record;
+  });
+  const drawings = [...drawingIds].map((id) => {
+    const record = draft.require({ kind: 'drawing', id, workspaceId: payload.workspaceId });
+    if (record.kind !== 'drawing') fail('wrong-document-kind', 'La selección debe contener trazos del mismo workspace.');
+    return record;
+  });
+  const groups = [...groupIds].map((id) => {
+    const record = draft.require({ kind: 'group', id, workspaceId: payload.workspaceId });
+    if (record.kind !== 'group') fail('wrong-document-kind', 'La selección debe contener grupos del mismo workspace.');
     return record;
   });
   const entityIds = new Set(placements.map((r) => r.value.entityId.toLowerCase()));
@@ -314,7 +360,31 @@ function duplicate(draft: Draft, payload: DuplicateSelection): void {
     placementMap.set(record.value.id.toLowerCase(), value.id);
     value.entityId = entityId(value.entityId);
     value.position = { ...value.position, x: value.position.x + payload.offset.x, y: value.position.y + payload.offset.y };
+    if (!Number.isFinite(value.position.x) || !Number.isFinite(value.position.y)) fail('invalid-selection-offset', 'El desplazamiento excede las coordenadas válidas.');
     draft.add({ kind: 'placement', workspaceId: record.workspaceId, value });
+  }
+  const drawingMap = new Map<string, string>();
+  for (const record of drawings) {
+    const value = copy(record.value); value.id = mapped(payload.ids.drawings ?? {}, value.id); value.revision = 1;
+    drawingMap.set(record.value.id.toLowerCase(), value.id);
+    value.points = value.points.map((point) => {
+      const x = point.x + payload.offset.x, y = point.y + payload.offset.y;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) fail('invalid-selection-offset', 'El desplazamiento excede las coordenadas del trazo.');
+      return { ...point, x, y };
+    });
+    draft.add({ kind: 'drawing', workspaceId: record.workspaceId, value });
+  }
+  const groupMap = new Map<string, string>();
+  for (const record of groups) groupMap.set(record.value.id.toLowerCase(), mapped(payload.ids.groups ?? {}, record.value.id));
+  for (const record of groups) {
+    const value = copy(record.value); value.id = groupMap.get(record.value.id.toLowerCase())!; value.revision = 1;
+    value.members = value.members.map((member) => {
+      const table = member.kind === 'placement' ? placementMap : member.kind === 'drawing' ? drawingMap : groupMap;
+      const id = table.get(member.id.toLowerCase());
+      if (!id) fail('group-copy-member-missing', 'No se pudo remapear un miembro del grupo duplicado.', { kind: 'group', id: record.value.id, workspaceId: record.workspaceId });
+      return { ...copy(member), id };
+    });
+    draft.add({ kind: 'group', workspaceId: record.workspaceId, value });
   }
   for (const record of originals.filter((r) => r.kind === 'visual-edge' || r.kind === 'relation-view')) {
     if (!sameId(record.workspaceId, payload.workspaceId)) continue;
@@ -331,6 +401,43 @@ function duplicate(draft: Draft, payload: DuplicateSelection): void {
       if (!relationId) fail('relation-copy-missing', 'La selección no puede conservar su RelationView sin relación.');
       draft.add({ kind: 'relation-view', workspaceId: record.workspaceId, value: { ...value, relationId } as DocumentKinds['relation-view'] });
     }
+  }
+}
+
+function applyCanvasHistory(draft: Draft, payload: Payloads['a3.core.apply-canvas-history']): void {
+  if (!['undo', 'redo'].includes(payload.direction) || !Array.isArray(payload.changes) || !payload.changes.length || payload.changes.length > 1024 ||
+      !isObject(payload.revisionFloors) || !Array.isArray(payload.contentEffects) || payload.contentEffects.length > 1024) fail('invalid-canvas-history', 'El evento de historial no es válido.');
+  const seen = new Set<string>();
+  for (const change of payload.changes) {
+    if (!isObject(change) || !validRef(change.ref) || seen.has(refKey(change.ref))) fail('invalid-canvas-history', 'El evento contiene referencias repetidas o inválidas.');
+    seen.add(refKey(change.ref));
+    if (change.ref.workspaceId !== undefined && !sameId(change.ref.workspaceId, payload.workspaceId)) fail('history-workspace-mismatch', 'El historial solo puede modificar este workspace.', change.ref);
+    for (const record of [change.before, change.after]) if (record && (refKey(refOf(record)) !== refKey(change.ref) || 'workspaceId' in record && !sameId(record.workspaceId, payload.workspaceId))) {
+      fail('history-workspace-mismatch', 'El evento contiene un documento de otra identidad o workspace.', change.ref);
+    }
+    const source = payload.direction === 'undo' ? change.after : change.before;
+    const target = payload.direction === 'undo' ? change.before : change.after;
+    const current = draft.currentIndex.get(refKey(change.ref));
+    const withoutRevision = (record: DomainRecord | null): string => {
+      if (!record) return 'null';
+      const normalized = copy(record); normalized.value.revision = 1; return canonical(normalized);
+    };
+    if (withoutRevision((current ?? null) as DomainRecord | null) !== withoutRevision(source)) {
+      fail('history-state-conflict', 'El documento ya cambió desde el comando original; revisa el conflicto antes de deshacer.', change.ref, 'REVISION_CONFLICT');
+    }
+    const floor = payload.revisionFloors[refKey(change.ref)] ?? Math.max(change.before?.value.revision ?? 0, change.after?.value.revision ?? 0);
+    if (!Number.isSafeInteger(floor) || floor < 0 || floor >= Number.MAX_SAFE_INTEGER) fail('invalid-history-revision-floor', 'El historial contiene un contador de revisión no válido.', change.ref);
+    if (!target) {
+      if (current) draft.remove(change.ref);
+      continue;
+    }
+    const revision = current ? current.value.revision + 1 : Math.max(floor, target.value.revision) + 1;
+    if (!Number.isSafeInteger(revision) || revision > Number.MAX_SAFE_INTEGER) fail('revision-overflow', 'La revisión alcanzó el límite seguro.', change.ref);
+    draft.restore(target, revision);
+  }
+  for (const effect of payload.contentEffects) {
+    if (!isObject(effect) || !['create', 'copy', 'remove', 'move'].includes(String(effect.kind))) fail('invalid-canvas-history-effect', 'El historial contiene una operación de recurso no válida.');
+    draft.effects.push(copy(effect));
   }
 }
 
@@ -397,6 +504,26 @@ function apply(draft: Draft): void {
         draft.edit(ref, 'placement', (value) => {
           if (value.style['a3.ui.locked'] === true) fail('placement-locked', 'Desbloquea la representación antes de moverla.', ref);
           value.position = { ...value.position, ...copy(item.position) };
+        });
+      }
+      break;
+    }
+    case 'a3.core.update-placement-views': {
+      const { workspaceId, placements } = request.payload;
+      if (Object.keys(request.payload).some((key) => !['workspaceId', 'placements'].includes(key)) || !Array.isArray(placements) || !placements.length ||
+          placements.some((item) => !isObject(item) || Object.keys(item).some((key) => !['id', 'position', 'style'].includes(key)) ||
+            !UUID_PATTERN.test(String(item.id)) || !item.position && !item.style ||
+            item.position !== undefined && (!isObject(item.position) || Object.keys(item.position).some((key) => !['x', 'y'].includes(key)) ||
+              !Number.isFinite(item.position.x) || !Number.isFinite(item.position.y)) || item.style !== undefined && !isObject(item.style)) ||
+          new Set(placements.map((item) => item.id.toLowerCase())).size !== placements.length) {
+        fail('invalid-placement-view-batch', 'El lote requiere representaciones únicas y cambios de vista válidos.');
+      }
+      for (const item of placements) {
+        const ref: DocumentRef = { kind: 'placement', id: item.id, workspaceId };
+        draft.edit(ref, 'placement', (value) => {
+          if (item.position && value.style['a3.ui.locked'] === true) fail('placement-locked', 'Desbloquea la representación antes de moverla.', ref);
+          if (item.position) value.position = { ...value.position, ...copy(item.position) };
+          if (item.style) value.style = { ...value.style, ...copy(item.style) };
         });
       }
       break;
@@ -488,6 +615,7 @@ function apply(draft: Draft): void {
     }
     case 'a3.core.delete': deleteRecord(draft, request.payload); break;
     case 'a3.core.duplicate-selection': duplicate(draft, request.payload); break;
+    case 'a3.core.apply-canvas-history': applyCanvasHistory(draft, request.payload); break;
     case 'a3.core.register-node-type': {
       const errors = validateDefinition('node-type', request.payload.definition);
       if (errors.length) throw new DomainFault(errors[0]!);
@@ -588,7 +716,13 @@ export function prepareCommand(snapshot: DomainSnapshot, input: unknown, context
     for (const change of changes) {
       const expected = request.expectedRevisions.find((r) => refKey(r) === refKey(change.ref));
       if (!expected || expected.revision !== (change.before?.value.revision ?? null)) fail('precondition-required', 'Declara la revisión de cada escritura, incluido null para creación.', change.ref, 'REVISION_CONFLICT');
-      if (change.after && change.after.value.revision !== (change.before ? change.before.value.revision + 1 : 1)) fail('invalid-result-revision', 'La revisión resultante no corresponde a la operación.', change.ref);
+      if (change.after && request.command === 'a3.core.apply-canvas-history') {
+        if (!Number.isSafeInteger(change.after.value.revision) || change.after.value.revision <= (change.before?.value.revision ?? 0)) {
+          fail('invalid-result-revision', 'La revisión restaurada debe avanzar sobre el contador anterior.', change.ref);
+        }
+      } else if (change.after && change.after.value.revision !== (change.before ? change.before.value.revision + 1 : 1)) {
+        fail('invalid-result-revision', 'La revisión resultante no corresponde a la operación.', change.ref);
+      }
       if (change.after?.kind === 'relation') {
         if (!findRelationType(draft.registry, change.after.value) || diagnostics.some((d) => d.ref && refKey(d.ref) === refKey(change.ref) && d.detail === 'endpoint-rule-unavailable')) {
           fail('relation-rule-unavailable', 'No se puede crear una relación sin reglas comprobables.', change.ref, 'ENGINE_UNAVAILABLE');

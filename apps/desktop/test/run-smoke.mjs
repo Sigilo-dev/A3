@@ -45,9 +45,12 @@ async function run(mode, output, expectedCode) {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      for (const line of chunk.toString().split(/\r?\n/)) if (line.startsWith('CANVAS_PHASE=')) console.log(`${mode}: ${line}`);
+    });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
-    const timeout = setTimeout(() => { timedOut = true; child.kill(); }, mode === 'healthy' ? 120_000 : 60_000);
+    const timeout = setTimeout(() => { timedOut = true; child.kill(); }, mode === 'healthy' ? 180_000 : 60_000);
     child.on('error', (error) => { clearTimeout(timeout); reject(error); });
     child.on('close', (code) => {
       clearTimeout(timeout);

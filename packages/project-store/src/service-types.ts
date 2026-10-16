@@ -1,4 +1,4 @@
-import type { Actor, DocumentRef, Resource, TypeRegistry } from '@a3/domain';
+import type { Actor, DocumentRef, Resource, ReversibleCanvasCommand, TypeRegistry } from '@a3/domain';
 import type { Capability, ProjectCapabilityBroker } from './capabilities.js';
 import type { ProjectReadResult, ResourceBytes, StoreDiagnostic } from './types.js';
 import type { MigrationStep } from './migrations.js';
@@ -53,6 +53,8 @@ export interface PreparedWrite {
   operationId: string;
   projectId: string;
   changes: readonly WriteChange[];
+  /** Validated domain event for the one project-store-owned canvas history. */
+  canvasCommand?: ReversibleCanvasCommand;
   proposedBytes(path: string): Uint8Array | null;
 }
 export interface WriteReceipt {

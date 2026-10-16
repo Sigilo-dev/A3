@@ -56,7 +56,12 @@ test('selected strokes convert to a reusable drawing node with editable vector r
   const stroke = await manager.createCanvasDrawing(active.sessionId, W1, before.revision,
     [{ x: 411.25, y: -80.75, pressure: 0.25 }, { x: 440.5, y: -58.125, pressure: 0.92 }], parameters,
     { 'a3.ui.stroke.color': '#c3ed82' });
-  const source = stroke.drawings[0], converted = await manager.createCanvasDrawingNode(active.sessionId, W1, stroke.revision,
+  const source = stroke.drawings[0];
+  assert.equal(stroke.canConvertDrawings, false, 'conversion removes selected drawings and requires the delete capability');
+  await assert.rejects(manager.createCanvasDrawingNode(active.sessionId, W1, stroke.revision,
+    [{ id: source.id, expectedRevision: source.revision }]), { code: 'PERMISSION_DENIED' });
+  await manager.approveCanvasDrawingDeletion(active.sessionId, W1);
+  const converted = await manager.createCanvasDrawingNode(active.sessionId, W1, stroke.revision,
     [{ id: source.id, expectedRevision: source.revision }]);
   assert.equal(converted.drawings.length, 0);
   const placement = converted.placements.find((item) => !stroke.placements.some((old) => old.id === item.id)); assert.ok(placement);

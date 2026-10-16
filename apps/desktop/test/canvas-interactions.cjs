@@ -186,4 +186,36 @@ module.exports = async function canvasInteractions({ win, js, click, input, wait
   await waitFor(`document.querySelector('[data-group-id="${group.id}"][data-group-collapsed="false"]')`);
   assert.ok(await js(`Boolean(document.querySelector('.react-flow__node[data-id="${P1}"]'))`), 'expand restores the placement in its saved position');
   grouped = await canvas(); assert.equal(grouped.groups.find((item) => item.id === group.id).collapsed, false);
+
+  console.log('CANVAS_PHASE=arrange-and-history'); await click('[data-canvas-tool="select"]'); await key('Escape');
+  const arrangePane = await rect('.canvas-host');
+  await drag({ x: arrangePane.left + 3, y: arrangePane.top + 3 }, { x: arrangePane.right - 4, y: arrangePane.bottom - 4 });
+  await waitFor("[...document.querySelectorAll('.react-flow__node.selected')].filter((node) => !node.dataset.id.startsWith('a3-group:')).length >= 2");
+  const arrangementIds = await js("[...document.querySelectorAll('.react-flow__node.selected')].map((node) => node.dataset.id).filter((id) => !id.startsWith('a3-group:'))");
+  const beforeArrangement = await canvas(), selectedUnlocked = arrangementIds.filter((id) => beforeArrangement.placements.find((item) => item.id === id)?.style['a3.ui.locked'] !== true);
+  assert.ok(selectedUnlocked.length >= 2);
+  await waitFor("!document.querySelector('[data-canvas-align-left]').disabled");
+  await click('[data-canvas-align-left]'); await waitFor("document.querySelector('[data-canvas-status]')?.textContent === 'Disposición guardada'");
+  const aligned = await canvas(), alignedX = aligned.placements.find((item) => item.id === selectedUnlocked[0]).position.x;
+  assert.ok(selectedUnlocked.every((id) => aligned.placements.find((item) => item.id === id).position.x === alignedX), 'selected unlocked nodes align on their left edge');
+  await click('[data-canvas-undo]'); await waitFor("document.querySelector('[data-canvas-status]')?.textContent === 'Cambio deshecho'");
+  for (const id of selectedUnlocked) assert.deepEqual((await canvas()).placements.find((item) => item.id === id).position,
+    beforeArrangement.placements.find((item) => item.id === id).position);
+  await click('[data-canvas-redo]'); await waitFor("document.querySelector('[data-canvas-status]')?.textContent === 'Cambio rehecho'");
+
+  const beforeRepresentation = await canvas(), originalEntityIds = new Set(beforeRepresentation.entities.map((item) => item.id));
+  await click('[data-canvas-duplicate-representation]'); await waitFor("document.querySelector('[data-canvas-status]')?.textContent === 'Representación duplicada'");
+  const represented = await canvas(), addedRepresentations = represented.placements.filter((item) => !beforeRepresentation.placements.some((old) => old.id === item.id));
+  assert.ok(addedRepresentations.length >= 2);
+  assert.ok(addedRepresentations.every((item) => originalEntityIds.has(item.entityId)), 'representation copies preserve entity identity');
+  await click('[data-section="files"]'); await click('[data-section="canvas"]');
+  await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
+  const reopenedHistory = await canvas(); assert.equal(reopenedHistory.history.canUndo, true);
+  if (await js("Boolean(document.querySelector('[data-canvas-request-history-delete]'))")) {
+    await click('[data-canvas-request-history-delete]'); await waitFor("document.querySelector('[data-canvas-undo]')?.disabled === false");
+  }
+  await click('[data-canvas-undo]'); await waitFor("document.querySelector('[data-canvas-status]')?.textContent === 'Cambio deshecho'");
+  assert.equal((await canvas()).placements.length, beforeRepresentation.placements.length, 'representation duplication undo survives workspace reopen');
+  await click('[data-canvas-redo]'); await waitFor("document.querySelector('[data-canvas-status]')?.textContent === 'Cambio rehecho'");
+  assert.equal((await canvas()).placements.length, represented.placements.length, 'representation duplication redo survives workspace reopen');
 };

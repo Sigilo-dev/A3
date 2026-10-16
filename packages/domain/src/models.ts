@@ -106,9 +106,9 @@ export type Outcome<T> = { ok: true; value: T; diagnostics: Diagnostic[] } | { o
 
 export interface ResourceCopy { sourceId: UUID; id: UUID; location: ResourceLocation; }
 export interface DuplicateSelection {
-  workspaceId: UUID; placementIds: UUID[]; mode: 'content' | 'representation'; offset: Point;
+  workspaceId: UUID; placementIds: UUID[]; drawingIds?: UUID[]; groupIds?: UUID[]; mode: 'content' | 'representation'; offset: Point;
   ids: { entities: Record<string, UUID>; placements: Record<string, UUID>; relations: Record<string, UUID>;
-    visualEdges: Record<string, UUID>; relationViews: Record<string, UUID> };
+    visualEdges: Record<string, UUID>; relationViews: Record<string, UUID>; drawings?: Record<string, UUID>; groups?: Record<string, UUID> };
   resourceCopies: ResourceCopy[]; includeExternalRelations: boolean;
 }
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
@@ -120,6 +120,7 @@ export type Payloads = {
   'a3.core.update-entity': EntityPatch;
   'a3.core.move-placement': { ref: DocumentRef; position: Point };
   'a3.core.move-placements': { workspaceId: UUID; placements: { id: UUID; position: Point }[] };
+  'a3.core.update-placement-views': { workspaceId: UUID; placements: { id: UUID; position?: Point; style?: ExtensionMap }[] };
   'a3.core.update-placement-view': { ref: DocumentRef; position?: Point; size?: Pick<Placement['size'], 'width' | 'height'>; style?: ExtensionMap };
   'a3.core.update-visual-edge': { ref: DocumentRef; sourcePlacementId?: UUID; targetPlacementId?: UUID; label?: string; waypoints?: Point[]; style?: ExtensionMap };
   'a3.core.update-drawing': { ref: DocumentRef; points?: DrawingPoint[]; parameters?: Partial<DrawingParameters>; style?: ExtensionMap };
@@ -132,6 +133,7 @@ export type Payloads = {
   'a3.core.set-variables': { scope: VariableScope; variables: Variable[] };
   'a3.core.delete': { ref: DocumentRef; replacementDefaultWorkspaceId?: UUID };
   'a3.core.duplicate-selection': DuplicateSelection;
+  'a3.core.apply-canvas-history': { workspaceId: UUID; direction: 'undo' | 'redo'; changes: RecordChange[]; contentEffects: ContentEffect[]; revisionFloors: Record<string, number> };
   'a3.core.register-node-type': { definition: NodeType };
   'a3.core.unregister-node-type': { name: Namespace; version: string };
 };
@@ -145,6 +147,7 @@ export type DomainCommand = { [K in CommandName]: EnvelopeBase & { command: K; p
 export type ContentEffect =
   | { kind: 'create'; resourceId: UUID; path: string; content: string }
   | { kind: 'copy'; sourceId: UUID; targetId: UUID; expectedHash: string }
+  | { kind: 'remove'; resourceId: UUID; path: string; expectedHash: string }
   | { kind: 'move'; resourceId: UUID; before: ResourceLocation; after: ResourceLocation; expectedHash: string };
 export interface RecordChange { ref: DocumentRef; before: DomainRecord | null; after: DomainRecord | null; }
 export interface NodeTypeChange { before: NodeType | null; after: NodeType | null; }
