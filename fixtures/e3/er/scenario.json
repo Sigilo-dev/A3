@@ -1,0 +1,17 @@
+{
+  "tables": [
+    { "key": "customer", "title": "Cliente", "description": "Personas que **compran**.", "fields": [
+      { "key": "customerId", "id": "71000000-0000-4000-8000-000000000001", "name": "id", "type": "INTEGER", "nullable": false, "primaryKey": true, "unique": false },
+      { "key": "customerCode", "id": "71000000-0000-4000-8000-000000000002", "name": "codigo", "type": "VARCHAR(40)", "nullable": false, "primaryKey": false, "unique": true },
+      { "key": "customerName", "id": "71000000-0000-4000-8000-000000000003", "name": "nombre", "type": "VARCHAR(120)", "nullable": true, "primaryKey": false, "unique": false }
+    ] },
+    { "key": "order", "title": "Pedido", "fields": [
+      { "key": "orderId", "id": "71000000-0000-4000-8000-000000000004", "name": "id", "type": "INTEGER", "nullable": false, "primaryKey": true, "unique": false },
+      { "key": "orderCustomer", "id": "71000000-0000-4000-8000-000000000005", "name": "cliente_id", "type": "INTEGER", "nullable": false, "primaryKey": false, "unique": false, "foreignTable": "customer", "foreignField": "customerId" },
+      { "key": "orderAmount", "id": "71000000-0000-4000-8000-000000000006", "name": "total", "type": "DECIMAL(12,2)", "nullable": false, "primaryKey": false, "unique": false }
+    ] }
+  ],
+  "relationships": [
+    { "key": "customerOrders", "source": "customer", "target": "order", "label": "realiza", "sourceCardinality": "one", "targetCardinality": "zero-or-many", "identifying": false }
+  ]
+}

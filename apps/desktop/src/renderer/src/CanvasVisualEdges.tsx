@@ -1,7 +1,8 @@
 import { memo } from 'react';
 import { BaseEdge, MarkerType, getBezierPath, getSmoothStepPath, getStraightPath, type Edge, type EdgeProps } from '@xyflow/react';
-import type { CanvasC4RelationView, CanvasConceptualRelationView, CanvasUmlRelationView, CanvasVisualEdgePatch, CanvasVisualEdgeView, LocalCanvasWorkspace } from '../../shared/desktop-api';
+import type { CanvasC4RelationView, CanvasConceptualRelationView, CanvasErRelationView, CanvasUmlRelationView, CanvasVisualEdgePatch, CanvasVisualEdgeView, LocalCanvasWorkspace } from '../../shared/desktop-api';
 import { umlMultiplicityText } from '@a3/domain/uml';
+import type { ErCardinality } from '@a3/domain/er';
 import type { C4Step } from '@a3/domain/c4';
 
 export type CanvasTool = 'select' | 'connect' | 'text' | 'draw';
@@ -9,7 +10,8 @@ type EdgeData = { view: CanvasVisualEdgeView; origin: { x: number; y: number } }
 type SemanticEdgeData = { view: CanvasConceptualRelationView; origin: { x: number; y: number } };
 type C4EdgeData = { view: CanvasC4RelationView; origin: { x: number; y: number }; step?: C4Step };
 type UmlEdgeData = { view: CanvasUmlRelationView; origin: { x: number; y: number } };
-export type CanvasEdge = Edge<EdgeData | SemanticEdgeData | C4EdgeData | UmlEdgeData, 'a3Visual' | 'a3Semantic' | 'a3C4' | 'a3Uml'>;
+type ErEdgeData = { view: CanvasErRelationView; origin: { x: number; y: number } };
+export type CanvasEdge = Edge<EdgeData | SemanticEdgeData | C4EdgeData | UmlEdgeData | ErEdgeData, 'a3Visual' | 'a3Semantic' | 'a3C4' | 'a3Uml' | 'a3Er'>;
 export function edgeAppearance(style: CanvasVisualEdgeView['style']) {
   return {
     color: typeof style['a3.ui.line.color'] === 'string' && /^#[\da-f]{6}$/i.test(style['a3.ui.line.color']) ? style['a3.ui.line.color'] : '#9bc279',
@@ -63,7 +65,13 @@ export function toFlowEdges(workspace: LocalCanvasWorkspace, origin: { x: number
     targetHandle: endpointMap.has(view.targetPlacementId.toLowerCase()) ? 'group-visual-target' : 'visual-target',
     type: 'a3Uml' as const, data: { view, origin }, reconnectable: false, selectable: true, focusable: true,
     ariaLabel: `Relación UML ${view.kind}: ${view.data.label}. Origen ${view.data.source.role} ${umlMultiplicityText(view.data.source.multiplicity)}; destino ${view.data.target.role} ${umlMultiplicityText(view.data.target.multiplicity)}.` }));
-  return [...visualEdges, ...semanticEdges, ...c4Edges, ...umlEdges];
+  const erEdges = workspace.er.relationViews.map((view) => ({ id: view.id,
+    source: endpointMap.get(view.sourcePlacementId.toLowerCase()) ?? view.sourcePlacementId, target: endpointMap.get(view.targetPlacementId.toLowerCase()) ?? view.targetPlacementId,
+    sourceHandle: endpointMap.has(view.sourcePlacementId.toLowerCase()) ? 'group-visual-source' : 'visual-source',
+    targetHandle: endpointMap.has(view.targetPlacementId.toLowerCase()) ? 'group-visual-target' : 'visual-target',
+    type: 'a3Er' as const, data: { view, origin }, reconnectable: false, selectable: true, focusable: true,
+    ariaLabel: `Relación ER ${view.data.label || 'sin etiqueta'}: cardinalidad origen ${view.data.sourceCardinality}; destino ${view.data.targetCardinality}.` }));
+  return [...visualEdges, ...semanticEdges, ...c4Edges, ...umlEdges, ...erEdges];
 }
 const VisualEdgeRenderer = memo(function VisualEdgeRenderer(props: EdgeProps<CanvasEdge>) {
   if (!props.data) return null;
@@ -111,8 +119,9 @@ const C4EdgeRenderer = memo(function C4EdgeRenderer(props: EdgeProps<CanvasEdge>
   </g>;
 });
 const UmlEdgeRenderer = memo(function UmlEdgeRenderer(props: EdgeProps<CanvasEdge>) {
-  if (!props.data || !('data' in props.data.view)) return null;
-  const view = props.data.view, { kind, data } = view;
+  if (!props.data) return null;
+  const view = props.data.view as CanvasUmlRelationView, { kind, data } = view;
+  if (!data || !Array.isArray(data.stereotypes) || !data.source || !data.target) return null;
   const [path, labelX, labelY] = getBezierPath(props), id = `a3-uml-${props.id}`, color = '#e2d3ff';
   const triangle = kind === 'generalization' || kind === 'realization', diamond = kind === 'aggregation' || kind === 'composition';
   const arrow = (markerId: string) => <marker id={markerId} markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M1,1 L11,6 L1,11" fill="none" stroke={color} strokeWidth="1.5" /></marker>;
@@ -131,7 +140,27 @@ const UmlEdgeRenderer = memo(function UmlEdgeRenderer(props: EdgeProps<CanvasEdg
     <text x={props.targetX - 26} y={props.targetY - 12} textAnchor="end" className="uml-end-label">{data.target.role} {umlMultiplicityText(data.target.multiplicity)}</text>
   </g>;
 });
-export const edgeTypes = { a3Visual: VisualEdgeRenderer, a3Semantic: SemanticEdgeRenderer, a3C4: C4EdgeRenderer, a3Uml: UmlEdgeRenderer };
+function erCardinality(value: ErCardinality, end: 'source' | 'target'): string {
+  if (value === 'one') return '||';
+  if (value === 'zero-or-one') return end === 'source' ? 'o|' : '|o';
+  if (value === 'many') return end === 'source' ? '}|' : '|{';
+  return end === 'source' ? '}o' : 'o{';
+}
+const ErEdgeRenderer = memo(function ErEdgeRenderer(props: EdgeProps<CanvasEdge>) {
+  if (!props.data) return null;
+  const view = props.data.view as CanvasErRelationView;
+  if (!view.data || !['one', 'zero-or-one', 'many', 'zero-or-many'].includes(view.data.sourceCardinality)) return null;
+  const [path, labelX, labelY] = getBezierPath(props), color = '#86d8c5';
+  const label = `${view.data.identifying ? 'identifying' : 'non-identifying'} · ${view.data.label || 'relationship'}`;
+  return <g data-er-relation-id={view.relationId} data-er-identifying={String(view.data.identifying)}>
+    <BaseEdge id={props.id} path={path} label={label} labelX={labelX} labelY={labelY} interactionWidth={22}
+      style={{ stroke: color, strokeWidth: 2.5, strokeDasharray: view.data.identifying ? undefined : '7 5' }}
+      labelStyle={{ fill: '#e2fff8' }} labelBgStyle={{ fill: '#172c29' }} labelBgPadding={[6, 4]} />
+    <text x={props.sourceX + 22} y={props.sourceY - 12} className="er-end-label">{erCardinality(view.data.sourceCardinality, 'source')}</text>
+    <text x={props.targetX - 22} y={props.targetY - 12} textAnchor="end" className="er-end-label">{erCardinality(view.data.targetCardinality, 'target')}</text>
+  </g>;
+});
+export const edgeTypes = { a3Visual: VisualEdgeRenderer, a3Semantic: SemanticEdgeRenderer, a3C4: C4EdgeRenderer, a3Uml: UmlEdgeRenderer, a3Er: ErEdgeRenderer };
 
 export function CanvasEdgeEditor({ workspace, edge, tool, onCreate, onUpdate, onDelete, onRequestDeletePermission }: {
   workspace: LocalCanvasWorkspace; edge?: CanvasVisualEdgeView; tool: CanvasTool;

@@ -2,6 +2,7 @@ import type { ContentNodeKind } from './content-nodes.js';
 import type { ConceptualNodeKind, ConceptualRelationKind } from './conceptual-diagrams.js';
 import type { C4Change } from './c4.js';
 import type { UmlChange } from './uml.js';
+import type { ErChange } from './er.js';
 export type UUID = string;
 export type Namespace = string;
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -140,6 +141,7 @@ export interface UpdateConceptualRelation {
 }
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
 export type Payloads = {
+  'a3.er.change': ErChange;
   'a3.uml.change': UmlChange;
   'a3.c4.change': C4Change;
   'a3.core.create-project': { project: Project; workspace: Workspace };

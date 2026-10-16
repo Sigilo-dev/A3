@@ -6,6 +6,7 @@ import { resolveValidatedVariable } from './variables.js';
 import { conceptualNodeTypeDefinition, conceptualRelationType } from './conceptual-diagrams.js';
 import { c4NodeDefinition, c4RelationDefinition, isC4Category, validateC4Snapshot } from './c4.js';
 import { umlNodeDefinition, umlRelationDefinition, validateUmlSnapshot } from './uml.js';
+import { erNodeDefinition, erRelationDefinition, validateErSnapshot } from './er.js';
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, coerceTypes: false, useDefaults: false, removeAdditional: false });
 ajv.addFormat('utc-date-time', (value: string) => {
@@ -98,10 +99,11 @@ export function validateRecord(record: unknown): Diagnostic[] {
 export const matchesValueType = (value: JsonValue, type: ValueType): boolean => type === 'json' || typeof value === type;
 const typeKey = (value: { name: string; version: string }): string => `${value.name}@${value.version}`;
 export const findNodeType = (registry: TypeRegistry, entity: Entity): NodeType | undefined =>
-  (entity.typeVersion === '1.0.0' ? conceptualNodeTypeDefinition(entity.type) ?? c4NodeDefinition(entity.type) ?? umlNodeDefinition(entity.type) : undefined) ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
+  (entity.typeVersion === '1.0.0' ? conceptualNodeTypeDefinition(entity.type) ?? c4NodeDefinition(entity.type) ?? umlNodeDefinition(entity.type) ?? erNodeDefinition(entity.type) : undefined) ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
 export const findRelationType = (registry: TypeRegistry, relation: Relation): RelationType | undefined =>
   (relation.type === 'a3.conceptual.relationship' && relation.typeVersion === '1.0.0' ? conceptualRelationType() : undefined) ??
   (relation.type === 'a3.c4.relationship' && relation.typeVersion === '1.0.0' ? c4RelationDefinition() : undefined) ??
+  (relation.typeVersion === '1.0.0' ? erRelationDefinition(relation.type) : undefined) ??
   (relation.typeVersion === '1.0.0' ? umlRelationDefinition(relation.type) : undefined) ??
   registry.relationTypes.find((d) => typeKey(d) === `${relation.type}@${relation.typeVersion}`);
 const matchesEntity = (entity: Entity, rule: EndpointRule): boolean => rule.entityTypes === '*' || rule.entityTypes.includes(entity.type);
@@ -243,7 +245,7 @@ export function validateSnapshot(snapshot: DomainSnapshot, registry: TypeRegistr
       }
     }
   }
-  return [...diagnostics, ...validateC4Snapshot(snapshot, registry), ...validateUmlSnapshot(snapshot)];
+  return [...diagnostics, ...validateC4Snapshot(snapshot, registry), ...validateUmlSnapshot(snapshot), ...validateErSnapshot(snapshot)];
 }
 
 export function defaultRegistry(): TypeRegistry {

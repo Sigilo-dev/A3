@@ -14,6 +14,7 @@ export type { MountActionPreview, MountedBytes } from './mounts.js';
 export { LocalProjectManager, LocalProjectError, validateProjectName } from './projects.js';
 export type { CanvasC4State, CanvasC4Element, CanvasC4Relationship, CanvasC4RelationView } from './c4-canvas.js';
 export type { CanvasUmlState, CanvasUmlElement, CanvasUmlRelationship, CanvasUmlRelationView } from './uml-canvas.js';
+export type { CanvasErState, CanvasErElement, CanvasErRelationship, CanvasErRelationView } from './er-canvas.js';
 export { buildNavigationIndex, resolvePageLink, rewritePageReferences } from './navigation.js';
 export type { NavigationIndex, NavigationPage, PageLink, PageAnchor, NavigationSource } from './navigation.js';
 export type { MenuPermissions } from './projects.js';

@@ -2,6 +2,8 @@ import type { CanvasContentNodeInput, CanvasDrawingPatch, CanvasPlacementMove, C
 import type { ConceptualNodeKind, ConceptualRelationKind, Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
 import type { C4Operation } from '@a3/domain';
 import type { UmlOperation } from '@a3/domain';
+import type { ErOperation } from '@a3/domain/er';
+export type { CanvasErState, CanvasErElement, CanvasErRelationship, CanvasErRelationView } from '@a3/project-store';
 export type { CanvasUmlState, CanvasUmlElement, CanvasUmlRelationship, CanvasUmlRelationView } from '@a3/project-store';
 export type { CanvasC4State, CanvasC4Element, CanvasC4Relationship, CanvasC4RelationView } from '@a3/project-store';
 export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasConceptualRelationView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace } from '@a3/project-store';
@@ -38,6 +40,7 @@ export type CodeResult = { ok: true; value: import('@a3/project-store').CodeDocu
 export const DROP_STAGE_CHANNEL = 'a3.canvas:stage-drop';
 export type CanvasRequest =
   | { action: 'uml'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: UmlOperation }
+  | { action: 'er'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: ErOperation }
   | { action: 'c4'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: C4Operation }
   | { action: 'load' | 'flush' | 'discard' | 'approve-edge-delete' | 'approve-drawing-delete' | 'approve-history-delete'; sessionId: string; workspaceId: string }
   | { action: 'stage'; sessionId: string; workspaceId: string; expectedRevision: number; viewport: WorkspaceViewport }

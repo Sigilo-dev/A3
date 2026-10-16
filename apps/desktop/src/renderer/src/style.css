@@ -362,3 +362,11 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .uml-inspector fieldset { border: 1px solid #62536e; border-radius: 5px; min-width: 0; }
 .uml-inspector section > form, .uml-inspector details > form { border-left: 2px solid #62536e; padding: 8px; margin: 8px 0; }
 .uml-inspector input[type="checkbox"] { width: auto; }
+.er-node { font-size: 12px; overflow-wrap: anywhere; }
+.er-fields { width: 100%; border-collapse: collapse; }
+.er-fields th, .er-fields td { padding: 4px 5px; border-bottom: 1px solid #41615e; text-align: left; }
+.er-fields th { color: #b8e9df; font-size: 10px; }
+.er-end-label { fill: #a8e9dc; font-size: 12px; paint-order: stroke; stroke: #172320; stroke-width: 4px; }
+.er-inspector fieldset { border: 1px solid #41615e; border-radius: 5px; min-width: 0; }
+.er-inspector section > form, .er-inspector > form { border-left: 2px solid #41615e; padding: 8px; margin: 8px 0; }
+.er-inspector input[type="checkbox"] { width: auto; }
