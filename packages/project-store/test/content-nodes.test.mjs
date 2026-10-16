@@ -154,14 +154,15 @@ test('A3-009: Markdown focus reads one canonical resource, preserves no-op bytes
   const host = await fixtureHost(root, 'markdown-focus');
   const manager = new LocalProjectManager({ stateDirectory: join(tempRoot, 'catalog'), host }); t.after(() => manager.dispose());
   const active = (await manager.openFolder(root)).active;
-  const source = '\uFEFF# Página E0\r\n\r\n[[entidad-a3|Entidad vinculada]]\r\n\r\n![imagen](../assets/idea.png)\r\n';
+  const source = '\uFEFF# Página E0\r\n\r\n[[entidad-a3|Entidad vinculada]]\r\n\r\n![imagen](../assets/idea.png)\r\n\r\n^bloque-estable\r\n\r\n:::vendor.extension\r\npayload: conservar exactamente\r\n:::\r\n';
   const canvas = await manager.loadCanvasWorkspace(active.sessionId, W1);
   const created = await manager.createCanvasContentNode(active.sessionId, W1, canvas.revision, { kind: 'page', title: 'Página E0', position: { x: 40, y: 40 }, value: source });
   const placement = created.placements.find((item) => !canvas.placements.some((before) => before.id === item.id)); assert.ok(placement);
   const entity = created.entities.find((item) => item.id === placement.entityId); assert.ok(entity?.contentResourceId);
 
   const opened = await manager.openMarkdownDocument(active.sessionId, entity.id, entity.contentResourceId);
-  assert.equal(opened.entityId, entity.id); assert.equal(opened.content, source); assert.equal(opened.canWrite, true);
+  assert.equal(opened.entityId, entity.id); assert.equal(opened.content, source); assert.equal(opened.canWrite, true, 'source editing remains available for unknown syntax');
+  assert.deepEqual(opened.unsupported, ['directive-block', 'block-id']);
   const asset = await manager.openMarkdownImage(active.sessionId, entity.id, entity.contentResourceId, '../assets/idea.png');
   assert.equal(asset.mediaType, 'image/png'); assert.deepEqual(asset.bytes, imageBytes, 'portable image references resolve only through a registered, broker-read resource');
   await assert.rejects(manager.openMarkdownImage(active.sessionId, entity.id, entity.contentResourceId, '../../outside.png'), { code: 'MARKDOWN_ASSET_UNAVAILABLE' });
@@ -173,11 +174,17 @@ test('A3-009: Markdown focus reads one canonical resource, preserves no-op bytes
   assert.equal(noop.revision, opened.revision); assert.equal(noop.hash, opened.hash);
   assert.deepEqual(await readFile(join(root, ...resource.path.split('/'))), resourceBytesBefore, 'no-op does not rewrite original CRLF bytes');
 
-  const edited = `${source.replace('Página E0', 'Página revisada')}\n- [ ] conservar la referencia [[otra-página#Sección|destino]]\n`;
+  const edited = `${source.replace('Página E0', 'Página revisada')}\r\n- [ ] conservar la referencia [[otra-página#Sección|destino]]\r\n`;
   const saved = await manager.saveMarkdownDocument({ sessionId: active.sessionId, entityId: entity.id, resourceId: entity.contentResourceId,
     entityRevision: opened.entityRevision, expectedRevision: opened.revision, expectedHash: opened.hash, content: edited });
   assert.equal(saved.entityId, opened.entityId); assert.equal(saved.revision, opened.revision + 1); assert.equal(saved.content, edited);
+  assert.match(saved.content, /\r\n:::vendor\.extension\r\npayload: conservar exactamente\r\n:::\r\n/, 'editing known text preserves the unknown block and CRLF');
+  assert.match(saved.content, /\^bloque-estable/, 'block IDs remain plain source text');
   assert.equal((await manager.openMarkdownDocument(active.sessionId, entity.id, entity.contentResourceId)).content, edited, 'reopening reads the same resource');
+  await assert.rejects(manager.saveMarkdownDocument({ sessionId: active.sessionId, entityId: entity.id, resourceId: entity.contentResourceId,
+    entityRevision: saved.entityRevision, expectedRevision: saved.revision, expectedHash: saved.hash, content: `${edited}[[wikilink incompleto\r\n` }),
+  { code: 'MARKDOWN_PARSE_FAILED' });
+  assert.equal((await manager.openMarkdownDocument(active.sessionId, entity.id, entity.contentResourceId)).content, edited, 'parse errors never replace the saved bytes');
   await assert.rejects(manager.saveMarkdownDocument({ sessionId: active.sessionId, entityId: entity.id, resourceId: entity.contentResourceId,
     entityRevision: opened.entityRevision, expectedRevision: opened.revision, expectedHash: opened.hash, content: `${edited}obsoleto` }), { code: 'REVISION_CONFLICT' });
   assert.equal((await manager.openMarkdownDocument(active.sessionId, entity.id, entity.contentResourceId)).content, edited, 'stale draft cannot replace saved content');

@@ -2,7 +2,7 @@ import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } 
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
-import { CONTENT_NODE_CATALOG, contentNodeDefinition, defaultRegistry, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
+import { CONTENT_NODE_CATALOG, contentNodeDefinition, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
@@ -869,11 +869,10 @@ export class LocalProjectManager {
       projectId: active.projectId, operation: 'write', paths: [resource.value.path], refs: [refOf(resource)], resources: [resource.value],
       requiredCapabilities: ['document.edit'], stage: 'prepare' }).allowed;
   }
-  #markdownReadOnlyReason(active: ActiveProjectBinding, resource: Extract<DomainRecord, { kind: 'resource' }>, editable: boolean): string | null {
+  #markdownReadOnlyReason(active: ActiveProjectBinding, resource: Extract<DomainRecord, { kind: 'resource' }>): string | null {
     if (resource.value.kind === 'mounted-file') return 'El recurso está montado como referencia de solo lectura.';
     if (active.lease.service.state.mode !== 'writer') return 'El proyecto está abierto en modo de solo lectura.';
     if (active.lease.service.state.externalConflict) return 'Hay cambios externos pendientes de resolver en el proyecto.';
-    if (!editable) return 'La fuente incluye sintaxis que el editor visual no puede conservar.';
     if (!this.#markdownWriteAllowed(active, resource)) return 'El broker local no concede edición documental para este proyecto.';
     return null;
   }
@@ -896,7 +895,7 @@ export class LocalProjectManager {
       try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(opened.value.bytes); }
       catch { throw new LocalProjectError('MARKDOWN_ENCODING_UNSUPPORTED', 'El Markdown no es UTF-8 válido. Los bytes originales se conservan y la edición visual queda desactivada.'); }
       const inspection = inspectMarkdownSource(content);
-      const readOnlyReason = this.#markdownReadOnlyReason(active, resource, inspection.editable);
+      const readOnlyReason = this.#markdownReadOnlyReason(active, resource);
       return { entityId: entity.value.id, entityRevision: entity.value.revision, resourceId: resource.value.id, revision: opened.value.revision,
         hash: opened.value.sha256, content, canWrite: readOnlyReason === null, readOnlyReason, unsupported: inspection.reasons };
     });
@@ -964,16 +963,15 @@ export class LocalProjectManager {
       try { current = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(opened.value.bytes); }
       catch { throw new LocalProjectError('MARKDOWN_ENCODING_UNSUPPORTED', 'El archivo dejó de ser UTF-8 válido. No se sobrescribió.'); }
       const currentInspection = inspectMarkdownSource(current);
-      demand(currentInspection.editable, 'MARKDOWN_UNSUPPORTED_SOURCE', 'La fuente actual contiene sintaxis no compatible; se conservó el archivo original y se bloqueó el guardado visual.');
-      const nextInspection = inspectMarkdownSource(content);
-      demand(nextInspection.editable, 'MARKDOWN_UNSUPPORTED_SOURCE', 'El borrador contiene sintaxis no compatible con el editor visual; no se guardó.');
       if (Buffer.from(bytes).equals(Buffer.from(opened.value.bytes))) {
-        const readOnlyReason = this.#markdownReadOnlyReason(active, resource, currentInspection.editable);
+        const readOnlyReason = this.#markdownReadOnlyReason(active, resource);
         return {
           entityId: entity.value.id, entityRevision: entity.value.revision, resourceId: resource.value.id, revision: opened.value.revision,
           hash: opened.value.sha256, content: current, canWrite: readOnlyReason === null, readOnlyReason, unsupported: currentInspection.reasons
         };
       }
+      const parseIssue = inspectMarkdownParse(content);
+      demand(!parseIssue, 'MARKDOWN_PARSE_FAILED', parseIssue ? `Error Markdown en línea ${parseIssue.line}, columna ${parseIssue.column}: ${parseIssue.message}` : 'Markdown inválido.');
       const plan = await active.lease.service.prepareResourceWrite({ operationId: randomUUID(), resourceId: resource.value.id,
         expectedRevision: input.expectedRevision, expectedHash: input.expectedHash, bytes });
       demand(plan.ok, plan.diagnostics.some((item) => item.code === 'PERMISSION_DENIED') ? 'PERMISSION_DENIED' :
@@ -985,9 +983,10 @@ export class LocalProjectManager {
       committed.diagnostics.map((item) => item.message).join('\n') || 'No se pudo confirmar el guardado Markdown.');
       const saved = await active.lease.service.openResource(resource.value.id, 2 * 1024 * 1024);
       demand(saved.ok, 'MARKDOWN_VERIFY_FAILED', 'El guardado terminó, pero no se pudo volver a leer para verificarlo.');
-      const readOnlyReason = this.#markdownReadOnlyReason(active, resource, true);
+      const savedInspection = inspectMarkdownSource(content);
+      const readOnlyReason = this.#markdownReadOnlyReason(active, resource);
       return { entityId: entity.value.id, entityRevision: entity.value.revision, resourceId: resource.value.id, revision: saved.value.revision,
-        hash: saved.value.sha256, content, canWrite: readOnlyReason === null, readOnlyReason, unsupported: [] };
+        hash: saved.value.sha256, content, canWrite: readOnlyReason === null, readOnlyReason, unsupported: savedInspection.reasons };
     });
   }
   approveCanvasDropMount(sessionId: string, mountId: string, selectedRoot: string): Promise<boolean> {

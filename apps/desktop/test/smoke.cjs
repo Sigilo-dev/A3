@@ -276,9 +276,10 @@ async function healthy() {
   });
   }
 
-  // Milkdown handles supported GFM and A3 links. Unsupported E0 syntax stays byte-preserved and read-only.
+  // Milkdown handles the visual subset; CodeMirror edits full source and retains unknown E0 syntax.
   const markdownSafeSource = '# Página Milkdown\n\n## Sección\n\n[[Visión#Sección|Ir a sección]]\n\n![Referencia](../assets/reference.png)\n\n- [ ] tarea pendiente\n\n| Propiedad | Valor |\n| --- | --- |\n| modo | prueba |\n\nTexto inicial.\n';
-  const unsupportedSource = await readFile(join(__dirname, '../../../experiments/e0/editors-canvas/fixtures/markdown.md'), 'utf8');
+  const unsupportedFixture = await readFile(join(__dirname, '../../../experiments/e0/editors-canvas/fixtures/markdown.md'), 'utf8');
+  const unsupportedSource = `\uFEFF${unsupportedFixture.replace(/\r?\n/g, '\r\n')}\r\n^block-estable\r\n[[enlace incompleto\r\n`;
   await click('[data-section="files"]');
   const markdownTargets = await js(`(async () => {
     const project = (await window.a3.projects({ action: 'list' })).value.active, workspaceId = project.workspaces[0].id;
@@ -305,11 +306,17 @@ async function healthy() {
   assert.equal(markdownEditorState.error, undefined, JSON.stringify(markdownEditorState));
   assert.ok(markdownEditorState.editor?.includes('a3-wikilink'), JSON.stringify(markdownEditorState));
   assert.equal(await js("document.querySelector('[data-markdown-save]').disabled"), true, 'opening an unchanged document does not enable serialization');
+  await click('[data-markdown-source-mode]');
+  await waitFor("Boolean(document.querySelector('[data-markdown-source-editor] .cm-editor'))");
+  assert.equal(await js("document.querySelector('[data-markdown-save]').disabled"), true, 'CodeMirror no-op keeps the shared document clean');
+  await click('[data-markdown-visual]');
+  await waitFor("Boolean(document.querySelector('.markdown-surface .ProseMirror'))");
   assert.equal(await js("document.querySelectorAll('.markdown-surface input[type=checkbox]').length"), 1, 'GFM checkboxes render as controls');
   await click('[data-markdown-preview]');
   assert.equal(await js("document.querySelector('.markdown-surface .ProseMirror').getAttribute('contenteditable')"), 'false', 'preview is the same non-editable document view');
+  await waitFor("document.querySelector('.markdown-task-checkbox')?.disabled === true");
   assert.equal(await js("document.querySelector('.markdown-task-checkbox').disabled"), true, 'preview disables checkbox mutations');
-  await click('[data-markdown-edit]');
+  await click('[data-markdown-visual]');
   await js("document.querySelector('.markdown-task-checkbox').click()");
   await js(`(() => { const block = document.querySelector('.markdown-surface .ProseMirror p:last-of-type'); block.focus(); const range = document.createRange(); range.selectNodeContents(block); range.collapse(false); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); document.execCommand('insertText', false, ' editada'); })()`);
   await waitFor("!document.querySelector('[data-markdown-save]').disabled");
@@ -339,21 +346,52 @@ async function healthy() {
   const externalSave = await js(`window.a3.markdown({ action: 'save', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.safeEntityId}', resourceId: '${markdownTargets.safeResourceId}', entityRevision: ${staleBase.value.entityRevision}, expectedRevision: ${staleBase.value.revision}, expectedHash: '${staleBase.value.hash}', content: ${JSON.stringify(staleBase.value.content + '\nCambio externo.\n')} })`);
   assert.equal(externalSave.ok, true);
   await click('[data-markdown-save]'); await waitFor("document.querySelector('[role=alert]')?.textContent.includes('REVISION_CONFLICT')");
+  await waitFor("Boolean(document.querySelector('[data-markdown-conflict]'))");
+  const comparedMarkdown = await js("({ local: document.querySelector('.markdown-conflict-versions section:first-child pre')?.textContent, saved: document.querySelector('.markdown-conflict-versions section:last-child pre')?.textContent })");
+  assert.match(comparedMarkdown.local, /local/); assert.match(comparedMarkdown.saved, /Cambio externo/);
+  await js('window.confirm = () => true; undefined');
+  await click('[data-markdown-conflict-keep-draft]');
+  await waitFor("!document.querySelector('[data-markdown-conflict]') && document.querySelector('#markdown-status')?.textContent.includes('Conflicto resuelto')");
   assert.equal(await js("document.querySelector('.markdown-surface .ProseMirror').textContent.includes('local')"), true, 'stale local draft remains available after conflict');
   const afterConflict = await js(`window.a3.markdown({ action: 'open', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.safeEntityId}', resourceId: '${markdownTargets.safeResourceId}' })`);
-  assert.match(afterConflict.value.content, /Cambio externo/, 'the newer external content remains intact');
-  await click('[data-markdown-close]'); await click('.markdown-confirm button:nth-child(2)');
+  assert.match(afterConflict.value.content, /local/, 'the selected local version is saved against the compared current revision');
+  assert.doesNotMatch(afterConflict.value.content, /Cambio externo/);
+  await click('[data-markdown-source-mode]'); await waitFor("Boolean(document.querySelector('[data-markdown-source-editor] .cm-editor'))");
+  await js(`(() => { const editor=document.querySelector('[data-markdown-source-editor] .cm-content'); const walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT); let node; while(node=walker.nextNode()){ const at=node.textContent.indexOf('Texto inicial.'); if(at>=0){ const range=document.createRange(); range.setStart(node,at); range.setEnd(node,at+'Texto inicial.'.length); const selection=getSelection(); selection.removeAllRanges(); selection.addRange(range); document.execCommand('insertText',false,'Texto en fuente.'); break; } } })()`);
+  await waitFor("!document.querySelector('[data-markdown-save]').disabled"); await click('[data-markdown-save]');
+  await waitFor("document.querySelector('#markdown-status')?.textContent === 'Guardado'");
+  const savedSourceMode = await js(`window.a3.markdown({ action: 'open', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.safeEntityId}', resourceId: '${markdownTargets.safeResourceId}' })`);
+  assert.match(savedSourceMode.value.content, /Texto en fuente\./);
+  assert.doesNotMatch(savedSourceMode.value.content, /\r\n/, 'source editing retains the imported LF representation');
+  await click('[data-markdown-close]');
 
   await click(`[data-open-markdown="${markdownTargets.unsupportedEntityId}"]`);
-  await waitFor("Boolean(document.querySelector('[data-markdown-source]'))");
-  assert.equal(await js("document.querySelector('[data-markdown-source]').textContent"), unsupportedSource);
-  assert.equal(await js("document.querySelector('.markdown-surface')"), null, 'unknown E0 block prevents Milkdown writes');
+  await waitFor("Boolean(document.querySelector('[data-markdown-source-editor] .cm-editor'))");
+  assert.equal(await js("document.querySelector('[data-markdown-source-editor] .cm-content').textContent.includes('payload:')"), true);
+  await waitFor("Boolean(document.querySelector('[data-markdown-diagnostic]'))");
+  assert.match(await js("document.querySelector('[data-markdown-diagnostic]').textContent"), /línea \d+, columna 1/);
+  assert.equal(await js("document.querySelector('.markdown-surface')"), null, 'unknown E0 block stays source-only');
   const unsupportedOpened = await js(`window.a3.markdown({ action: 'open', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.unsupportedEntityId}', resourceId: '${markdownTargets.unsupportedResourceId}' })`);
-  assert.equal(unsupportedOpened.value.canWrite, false);
+  assert.equal(unsupportedOpened.value.canWrite, true, 'unsupported syntax remains editable through CodeMirror');
   assert.equal(unsupportedOpened.value.content, unsupportedSource);
-  const deniedVisualWrite = await js(`window.a3.markdown({ action: 'save', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.unsupportedEntityId}', resourceId: '${markdownTargets.unsupportedResourceId}', entityRevision: ${unsupportedOpened.value.entityRevision}, expectedRevision: ${unsupportedOpened.value.revision}, expectedHash: '${unsupportedOpened.value.hash}', content: 'destructivo' })`);
-  assert.equal(deniedVisualWrite.ok, false);
-  assert.equal(deniedVisualWrite.error.code, 'MARKDOWN_UNSUPPORTED_SOURCE', 'the host blocks a lossy visual write');
+  await js(`(() => { const editor=document.querySelector('[data-markdown-source-editor] .cm-content'); editor.focus(); const walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT); let node; while(node=walker.nextNode()){ const at=node.textContent.indexOf('palabra con tilde'); if(at>=0){ const range=document.createRange(); range.setStart(node,at); range.setEnd(node,at+'palabra con tilde'.length); const selection=getSelection(); selection.removeAllRanges(); selection.addRange(range); document.execCommand('insertText',false,'palabra revisada'); break; } } })()`);
+  await waitFor("!document.querySelector('[data-markdown-save]').disabled");
+  await click('[data-markdown-save]'); await waitFor("document.querySelector('.markdown-error')?.textContent.includes('línea')");
+  const parseFailure = await js(`window.a3.markdown({ action: 'open', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.unsupportedEntityId}', resourceId: '${markdownTargets.unsupportedResourceId}' })`);
+  assert.equal(parseFailure.value.content, unsupportedSource, 'parse diagnostic keeps the original saved source untouched');
+  await js(`(() => { const editor=document.querySelector('[data-markdown-source-editor] .cm-content'); const walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT); let node; while(node=walker.nextNode()){ const at=node.textContent.indexOf('[[enlace incompleto'); if(at>=0){ const range=document.createRange(); range.setStart(node,at); range.setEnd(node,at+'[[enlace incompleto'.length); const selection=getSelection(); selection.removeAllRanges(); selection.addRange(range); document.execCommand('insertText',false,'[[enlace corregido]]'); break; } } })()`);
+  await waitFor("!document.querySelector('[data-markdown-diagnostic]')");
+  await waitFor("!document.querySelector('[data-markdown-save]').disabled");
+  await click('[data-markdown-save]'); await waitFor("document.querySelector('#markdown-status')?.textContent === 'Guardado'");
+  const editedUnsupported = await js(`window.a3.markdown({ action: 'open', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.unsupportedEntityId}', resourceId: '${markdownTargets.unsupportedResourceId}' })`);
+  assert.match(editedUnsupported.value.content, /palabra revisada/);
+  assert.match(editedUnsupported.value.content, /\[\[entidad-a3\|Entidad vinculada\]\]/);
+  assert.match(editedUnsupported.value.content, /:::bloque-desconocido[\s\S]*payload: \{.*sin interpretar.*\}[\s\S]*:::/);
+  assert.match(editedUnsupported.value.content, /export const marcador/);
+  assert.match(editedUnsupported.value.content, /\^block-estable/);
+  assert.match(editedUnsupported.value.content, /\[\[enlace corregido\]\]/);
+  assert.equal(editedUnsupported.value.content.charCodeAt(0), 0xfeff, 'source keeps the imported BOM');
+  assert.doesNotMatch(editedUnsupported.value.content, /(?<!\r)\n/, 'CodeMirror preserves the original CRLF separator on a real source edit');
   await click('[data-markdown-close]');
 
   const fixtureSession = (await js("window.a3.projects({ action: 'list' })")).value.active;
@@ -395,7 +433,8 @@ async function healthy() {
       'freehand mouse points persist in world coordinates', 'pointer pressure is retained when reported', 'selection, deletion and reopen of strokes', 'Rough.js sketch style persists and reopens',
       'conversion creates editable vector drawing node', 'spatial groups create/rename/move/collapse/reopen and preserve external edges'] : []),
     'Milkdown GFM and A3 wikilinks', 'same-resource Markdown edit/preview/reopen', 'local portable image preview', 'revision conflict preserves both versions',
-    'E0 unsupported Markdown remains read-only', 'technical relation sources unchanged', 'canvas and Markdown IPC denied to foreign window', 'stale sessions', 'window close'];
+    'CodeMirror source and Milkdown share one document', 'unknown Markdown blocks survive source edit', 'revision conflict compare/resolve',
+    'technical relation sources unchanged', 'canvas and Markdown IPC denied to foreign window', 'stale sessions', 'window close'];
   console.log('A3_SMOKE=' + JSON.stringify({ mode, passed: true, electron: probe.result.value.electron, checks }));
   win.close();
 }

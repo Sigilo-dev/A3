@@ -125,7 +125,15 @@ button:focus-visible, a:focus-visible { outline: 2px solid #c3ed82; outline-offs
 .markdown-toolbar .secondary { margin-left: 8px; }
 .markdown-warning, .markdown-error { flex: none; margin: 0; padding: 8px 18px; border-bottom: 1px solid #594a37; background: #29231b; color: #ead4a9; font-size: 11px; }
 .markdown-error { border-color: #70483f; background: #2a201f; color: #f0b3a5; }
-.markdown-surface, .markdown-source-fallback { flex: 1; min-height: 0; overflow: auto; padding: 30px clamp(22px, 7vw, 110px); color: #dce5e1; font: 15px/1.75 ui-sans-serif, system-ui, sans-serif; }
+.markdown-surface, .markdown-source-fallback, .markdown-source-editor { flex: 1; min-height: 0; overflow: auto; padding: 30px clamp(22px, 7vw, 110px); color: #dce5e1; font: 15px/1.75 ui-sans-serif, system-ui, sans-serif; }
+.markdown-source-editor { padding: 14px 18px; background: #0b1014; }
+.markdown-source-editor .cm-editor { min-height: 100%; height: 100%; color: #dce5e1; background: #0b1014; font: 13px/1.65 ui-monospace, Consolas, monospace; }
+.markdown-source-editor .cm-scroller { overflow: auto; font-family: ui-monospace, Consolas, monospace; }
+.markdown-source-editor .cm-gutters { border-right: 1px solid #29343a; background: #11181d; color: #708078; }
+.markdown-source-editor .cm-activeLine, .markdown-source-editor .cm-activeLineGutter { background: #18221f; }
+.markdown-source-editor .cm-cursor { border-left-color: #c3ed82; }
+.markdown-source-editor .cm-selectionBackground, .markdown-source-editor .cm-focused .cm-selectionBackground { background: #344a3c; }
+.markdown-source-editor .cm-focused { outline: 2px solid #536650; outline-offset: -2px; }
 .markdown-surface .milkdown { min-height: 100%; outline: none; }
 .markdown-surface .ProseMirror { min-height: 100%; outline: none; caret-color: #c3ed82; }
 .markdown-surface .ProseMirror img { display: block; max-width: min(100%, 46rem); max-height: 28rem; margin: 1rem auto; object-fit: contain; }
@@ -154,6 +162,16 @@ button:focus-visible, a:focus-visible { outline: 2px solid #c3ed82; outline-offs
 .markdown-footer-help { margin-left: auto; }
 .markdown-confirm-backdrop { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; background: #05080bcc; padding: 24px; }
 .markdown-confirm { width: min(480px, 100%); border: 1px solid #58694f; border-radius: 8px; padding: 22px; background: #17201e; box-shadow: 0 18px 60px #0009; }
+.markdown-conflict-backdrop { z-index: 3; }
+.markdown-conflict { width: min(1120px, 100%); max-height: 92vh; overflow: auto; border: 1px solid #58694f; border-radius: 8px; padding: 22px; background: #17201e; box-shadow: 0 18px 60px #0009; }
+.markdown-conflict h3 { margin: 0 0 7px; }
+.markdown-conflict > p { color: #bdc8c2; font-size: 12px; line-height: 1.6; }
+.markdown-conflict-versions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; max-height: 52vh; }
+.markdown-conflict-versions section { min-width: 0; border: 1px solid #35423d; border-radius: 5px; padding: 10px; overflow: hidden; }
+.markdown-conflict-versions h4 { margin: 0 0 8px; font-size: 11px; color: #c3ed82; }
+.markdown-conflict-versions pre { max-height: 46vh; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #d4e1d6; font: 11px/1.6 ui-monospace, Consolas, monospace; }
+.markdown-conflict-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.markdown-conflict-actions button { margin: 0; padding: 8px 11px; font-size: 11px; }
 .markdown-confirm h3 { margin: 0 0 8px; font-size: 16px; }
 .markdown-confirm p { color: #b7c4bb; font-size: 12px; line-height: 1.6; }
 .markdown-confirm > div { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; margin-top: 18px; }

@@ -34,11 +34,15 @@
     "vite": "8.3.4"
   },
   "dependencies": {
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/state": "6.7.6",
     "@milkdown/core": "7.22.3",
     "@milkdown/plugin-listener": "7.22.3",
     "@milkdown/preset-commonmark": "7.22.3",
     "@milkdown/preset-gfm": "7.22.3",
     "@milkdown/utils": "7.22.3",
+    "codemirror": "6.0.2",
     "perfect-freehand": "1.2.3",
     "roughjs": "4.6.6"
   }

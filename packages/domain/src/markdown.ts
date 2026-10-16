@@ -10,6 +10,50 @@ export interface MarkdownSourceInspection {
   reasons: readonly string[];
 }
 
+export interface MarkdownParseIssue {
+  offset: number;
+  line: number;
+  column: number;
+  code: 'unclosed-wikilink';
+  message: string;
+}
+
+/** Reports source errors that the A3 Markdown extensions can locate without rewriting the source. */
+export function inspectMarkdownParse(value: string): MarkdownParseIssue | null {
+  let offset = 0;
+  let lineNumber = 1;
+  let fence: { marker: '`' | '~'; length: number } | null = null;
+  const lines = value.match(/[^\r\n]*(?:\r\n|\n|\r|$)/g) ?? [];
+  for (const rawLine of lines) {
+    if (!rawLine && offset >= value.length) break;
+    const line = rawLine.replace(/(?:\r\n|\n|\r)$/, '');
+    if (fence) {
+      const markerPattern = fence.marker === '`' ? '\\x60' : '~';
+      const close = new RegExp(`^ {0,3}${markerPattern}{${fence.length},}\\s*$`).test(line);
+      if (close) fence = null;
+    } else {
+      const opening = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if (opening) fence = { marker: opening[1]![0] as '`' | '~', length: opening[1]!.length };
+      else {
+        const masked = line.replace(/(`+)[^`\r\n]*?\1/g, (code) => code.replace(/[^\r\n]/g, ' '));
+        const tokens = /(?<!\\)\[\[/g;
+        let token: RegExpExecArray | null;
+        while ((token = tokens.exec(masked))) {
+          const closing = masked.indexOf(']]', token.index + 2);
+          if (closing < 0) {
+            const column = token.index;
+            return { offset: offset + column, line: lineNumber, column: column + 1, code: 'unclosed-wikilink', message: 'El wikilink A3 no tiene el cierre `]]`.' };
+          }
+          tokens.lastIndex = closing + 2;
+        }
+      }
+    }
+    offset += rawLine.length;
+    lineNumber++;
+  }
+  return null;
+}
+
 /** Finds A3 links without interpreting code spans or fenced code blocks. */
 export function findA3Wikilinks(value: string): readonly A3WikilinkToken[] {
   const matches: A3WikilinkToken[] = [];
@@ -41,6 +85,7 @@ export function inspectMarkdownSource(value: string): MarkdownSourceInspection {
   if (/^ {0,3}:::[^\r\n]*$/m.test(withoutCode)) reasons.add('directive-block');
   if (/^ {0,3}>\s*\[![^\]]+\]/m.test(withoutCode)) reasons.add('obsidian-callout');
   if (/!\[\[[^\]\r\n]+\]\]/.test(withoutCode)) reasons.add('embedded-wikilink');
+  if (/^ {0,3}\^[\p{L}\p{N}_-]+[ \t]*$/mu.test(withoutCode) || /(?<=\s)\^[\p{L}\p{N}_-]+[ \t]*$/mu.test(withoutCode)) reasons.add('block-id');
   if (/^ {0,3}\[\^[^\]]+\]:/m.test(withoutCode) || /\[\^[^\]]+\]/.test(withoutCode)) reasons.add('footnote');
   if (/^ {0,3}(?:\$\$|\$)[^\r\n]*$/m.test(withoutCode)) reasons.add('math-block');
   if (/<!--|<!doctype\b|<\/?[a-z][^>]*>/i.test(withoutCode)) reasons.add('raw-html');
