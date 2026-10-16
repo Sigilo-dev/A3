@@ -8,7 +8,7 @@ import { erData, erTable, validErOperation, type ErChange, type ErOperation } fr
 import { projectErCanvas, type CanvasErState } from './er-canvas.js';
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
-import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
+import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, isIotComponent, iotCatalogEntry, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
 import { initialPageView, insertFocusTab, readWorkspaceSession, writeWorkspaceSession, validCanvasView, validPageView, type WorkspaceSession, type WorkspaceSessionAction, type PageReference } from './workspace-session.js';
@@ -690,7 +690,7 @@ export class LocalProjectManager {
         title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
           ...(resources.get(value.contentResourceId.toLowerCase()) ? { contentResource: resourceDescriptor(resources.get(value.contentResourceId.toLowerCase())!) } : {}) } : {}),
         ...(c4Category(value, registry) ? { c4Category: c4Category(value, registry)! } : {}),
-        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined || erTable(value) && erData(value) !== undefined }));
+        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined || erTable(value) && erData(value) !== undefined || isIotComponent(value) }));
     const entityChoices = choices.filter(({ value }) => !isC4Diagram(value)).map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
     const resourceChoices = resourceRecords.map((record) => resourceDescriptor(record));
     const placementIds = new Map(placements.map((placement) => [placement.id.toLowerCase(), placement.id]));
@@ -1528,6 +1528,22 @@ export class LocalProjectManager {
       if (['create-relationship', 'show-relationship'].includes(captured.action)) absent.push({ kind: 'relation-view', id: ids.relationViewId, workspaceId });
       const scope = active.lease.service.state.project.snapshot.records.flatMap((r) => r.kind === 'entity' ? [r.value.id] : []);
       await this.#commitCanvasCommand(active, { command: 'a3.er.change', payload: { workspaceId, operation: captured, ids } }, [...scope, ids.entityId], absent);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  createCanvasIotComponent(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, catalogId: string, title: string, position: { x: number; y: number }): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId), view = this.#canvasWorkspace(sessionId, workspaceId);
+      demand(view.canWrite, 'PERMISSION_DENIED', 'El proyecto no permite insertar componentes IoT.');
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision,
+        'REVISION_CONFLICT', 'El workspace cambió; recarga antes de insertar el componente.');
+      const entry = iotCatalogEntry(catalogId);
+      demand(entry && !entry.template, 'IOT_CATALOG_ENTRY_UNAVAILABLE', 'La pieza no es un componente concreto disponible para instanciar.');
+      demand(typeof title === 'string' && title.trim().length > 0 && title.trim().length <= 200 && position && Number.isFinite(position.x) && Number.isFinite(position.y),
+        'IOT_COMPONENT_INVALID', 'El título y la posición del componente deben ser válidos.');
+      const entityId = randomUUID(), placementId = randomUUID();
+      await this.#commitCanvasCommand(active, { command: 'a3.iot.create-component', payload: { workspaceId, entityId, placementId, catalogId, title: title.trim(), position } },
+        [entityId], [{ kind: 'entity', id: entityId }, { kind: 'placement', id: placementId, workspaceId }]);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }

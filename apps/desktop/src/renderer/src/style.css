@@ -370,3 +370,21 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .er-inspector fieldset { border: 1px solid #41615e; border-radius: 5px; min-width: 0; }
 .er-inspector section > form, .er-inspector > form { border-left: 2px solid #41615e; padding: 8px; margin: 8px 0; }
 .er-inspector input[type="checkbox"] { width: auto; }
+.iot-node { display: grid; gap: 5px; margin-top: 6px; padding: 8px; border: 1px solid #536843; border-radius: 5px; background: #16241c; font-size: 10px; overflow-wrap: anywhere; }
+.iot-node > span, .iot-node > small { color: #bdcdb5; }
+.iot-node details > ul { max-height: 220px; overflow: auto; padding-left: 20px; }
+.iot-node li { margin: 5px 0; }
+.iot-node li small { display: block; color: #afc0ad; }
+.iot-inspector { display: grid; gap: 9px; max-height: 420px; overflow: auto; padding: 10px 12px; margin-top: 8px; border: 1px solid #526344; border-radius: 6px; background: #191f18; color: #e5ebdc; }
+.iot-inspector > summary { cursor: pointer; }
+.iot-inspector form { display: grid; gap: 8px; padding: 8px; border-left: 2px solid #687d54; }
+.iot-inspector label { display: grid; gap: 4px; font-size: 11px; }
+.iot-inspector select, .iot-inspector input { max-width: 100%; margin: 0; padding: 6px; border: 1px solid #526344; border-radius: 4px; background: #111711; color: #e5ebdc; font: inherit; }
+.iot-port-list { max-width: 100%; overflow: auto; }
+.iot-port-list table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.iot-port-list th, .iot-port-list td { min-width: 76px; padding: 5px; border-bottom: 1px solid #40513a; text-align: left; vertical-align: top; }
+.iot-port-list th { position: sticky; top: 0; background: #191f18; color: #cee1bd; }
+.iot-port-list small { display: block; margin-top: 3px; color: #bbc8b3; }
+.iot-selected-component { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid #40513a; }
+.iot-inspector button { width: fit-content; padding: 7px 10px; border: 1px solid #6a8157; border-radius: 4px; background: #273721; color: #e5ebdc; }
+.iot-inspector :focus-visible { outline: 2px solid #c5eb98; outline-offset: 2px; }

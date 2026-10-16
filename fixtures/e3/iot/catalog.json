@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "1.0.0",
+  "description": "Expected contents of the initial exact-part IoT catalogue; pin counts refer only to the named revisions and sources.",
+  "collections": [
+    "a3.iot.collection.esp32",
+    "a3.iot.collection.arduino",
+    "a3.iot.collection.raspberry-pi",
+    "a3.iot.collection.sensors",
+    "a3.iot.collection.actuators",
+    "a3.iot.collection.resistors",
+    "a3.iot.collection.power",
+    "a3.iot.collection.connectors"
+  ],
+  "entries": [
+    { "catalogId": "espressif.esp32-devkitc-v4-32e", "collectionId": "a3.iot.collection.esp32", "model": "ESP32-DevKitC-32E / ESP32-WROOM-32E", "portCount": 38, "mustContain": ["j2.01", "j2.19", "j3.01", "j3.19"], "mustBeReserved": ["j2.16", "j2.17", "j2.18", "j3.17", "j3.18", "j3.19"], "manufacturerState": "known", "revisionState": "known" },
+    { "catalogId": "arduino.uno-r3-a000066", "collectionId": "a3.iot.collection.arduino", "model": "UNO R3 · SKU A000066", "portCount": 32, "mustContain": ["janalog.01", "janalog.14", "jdigital.01", "jdigital.18"], "manufacturerState": "known", "revisionState": "known" },
+    { "catalogId": "raspberry-pi.pico-w-sc0918", "collectionId": "a3.iot.collection.raspberry-pi", "model": "Pico W · SC0918/SC0919", "portCount": 40, "mustContain": ["header.1", "header.20", "header.21", "header.40"], "manufacturerState": "known", "revisionState": "unknown" },
+    { "catalogId": "bosch.bme280", "collectionId": "a3.iot.collection.sensors", "model": "BME280 · 8-pin LGA", "portCount": 8, "mustContain": ["package.1", "package.8"], "manufacturerState": "known", "revisionState": "unknown" },
+    { "catalogId": "towerpro.sg92r", "collectionId": "a3.iot.collection.actuators", "model": "SG92R", "portCount": 3, "mustContain": ["wire.ground", "wire.power", "wire.signal"], "manufacturerState": "known", "revisionState": "unknown" },
+    { "catalogId": "yageo.rc0603fr-0710kl", "collectionId": "a3.iot.collection.resistors", "model": "RC0603FR-0710KL", "portCount": 2, "mustContain": ["pad.1", "pad.2"], "manufacturerState": "known", "revisionState": "unknown" },
+    { "catalogId": "adafruit.powerboost-1000c-2465", "collectionId": "a3.iot.collection.power", "model": "PowerBoost 1000C · product ID 2465", "portCount": 7, "mustContain": ["usb-in", "battery-in", "boosted-5v", "ground"], "manufacturerState": "known", "revisionState": "unknown" },
+    { "catalogId": "a3.generic.connector", "collectionId": "a3.iot.collection.connectors", "model": "generic connector template", "portCount": 0, "template": true, "manufacturerState": "unknown", "revisionState": "unknown" }
+  ]
+}

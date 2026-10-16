@@ -2,6 +2,7 @@ export type * from './models.js';
 export * from './c4.js';
 export * from './uml.js';
 export * from './er.js';
+export * from './iot.js';
 export { prepareCommand, revalidatePlan, reversibleCanvasCommand } from './kernel.js';
 export { CONTENT_NODE_CATALOG, classifyPastedContent, contentNodeDefinition, isBuiltinContentNodeType, parseA3ClipboardFragment, resolveSmartPastePayload } from './content-nodes.js';
 export type { ContentNodeKind, ContentNodeType, ContentNodeSourceKind, PastedContent, SmartPasteDecision } from './content-nodes.js';

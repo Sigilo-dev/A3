@@ -41,6 +41,7 @@ export const DROP_STAGE_CHANNEL = 'a3.canvas:stage-drop';
 export type CanvasRequest =
   | { action: 'uml'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: UmlOperation }
   | { action: 'er'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: ErOperation }
+  | { action: 'create-iot-component'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; catalogId: string; title: string; position: { x: number; y: number } }
   | { action: 'c4'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: C4Operation }
   | { action: 'load' | 'flush' | 'discard' | 'approve-edge-delete' | 'approve-drawing-delete' | 'approve-history-delete'; sessionId: string; workspaceId: string }
   | { action: 'stage'; sessionId: string; workspaceId: string; expectedRevision: number; viewport: WorkspaceViewport }

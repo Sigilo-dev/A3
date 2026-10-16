@@ -23,7 +23,8 @@
     "test:conceptual": "node test/run-conceptual.mjs",
     "test:c4": "node test/run-c4.mjs",
     "test:uml": "node test/run-uml.mjs",
-    "test:er": "node test/run-er.mjs"
+    "test:er": "node test/run-er.mjs",
+    "test:iot": "node test/run-iot.mjs"
   },
   "devDependencies": {
     "@a3/project-store": "0.1.0-dev.0",

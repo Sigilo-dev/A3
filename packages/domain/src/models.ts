@@ -139,6 +139,9 @@ export interface CreateConceptualRelation {
 export interface UpdateConceptualRelation {
   workspaceId: UUID; relationId: UUID; label?: string; kind?: ConceptualRelationKind | null;
 }
+export interface CreateIotComponent {
+  workspaceId: UUID; entityId: UUID; placementId: UUID; catalogId: string; title: string; position: Point;
+}
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
 export type Payloads = {
   'a3.er.change': ErChange;
@@ -152,6 +155,7 @@ export type Payloads = {
   'a3.conceptual.create-relation': CreateConceptualRelation;
   'a3.conceptual.update-relation': UpdateConceptualRelation;
   'a3.conceptual.delete-relation': { workspaceId: UUID; relationId: UUID };
+  'a3.iot.create-component': CreateIotComponent;
   'a3.core.rename': { ref: DocumentRef; name: string };
   'a3.core.set-workspace-viewport': { workspaceId: UUID; viewport: { x: number; y: number; zoom: number } };
   'a3.core.update-entity': EntityPatch;

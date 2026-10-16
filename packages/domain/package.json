@@ -10,6 +10,7 @@
     "./uml": { "types": "./dist/src/uml.d.ts", "import": "./dist/src/uml.js" },
     "./er": { "types": "./dist/src/er.d.ts", "import": "./dist/src/er.js" },
     "./c4": { "types": "./dist/src/c4.d.ts", "import": "./dist/src/c4.js" },
+    "./iot": { "types": "./dist/src/iot.d.ts", "import": "./dist/src/iot.js" },
     "./shortcuts": { "types": "./dist/src/shortcuts.d.ts", "import": "./dist/src/shortcuts.js" },
     "./conceptual-diagrams": { "types": "./dist/src/conceptual-diagrams.d.ts", "import": "./dist/src/conceptual-diagrams.js" },
     ".": {

@@ -130,7 +130,7 @@ function domainCapabilities(plan: PreparedPlan): Capability[] {
   const command = plan.request.command;
   if (command === 'a3.core.register-node-type' || command === 'a3.core.unregister-node-type') return ['package.install'];
   const caps = new Set<Capability>();
-  if (command.startsWith('a3.conceptual.') || command.startsWith('a3.c4.') || command.startsWith('a3.uml.') || command.startsWith('a3.er.')) caps.add('diagram.edit');
+  if (command.startsWith('a3.conceptual.') || command.startsWith('a3.c4.') || command.startsWith('a3.uml.') || command.startsWith('a3.er.') || command.startsWith('a3.iot.')) caps.add('diagram.edit');
   if (command === 'a3.core.delete' || plan.changes.some((change) => !change.after) || plan.contentEffects.some((effect) => effect.kind === 'remove')) caps.add('delete');
   const refs = plan.changes.map((change) => change.ref);
   if (refs.some((ref) => diagramRefKinds.has(ref.kind))) caps.add('diagram.edit');

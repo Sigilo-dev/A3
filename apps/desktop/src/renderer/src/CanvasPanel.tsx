@@ -18,6 +18,8 @@ import type { UmlOperation } from '@a3/domain/uml';
 import { ErElementsContext, ErNodeBody } from './ErNodeBody';
 import { ErInspector } from './ErInspector';
 import type { ErOperation } from '@a3/domain/er';
+import { IotInspector } from './IotInspector';
+import { IotNodeBody } from './IotNodeBody';
 import { C4_CATALOG, c4Data, type C4Operation } from '@a3/domain/c4';
 const CodeOpenContext = createContext<((target: CodeEditorTarget) => void) | undefined>(undefined);
 const ContentVersionContext = createContext(0);
@@ -104,6 +106,7 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
     <div className="canvas-entity-body nodrag nopan nowheel">
       <UmlNodeBody entity={data.entity} />
       <ErNodeBody entity={data.entity} />
+      <IotNodeBody entity={data.entity} />
       {data.entity.ports.length > 0 && <div className="canvas-ports" aria-label="Puertos">{data.entity.ports.map((port) => <span key={port.id} title={port.id}>{port.label || port.id}</span>)}</div>}
       {properties && <details><summary>Propiedades</summary><pre>{properties}</pre></details>}
       {data.entity.c4Category && <section className={`c4-node c4-node-${data.entity.c4Category}`} data-c4-category={data.entity.c4Category} data-c4-parent={c4Data(data.entity)?.parentId}>
@@ -958,6 +961,22 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
       if (added) { setSelection({ nodeIds: [added.id], groupIds: [], edgeIds: [], drawingIds: [] }); setNodes((nodes) => nodes.map((n) => ({ ...n, selected: n.id === added.id }))); }
     });
   }
+  function createIotComponent(catalogId: string, title: string): void {
+    const before = new Set(workspaceRef.current?.placements.map((placement) => placement.id) ?? []);
+    const rect = hostRef.current?.getBoundingClientRect(); if (!rect) return;
+    const center = screenToWorld({ x: rect.width / 2, y: rect.height / 2 }, current.current), occupied = workspaceRef.current?.placements ?? [];
+    let position = center;
+    for (let slot = 0; slot <= occupied.length + 16; slot++) {
+      position = { x: center.x + slot % 3 * 380, y: center.y + Math.floor(slot / 3) * 320 };
+      if (!occupied.some((placement) => position.x < placement.position.x + placement.size.width && position.x + 340 > placement.position.x &&
+          position.y < placement.position.y + placement.size.height && position.y + 230 > placement.position.y)) break;
+    }
+    void mutateCanvas((state) => ({ action: 'create-iot-component', sessionId, workspaceId, expectedWorkspaceRevision: state.revision, catalogId, title, position }), 'Componente IoT añadido').then((ok) => {
+      if (!ok) return;
+      const added = workspaceRef.current?.placements.find((placement) => !before.has(placement.id));
+      if (added) { setSelection({ nodeIds: [added.id], groupIds: [], edgeIds: [], drawingIds: [] }); setNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === added.id }))); }
+    });
+  }
   function changeC4(operation: C4Operation): void {
     const before = new Set(workspaceRef.current?.placements.map((p) => p.id) ?? []);
     if (operation.action === 'create-element' || operation.action === 'show-element') {
@@ -1259,6 +1278,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     {workspace && <C4Inspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onOperation={changeC4} onOpenWorkspace={onOpenWorkspace} />}
     {workspace && <UmlInspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onOperation={changeUml} />}
     {workspace && <ErInspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onOperation={changeEr} />}
+    {workspace && <IotInspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onCreate={createIotComponent} />}
     {showReference && <p className="canvas-help">La referencia es un fixture aislado y no se añade al proyecto.</p>}
     {menu && <ContextMenu menu={{ ...menu, actions: canvasActions() }} permissions={permissions} onClose={() => setMenu(null)} />}{promptDialog}
   </>;
