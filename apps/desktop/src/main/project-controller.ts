@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, parse, relative, resolve } from 'node:path';
 import { CONTENT_NODE_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, FileDropStageResult, FilesRequest, FilesResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
 
 interface StagedDropFile { path: string; root: string; relativePath: string; mountId: string; resourceId: string; name: string; size: number; mediaType: string; }
@@ -136,6 +136,19 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
       uuid.test(String((item as Record<string, unknown>).id)) && Number.isSafeInteger((item as Record<string, unknown>).expectedRevision) &&
       Number((item as Record<string, unknown>).expectedRevision) >= 1);
   return ['load', 'flush', 'discard', 'approve-edge-delete', 'approve-drawing-delete', 'approve-history-delete'].includes(String(input.action)) && Object.keys(input).length === 3;
+}
+
+function validMarkdownRequest(value: unknown): value is MarkdownRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>, uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuid.test(String(input.sessionId)) || !uuid.test(String(input.entityId)) || !uuid.test(String(input.resourceId))) return false;
+  if (input.action === 'open') return Object.keys(input).length === 4 && Object.keys(input).every((key) => ['action', 'sessionId', 'entityId', 'resourceId'].includes(key));
+  if (input.action === 'asset') return Object.keys(input).length === 5 && Object.keys(input).every((key) => ['action', 'sessionId', 'entityId', 'resourceId', 'reference'].includes(key)) &&
+    typeof input.reference === 'string' && input.reference.length > 0 && input.reference.length <= 2048;
+  return input.action === 'save' && Object.keys(input).length === 8 && Object.keys(input).every((key) =>
+    ['action', 'sessionId', 'entityId', 'resourceId', 'entityRevision', 'expectedRevision', 'expectedHash', 'content'].includes(key)) &&
+    Number.isSafeInteger(input.entityRevision) && Number(input.entityRevision) >= 1 && Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) >= 1 &&
+    typeof input.expectedHash === 'string' && /^[a-f0-9]{64}$/.test(input.expectedHash) && typeof input.content === 'string' && input.content.length <= 2 * 1024 * 1024;
 }
 function validDrawingPoints(value: unknown): boolean {
   return Array.isArray(value) && value.length > 0 && value.length <= 100000 && value.every((item) => {
@@ -373,6 +386,20 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
         return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED', message: error instanceof LocalProjectError ? error.message : 'No se pudo completar la operación del lienzo.',
           recovery: ['stage', 'flush', 'discard'].includes(value.action) ? 'La vista pendiente se conserva en la sesión. Reintenta guardar o descártala explícitamente antes de releer.' :
             'Los documentos confirmados se conservan. Recarga el workspace y revisa el conflicto o permiso antes de reintentar.' } };
+      }
+    },
+    async handleMarkdown(value: unknown): Promise<MarkdownResult> {
+      if (!validMarkdownRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud Markdown inválida.', recovery: 'Vuelve a abrir la página desde su nodo.' } };
+      try {
+        if (value.action === 'open') return { ok: true, value: await manager.openMarkdownDocument(value.sessionId, value.entityId, value.resourceId) };
+        if (value.action === 'asset') return { ok: true, value: await manager.openMarkdownImage(value.sessionId, value.entityId, value.resourceId, value.reference) };
+        return { ok: true, value: await manager.saveMarkdownDocument(value) };
+      } catch (error) {
+        return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED',
+          message: error instanceof LocalProjectError ? error.message : 'No se pudo completar la operación del documento Markdown.',
+          recovery: error instanceof LocalProjectError && ['REVISION_CONFLICT', 'MARKDOWN_ENTITY_MISMATCH', 'STALE_SESSION'].includes(error.code)
+            ? 'El borrador permanece en el editor. Copia el texto o recarga la página para resolver el conflicto.'
+            : 'La fuente original se conserva. Comprueba permisos, codificación y estado del proyecto antes de reintentar.' } };
       }
     },
     async handle(value: unknown): Promise<ProjectsResult> {

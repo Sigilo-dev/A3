@@ -1,12 +1,13 @@
 import type { CanvasContentNodeInput, CanvasDrawingPatch, CanvasPlacementMove, CanvasPlacementViewPatch, CanvasSelection, CanvasVisualEdgePatch, LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
 import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
-export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, LocalCanvasWorkspace } from '@a3/project-store';
+export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
 export const PROJECTS_CHANNEL = 'a3.projects:command';
 export const FILES_CHANNEL = 'a3.files:command';
 export const CANVAS_CHANNEL = 'a3.canvas:command';
+export const MARKDOWN_CHANNEL = 'a3.markdown:document';
 export const DROP_STAGE_CHANNEL = 'a3.canvas:stage-drop';
 export type CanvasRequest =
   | { action: 'load' | 'flush' | 'discard' | 'approve-edge-delete' | 'approve-drawing-delete' | 'approve-history-delete'; sessionId: string; workspaceId: string }
@@ -35,6 +36,11 @@ export type CanvasRequest =
   | { action: 'delete-drawing'; sessionId: string; workspaceId: string; drawingId: string; expectedRevision: number }
   | { action: 'convert-drawings-to-node'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; drawings: { id: string; expectedRevision: number }[] };
 export type CanvasContentRequest = { action: 'content'; sessionId: string; workspaceId: string; entityId: string; resourceId: string; purpose?: 'preview' | 'playback' };
+export type MarkdownRequest =
+  | { action: 'open'; sessionId: string; entityId: string; resourceId: string }
+  | { action: 'asset'; sessionId: string; entityId: string; resourceId: string; reference: string }
+  | { action: 'save'; sessionId: string; entityId: string; resourceId: string; entityRevision: number; expectedRevision: number; expectedHash: string; content: string };
+export type MarkdownResult = { ok: true; value: import('@a3/project-store').MarkdownDocument | import('@a3/project-store').MarkdownAsset } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasResult = { ok: true; value: LocalCanvasWorkspace } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasContentResult = { ok: true; value: import('@a3/project-store').CanvasResourcePreview } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type FileDropNotice = { token: string; kind?: 'file' | 'folder'; files?: readonly { name: string; size: number; copyDestination: string; referenceDestination: string }[]; clientX: number; clientY: number; error?: string };
@@ -80,5 +86,6 @@ export interface DesktopAPI {
   files(request: FilesRequest): Promise<FilesResult>;
   canvas(request: CanvasContentRequest): Promise<CanvasContentResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;
+  markdown(request: MarkdownRequest): Promise<MarkdownResult>;
   onFileDrop(listener: (notice: FileDropNotice) => void): () => void;
 }

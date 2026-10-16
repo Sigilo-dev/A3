@@ -111,6 +111,52 @@ button:focus-visible, a:focus-visible { outline: 2px solid #c3ed82; outline-offs
 .canvas-content-card p { margin: 0; color: #b7c4bb; line-height: 1.4; }
 .canvas-content-card .canvas-content-preview { max-height: 120px; margin: 0; }
 .canvas-content-card .canvas-content-preview.is-code { color: #b9d7ed; }
+.canvas-markdown-open { justify-self: start; margin: 2px 0 0; padding: 4px 0; font-size: 10px; }
+.markdown-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 28px; background: #05080be8; }
+.markdown-dialog { width: min(1180px, 100%); height: min(840px, 100%); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #536650; border-radius: 9px; background: #11181d; box-shadow: 0 24px 80px #000b; }
+.markdown-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 22px; border-bottom: 1px solid #293139; background: #151e23; }
+.markdown-header h2 { margin: 0 0 4px; font-size: 18px; }
+.markdown-header small { color: #93a39c; font-size: 10px; }
+.markdown-header .eyebrow { margin: 0 0 4px; font-size: 9px; }
+.markdown-toolbar { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 7px 18px; border-bottom: 1px solid #293139; }
+.markdown-toolbar button, .markdown-confirm button { margin: 0; padding: 7px 11px; font-size: 11px; }
+.markdown-toolbar button[aria-pressed="true"] { border-color: #829d6c; background: #27342b; color: #e1f4ce; }
+.markdown-toolbar span { margin-left: auto; color: #bdc8c2; font-size: 11px; }
+.markdown-toolbar .secondary { margin-left: 8px; }
+.markdown-warning, .markdown-error { flex: none; margin: 0; padding: 8px 18px; border-bottom: 1px solid #594a37; background: #29231b; color: #ead4a9; font-size: 11px; }
+.markdown-error { border-color: #70483f; background: #2a201f; color: #f0b3a5; }
+.markdown-surface, .markdown-source-fallback { flex: 1; min-height: 0; overflow: auto; padding: 30px clamp(22px, 7vw, 110px); color: #dce5e1; font: 15px/1.75 ui-sans-serif, system-ui, sans-serif; }
+.markdown-surface .milkdown { min-height: 100%; outline: none; }
+.markdown-surface .ProseMirror { min-height: 100%; outline: none; caret-color: #c3ed82; }
+.markdown-surface .ProseMirror img { display: block; max-width: min(100%, 46rem); max-height: 28rem; margin: 1rem auto; object-fit: contain; }
+.markdown-surface .ProseMirror img[data-a3-asset="unavailable"] { min-width: 5rem; min-height: 2rem; border: 1px dashed #3a4842; }
+.markdown-surface .ProseMirror:focus-visible { outline: none; }
+.markdown-surface .ProseMirror h1, .markdown-surface .ProseMirror h2, .markdown-surface .ProseMirror h3 { color: #f1f4ef; margin: 1.1em 0 .5em; }
+.markdown-surface .ProseMirror p { margin: .7em 0; }
+.markdown-surface .ProseMirror blockquote { margin: 1em 0; padding-left: 14px; border-left: 3px solid #829d6c; color: #b5c4bb; }
+.markdown-surface .ProseMirror a { color: #9fc8e1; text-decoration: underline; text-underline-offset: 3px; }
+.markdown-surface .ProseMirror code { border-radius: 4px; padding: 2px 4px; background: #20282e; color: #c8d9e8; font: .9em ui-monospace, Consolas, monospace; }
+.markdown-surface .ProseMirror pre { overflow: auto; border: 1px solid #29343a; border-radius: 6px; padding: 14px; background: #0b1014; }
+.markdown-surface .ProseMirror pre code { padding: 0; background: transparent; }
+.markdown-surface .ProseMirror table { width: 100%; border-collapse: collapse; }
+.markdown-surface .ProseMirror th, .markdown-surface .ProseMirror td { border: 1px solid #3a4842; padding: 7px 9px; text-align: left; }
+.markdown-surface .ProseMirror th { background: #1c2822; }
+.markdown-surface .ProseMirror input[type="checkbox"] { accent-color: #c3ed82; }
+.markdown-surface .markdown-list-item { display: flex; align-items: flex-start; gap: 8px; list-style-position: outside; }
+.markdown-surface .markdown-task-checkbox { flex: none; width: 15px; height: 15px; margin: 5px 0 0; accent-color: #c3ed82; cursor: pointer; }
+.markdown-surface .markdown-task-checkbox:disabled { cursor: default; opacity: .8; }
+.markdown-surface .markdown-list-item-content { flex: 1; min-width: 0; }
+.markdown-surface .a3-wikilink { border-bottom: 1px dotted #a7d17e; color: #c3ed82; cursor: default; }
+.markdown-surface.is-preview .ProseMirror { caret-color: transparent; }
+.markdown-surface.is-preview .ProseMirror ::selection { background: #475c4a; }
+.markdown-source-fallback { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: #0b1014; color: #d4e1d6; font: 13px/1.7 ui-monospace, Consolas, monospace; }
+.markdown-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 40px; padding: 7px 18px; border-top: 1px solid #293139; color: #92a29b; font-size: 10px; }
+.markdown-footer-help { margin-left: auto; }
+.markdown-confirm-backdrop { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; background: #05080bcc; padding: 24px; }
+.markdown-confirm { width: min(480px, 100%); border: 1px solid #58694f; border-radius: 8px; padding: 22px; background: #17201e; box-shadow: 0 18px 60px #0009; }
+.markdown-confirm h3 { margin: 0 0 8px; font-size: 16px; }
+.markdown-confirm p { color: #b7c4bb; font-size: 12px; line-height: 1.6; }
+.markdown-confirm > div { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; margin-top: 18px; }
 .canvas-content-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .canvas-content-heading small { flex: none; }
 .canvas-content-url { overflow-wrap: anywhere; color: #a5c9dc; font: 9px/1.4 ui-monospace, Consolas, monospace; }

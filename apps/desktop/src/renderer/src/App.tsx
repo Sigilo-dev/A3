@@ -1,8 +1,10 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { AppInfo, LocalProjectsState } from '../../shared/desktop-api';
 import { ProjectsPanel } from './ProjectsPanel';
 import { FileExplorerPanel } from './FileExplorerPanel';
+import type { MarkdownEditorTarget } from './MarkdownEditor';
 const CanvasPanel = lazy(() => import('./CanvasPanel').then((module) => ({ default: module.CanvasPanel })));
+const MarkdownEditorDialog = lazy(() => import('./MarkdownEditor').then((module) => ({ default: module.MarkdownEditorDialog })));
 
 const sections = [
   ['projects', 'Proyectos', 'Inicio y selección de proyectos locales.'],
@@ -30,7 +32,19 @@ export function App(): React.JSX.Element {
   const [attempt, setAttempt] = useState(0);
   const [activityOpen, setActivityOpen] = useState(false);
   const [projects, setProjects] = useState<LocalProjectsState | null>(null);
+  const [markdownTarget, setMarkdownTarget] = useState<MarkdownEditorTarget | null>(null);
+  const [markdownDirty, setMarkdownDirty] = useState(false);
+  const markdownTargetRef = useRef(markdownTarget); markdownTargetRef.current = markdownTarget;
+  const markdownDirtyRef = useRef(markdownDirty); markdownDirtyRef.current = markdownDirty;
   const acceptProjects = (value: LocalProjectsState): void => setProjects((previous) => previous && previous.sequence > value.sequence ? previous : value);
+  const openMarkdown = useCallback((target: MarkdownEditorTarget): void => {
+    const current = markdownTargetRef.current;
+    if (current?.sessionId === target.sessionId && current.entityId === target.entityId && current.resourceId === target.resourceId) return;
+    if (current && markdownDirtyRef.current && !window.confirm('El documento actual tiene cambios sin guardar. ¿Descartar el borrador y abrir otra página?')) return;
+    setMarkdownDirty(false); setMarkdownTarget(target);
+  }, []);
+  const closeMarkdown = useCallback((): void => { setMarkdownTarget(null); setMarkdownDirty(false); }, []);
+  const updateMarkdownDirty = useCallback((dirty: boolean): void => setMarkdownDirty(dirty), []);
   const section = sections.find(([id]) => id === active)!;
 
   useEffect(() => {
@@ -75,7 +89,7 @@ export function App(): React.JSX.Element {
     </aside>
     <main id="content" className="content" tabIndex={-1}>
       <div className="breadcrumb">A3 <span>/</span> {section[1]}</div>
-      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} /> : active === 'canvas' ? <Suspense fallback={<p role="status">Abriendo lienzo…</p>}><CanvasPanel active={projects?.active} /></Suspense> : active === 'files' ? <FileExplorerPanel active={projects?.active} /> : <><section className="intro" aria-labelledby="section-title">
+      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} /> : active === 'canvas' ? <Suspense fallback={<p role="status">Abriendo lienzo…</p>}><CanvasPanel active={projects?.active} onOpenMarkdown={openMarkdown} /></Suspense> : active === 'files' ? <FileExplorerPanel active={projects?.active} /> : <><section className="intro" aria-labelledby="section-title">
         <p className="eyebrow">Un lugar para tus ideas</p>
         <h1 id="section-title">{section[1]}</h1>
         <p className="lead">{section[2]}</p>
@@ -111,5 +125,9 @@ export function App(): React.JSX.Element {
     {activityOpen && <section id="activity" className="activity" aria-label="Actividad de inicio">
       <h2>Actividad de inicio</h2><p>{error ?? (info ? 'Ventana y puente de escritorio iniciados.' : 'Esperando conexión del proceso principal.')}</p>
     </section>}
+    {markdownTarget && <Suspense fallback={<div className="markdown-backdrop"><p role="status">Preparando editor Markdown…</p></div>}>
+      <MarkdownEditorDialog key={`${markdownTarget.sessionId}:${markdownTarget.entityId}:${markdownTarget.resourceId}`} target={markdownTarget}
+        activeSessionId={projects?.active?.sessionId ?? null} onDirtyChange={updateMarkdownDirty} onClose={closeMarkdown} />
+    </Suspense>}
   </div>;
 }

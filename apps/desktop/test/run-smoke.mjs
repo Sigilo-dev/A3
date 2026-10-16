@@ -10,6 +10,7 @@ const require = createRequire(join(desktop, 'package.json'));
 const electron = require('electron');
 const packaged = process.argv.includes('--packaged');
 const development = process.argv.includes('--development');
+const markdownOnly = process.argv.includes('--markdown-only');
 if (packaged && development) throw new Error('Select only one output mode.');
 const source = packaged ? join(desktop, 'dist/win-unpacked/resources/app.asar/out') : join(desktop, 'out');
 const temp = await mkdtemp(join(tmpdir(), 'a3-desktop-smoke-'));
@@ -39,8 +40,9 @@ async function startDevServer() {
 
 async function run(mode, output, expectedCode) {
   await new Promise((accept, reject) => {
-    const child = spawn(electron, [join(desktop, 'test/smoke.cjs'), mode,
-      join(output, 'main/index.cjs'), join(temp, mode), join(desktop, 'dist/smoke.png')],
+    const args = [join(desktop, 'test/smoke.cjs'), mode, join(output, 'main/index.cjs'), join(temp, mode), join(desktop, 'dist/smoke.png')];
+    if (markdownOnly) args.push('--markdown-only');
+    const child = spawn(electron, args,
     { cwd: desktop, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
@@ -69,7 +71,7 @@ try {
   await mkdir(join(desktop, 'dist'), { recursive: true });
   if (development) env.ELECTRON_RENDERER_URL = await startDevServer();
   await run('healthy', source, 0);
-  if (!packaged && !development) {
+  if (!packaged && !development && !markdownOnly) {
     for (const [mode, missing] of [['missing-renderer', 'renderer/index.html'], ['missing-preload', 'preload/index.cjs']]) {
       const fixture = join(temp, `${mode}-fixture`);
       await cp(source, fixture, { recursive: true });

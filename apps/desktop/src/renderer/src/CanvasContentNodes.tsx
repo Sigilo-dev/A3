@@ -24,9 +24,9 @@ function DrawingAssetPreview({ source }: { source: string }): React.JSX.Element 
   } catch { return <p className="canvas-content-state">Fuente de dibujo no interpretable; los bytes originales se conservan.</p>; }
 }
 
-export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback, playbackBusy, playbackError }: {
+export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback, playbackBusy, playbackError, onOpenMarkdown }: {
   entity: CanvasEntitySummary; preview: CanvasResourcePreview | null; mediaUrl: string | null;
-  activatePlayback: () => void; playbackBusy: boolean; playbackError: string | null;
+  activatePlayback: () => void; playbackBusy: boolean; playbackError: string | null; onOpenMarkdown?: () => void;
 }): React.JSX.Element {
   const resource = entity.contentResource;
   const description = textProperty(entity, 'a3.content.description');
@@ -89,7 +89,8 @@ export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback,
       <p className="canvas-content-state">{unavailable || (preview?.state === 'too-large' ? 'Contenido extenso; el original está intacto.' : preview?.state === 'binary' ? 'El recurso no es texto UTF-8.' :
         resource?.kind === 'remote-url' ? 'Referencia URL conservada; el origen no se consulta automáticamente.' : 'Vista previa disponible cuando el nodo está visible.')}</p>}
     {resource && <small className="canvas-resource-label">{resource.label}</small>}
-    {markdown && <small>Markdown · vista de lectura</small>}{shortText && <small>Texto breve · fuente Markdown</small>}
+    {markdown && <><small>Markdown · vista de lectura</small>{onOpenMarkdown && <button className="quiet canvas-markdown-open" data-open-markdown={entity.id} onClick={onOpenMarkdown}>Abrir editor visual</button>}</>}
+    {shortText && <><small>Texto breve · fuente Markdown</small>{onOpenMarkdown && <button className="quiet canvas-markdown-open" data-open-markdown={entity.id} onClick={onOpenMarkdown}>Abrir editor visual</button>}</>}
     {drawing && <small>Dibujo vectorial · la fuente canónica se conserva en el recurso</small>}
   </section>;
   return <section className="canvas-content-card" data-content-renderer="fallback">

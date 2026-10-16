@@ -14,6 +14,10 @@
     "./content-nodes": {
       "types": "./dist/src/content-nodes.d.ts",
       "import": "./dist/src/content-nodes.js"
+    },
+    "./markdown": {
+      "types": "./dist/src/markdown.d.ts",
+      "import": "./dist/src/markdown.js"
     }
   },
   "scripts": {

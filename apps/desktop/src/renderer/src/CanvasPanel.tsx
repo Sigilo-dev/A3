@@ -5,6 +5,7 @@ import type { CanvasEntitySummary, CanvasGroupView, CanvasPlacementView, CanvasR
 import { CanvasEdgeEditor, edgeAppearance, edgeTypes, toFlowEdges, type CanvasEdge, type CanvasTool } from './CanvasVisualEdges';
 import { CanvasDrawingLayer, type StrokePreview } from './CanvasDrawings';
 import { CanvasContentBody } from './CanvasContentNodes';
+import type { MarkdownEditorTarget } from './MarkdownEditor';
 import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffset, panViewport, renderOrigin, screenToWorld, toVisualViewport, wheelViewport, worldToScreen, zoomAt, type WorldViewport } from '../../shared/world-viewport';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, type ContentNodeKind } from '@a3/domain/content-nodes';
 import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
@@ -13,6 +14,7 @@ import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/
 const reference = { x: 120, y: 110, width: 550, height: 220 };
 type CanvasNodeData = {
   sessionId: string; workspaceId: string; entity: CanvasEntitySummary; placement: CanvasPlacementView; canWrite: boolean; tool: CanvasTool;
+  onOpenMarkdown: (target: MarkdownEditorTarget) => void;
   onResizeEnd: (id: string, position: { x: number; y: number }, size: { width: number; height: number }) => void;
 };
 type CanvasNode = Node<CanvasNodeData, 'a3Entity'>;
@@ -85,7 +87,9 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
       {data.entity.ports.length > 0 && <div className="canvas-ports" aria-label="Puertos">{data.entity.ports.map((port) => <span key={port.id} title={port.id}>{port.label || port.id}</span>)}</div>}
       {properties && <details><summary>Propiedades</summary><pre>{properties}</pre></details>}
       {data.entity.contentResourceId && <CanvasContentBody entity={data.entity} preview={preview} mediaUrl={mediaUrl} activatePlayback={() => void activatePlayback()}
-        playbackBusy={playbackBusy} playbackError={playbackError} />}
+        playbackBusy={playbackBusy} playbackError={playbackError} onOpenMarkdown={() => {
+          if (data.entity.contentResourceId) data.onOpenMarkdown({ sessionId: data.sessionId, entityId: data.entity.id, resourceId: data.entity.contentResourceId, title: data.entity.title });
+        }} />}
       {Object.keys(data.placement.style).length > 0 && <details><summary>Estilo de esta vista</summary><pre>{JSON.stringify(data.placement.style, null, 2)}</pre></details>}
     </div>
   </article>;
@@ -210,7 +214,7 @@ function CanvasCollapsedEdges({ workspace, origin, endpointMap, layouts }: { wor
     </g>)}
   </svg>;
 }
-function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd'], tool: CanvasTool, previous: CanvasFlowNode[] = [], force = false, onToggle: (id: string) => void = () => undefined): CanvasFlowNode[] {
+function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd'], tool: CanvasTool, previous: CanvasFlowNode[] = [], force = false, onToggle: (id: string) => void = () => undefined, onOpenMarkdown: (target: MarkdownEditorTarget) => void = () => undefined): CanvasFlowNode[] {
   const entities = new Map(workspace.entities.map((entity) => [entity.id.toLowerCase(), entity]));
   const groups = groupLayouts(workspace);
   const old = new Map(previous.map((node) => [node.id, node]));
@@ -220,13 +224,13 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
     if (!entity) return [];
     const existing = old.get(placement.id) as CanvasNode | undefined;
     if (!force && existing && existing.data.placement.revision === placement.revision && existing.data.entity.revision === entity.revision &&
-        existing.data.canWrite === workspace.canWrite && existing.data.tool === tool) return [existing];
+        existing.data.canWrite === workspace.canWrite && existing.data.tool === tool && existing.data.onOpenMarkdown === onOpenMarkdown) return [existing];
     return [{ id: placement.id, type: 'a3Entity', position: { x: placement.position.x - origin.x, y: placement.position.y - origin.y },
       style: { width: placement.size.width, height: placement.size.height }, draggable: workspace.canWrite && tool === 'select' && placement.style['a3.ui.locked'] !== true,
       zIndex: typeof placement.style['a3.ui.z-index'] === 'number' ? placement.style['a3.ui.z-index'] : 1,
       dragHandle: '.canvas-entity-header', selectable: true, focusable: true, selected: existing?.selected,
       ariaLabel: `${entity.title || entity.type}${placement.style['a3.ui.locked'] === true ? ', bloqueado' : ''}`,
-      data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, tool, onResizeEnd } }];
+      data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, tool, onResizeEnd, onOpenMarkdown } }];
   });
   const groupNodes: CanvasGroupNode[] = workspace.groups.filter((group) => !groups.hiddenGroups.has(group.id.toLowerCase())).map((group) => {
     const key = group.id.toLowerCase(), layout = groups.layouts.get(key)!, collapsed = group.collapsed;
@@ -241,7 +245,7 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
   });
   return [...groupNodes, ...placementNodes];
 }
-export function CanvasPanel({ active }: { active: LocalProjectSession | null | undefined }): React.JSX.Element {
+export function CanvasPanel({ active, onOpenMarkdown }: { active: LocalProjectSession | null | undefined; onOpenMarkdown: (target: MarkdownEditorTarget) => void }): React.JSX.Element {
   const [selected, setSelected] = useState('');
   const workspaceId = active?.workspaces.some((workspace) => workspace.id === selected) ? selected : active?.workspaces[0]?.id;
   if (!active || !workspaceId) return <section className="canvas-panel"><h1>Lienzo</h1><p>Abre un proyecto con un workspace disponible para empezar.</p></section>;
@@ -249,7 +253,7 @@ export function CanvasPanel({ active }: { active: LocalProjectSession | null | u
     <div className="canvas-heading"><h1>Lienzo</h1><label>Workspace <select aria-label="Workspace del lienzo" value={workspaceId} onChange={(event) => setSelected(event.target.value)}>
       {active.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
     </select></label></div>
-    <CanvasWorkspace key={`${active.sessionId}:${workspaceId}`} sessionId={active.sessionId} workspaceId={workspaceId} />
+    <CanvasWorkspace key={`${active.sessionId}:${workspaceId}`} sessionId={active.sessionId} workspaceId={workspaceId} onOpenMarkdown={onOpenMarkdown} />
   </section>;
 }
 
@@ -261,7 +265,7 @@ function initialContentValue(kind: ContentNodeKind): string {
   return '';
 }
 
-function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; workspaceId: string }): React.JSX.Element {
+function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown }: { sessionId: string; workspaceId: string; onOpenMarkdown: (target: MarkdownEditorTarget) => void }): React.JSX.Element {
   const [workspace, setWorkspace] = useState<LocalCanvasWorkspace | null>(null);
   const [nodes, setNodes] = useState<CanvasFlowNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
@@ -316,7 +320,7 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       nodeIds: previous.nodeIds.filter((id) => !visibility.hiddenPlacements.has(id.toLowerCase())),
       drawingIds: previous.drawingIds.filter((id) => !visibility.hiddenDrawings.has(id.toLowerCase())),
       groupIds: previous.groupIds.filter((id) => !visibility.hiddenGroups.has(id.toLowerCase())) }));
-    setNodes((previous) => toFlowNodes(next, originRef.current, handleResizeEnd, toolRef.current, previous, force, toggleGroup));
+    setNodes((previous) => toFlowNodes(next, originRef.current, handleResizeEnd, toolRef.current, previous, force, toggleGroup, onOpenMarkdown));
     setEdges((previous) => toFlowEdges(next, originRef.current, toolRef.current, previous, groupLayouts(next).edgeEndpoints));
   }
 
@@ -362,10 +366,10 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   useEffect(() => {
     const latest = workspaceRef.current;
     if (latest) {
-      setNodes((previous) => toFlowNodes(latest, origin, handleResizeEnd, tool, previous, true, toggleGroup));
+      setNodes((previous) => toFlowNodes(latest, origin, handleResizeEnd, tool, previous, true, toggleGroup, onOpenMarkdown));
       setEdges((previous) => toFlowEdges(latest, origin, tool, previous, groupLayouts(latest).edgeEndpoints));
     }
-  }, [origin.x, origin.y, handleResizeEnd, tool]);
+  }, [origin.x, origin.y, handleResizeEnd, onOpenMarkdown, tool]);
   useEffect(() => {
     if (workspace && !workspace.entityChoices.some((entity) => entity.id === selectedEntityId)) setSelectedEntityId(workspace.entityChoices[0]?.id ?? '');
   }, [workspace?.entityChoices, selectedEntityId]);

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import { APP_INFO_CHANNEL, CANVAS_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, PROJECTS_CHANNEL, type DesktopAPI, type CanvasContentRequest, type CanvasRequest, type FileDropNotice, type FileDropStageResult, type FilesRequest, type ProjectsRequest } from '../shared/desktop-api';
+import { APP_INFO_CHANNEL, CANVAS_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type DesktopAPI, type CanvasContentRequest, type CanvasRequest, type FileDropNotice, type FileDropStageResult, type FilesRequest, type MarkdownRequest, type ProjectsRequest } from '../shared/desktop-api';
 
 const dropListeners = new Set<(notice: FileDropNotice) => void>();
 window.addEventListener('dragover', (event) => {
@@ -26,6 +26,7 @@ const api: DesktopAPI = Object.freeze({
   projects: (request: ProjectsRequest) => ipcRenderer.invoke(PROJECTS_CHANNEL, request),
   files: (request: FilesRequest) => ipcRenderer.invoke(FILES_CHANNEL, request),
   canvas: ((request: CanvasRequest | CanvasContentRequest) => ipcRenderer.invoke(CANVAS_CHANNEL, request)) as DesktopAPI['canvas'],
+  markdown: (request: MarkdownRequest) => ipcRenderer.invoke(MARKDOWN_CHANNEL, request),
   onFileDrop: (listener: (notice: FileDropNotice) => void) => { dropListeners.add(listener); return () => dropListeners.delete(listener); }
 });
 

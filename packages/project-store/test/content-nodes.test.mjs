@@ -142,3 +142,50 @@ test('missing resource bytes report an unavailable preview while fallback data a
   assert.ok(after.visualEdges.some((edge) => [edge.sourcePlacementId, edge.targetPlacementId].includes(P2)));
   assert.equal(page.contentResourceId, R1);
 });
+
+test('A3-009: Markdown focus reads one canonical resource, preserves no-op bytes and rejects stale writes', windows, async (t) => {
+  const { root, tempRoot } = await scratch(t);
+  const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p7sAAAAASUVORK5CYII=', 'base64');
+  const imageId = id(700);
+  await mkdir(join(root, 'assets'), { recursive: true });
+  await writeFile(join(root, 'assets/idea.png'), imageBytes);
+  await writeFile(resourcePath(root, imageId), JSON.stringify({ schemaVersion: '1.0.0', id: imageId, revision: 1,
+    kind: 'project-file', path: 'assets/idea.png', mediaType: 'image/png', extensions: {} }, null, 2) + '\n');
+  const host = await fixtureHost(root, 'markdown-focus');
+  const manager = new LocalProjectManager({ stateDirectory: join(tempRoot, 'catalog'), host }); t.after(() => manager.dispose());
+  const active = (await manager.openFolder(root)).active;
+  const source = '\uFEFF# Página E0\r\n\r\n[[entidad-a3|Entidad vinculada]]\r\n\r\n![imagen](../assets/idea.png)\r\n';
+  const canvas = await manager.loadCanvasWorkspace(active.sessionId, W1);
+  const created = await manager.createCanvasContentNode(active.sessionId, W1, canvas.revision, { kind: 'page', title: 'Página E0', position: { x: 40, y: 40 }, value: source });
+  const placement = created.placements.find((item) => !canvas.placements.some((before) => before.id === item.id)); assert.ok(placement);
+  const entity = created.entities.find((item) => item.id === placement.entityId); assert.ok(entity?.contentResourceId);
+
+  const opened = await manager.openMarkdownDocument(active.sessionId, entity.id, entity.contentResourceId);
+  assert.equal(opened.entityId, entity.id); assert.equal(opened.content, source); assert.equal(opened.canWrite, true);
+  const asset = await manager.openMarkdownImage(active.sessionId, entity.id, entity.contentResourceId, '../assets/idea.png');
+  assert.equal(asset.mediaType, 'image/png'); assert.deepEqual(asset.bytes, imageBytes, 'portable image references resolve only through a registered, broker-read resource');
+  await assert.rejects(manager.openMarkdownImage(active.sessionId, entity.id, entity.contentResourceId, '../../outside.png'), { code: 'MARKDOWN_ASSET_UNAVAILABLE' });
+  const sourcePath = join(root, '.a3', 'resources', `${entity.contentResourceId}.json`);
+  const resource = JSON.parse(await readFile(sourcePath, 'utf8'));
+  const resourceBytesBefore = await readFile(join(root, ...resource.path.split('/')));
+  const noop = await manager.saveMarkdownDocument({ sessionId: active.sessionId, entityId: entity.id, resourceId: entity.contentResourceId,
+    entityRevision: opened.entityRevision, expectedRevision: opened.revision, expectedHash: opened.hash, content: opened.content });
+  assert.equal(noop.revision, opened.revision); assert.equal(noop.hash, opened.hash);
+  assert.deepEqual(await readFile(join(root, ...resource.path.split('/'))), resourceBytesBefore, 'no-op does not rewrite original CRLF bytes');
+
+  const edited = `${source.replace('Página E0', 'Página revisada')}\n- [ ] conservar la referencia [[otra-página#Sección|destino]]\n`;
+  const saved = await manager.saveMarkdownDocument({ sessionId: active.sessionId, entityId: entity.id, resourceId: entity.contentResourceId,
+    entityRevision: opened.entityRevision, expectedRevision: opened.revision, expectedHash: opened.hash, content: edited });
+  assert.equal(saved.entityId, opened.entityId); assert.equal(saved.revision, opened.revision + 1); assert.equal(saved.content, edited);
+  assert.equal((await manager.openMarkdownDocument(active.sessionId, entity.id, entity.contentResourceId)).content, edited, 'reopening reads the same resource');
+  await assert.rejects(manager.saveMarkdownDocument({ sessionId: active.sessionId, entityId: entity.id, resourceId: entity.contentResourceId,
+    entityRevision: opened.entityRevision, expectedRevision: opened.revision, expectedHash: opened.hash, content: `${edited}obsoleto` }), { code: 'REVISION_CONFLICT' });
+  assert.equal((await manager.openMarkdownDocument(active.sessionId, entity.id, entity.contentResourceId)).content, edited, 'stale draft cannot replace saved content');
+  assert.equal(await host.capabilities.setProfile({ root, projectId: host.projectId, profile: 'consultar' }), true);
+  const readOnly = await manager.openMarkdownDocument(active.sessionId, entity.id, entity.contentResourceId);
+  assert.equal(readOnly.canWrite, false, 'effective project grants disable the visual write controls');
+  await assert.rejects(manager.saveMarkdownDocument({ sessionId: active.sessionId, entityId: entity.id, resourceId: entity.contentResourceId,
+    entityRevision: readOnly.entityRevision, expectedRevision: readOnly.revision, expectedHash: readOnly.hash, content: `${edited}denegado` }), { code: 'PERMISSION_DENIED' });
+  assert.equal((await manager.openMarkdownDocument(active.sessionId, entity.id, entity.contentResourceId)).content, edited, 'the broker prevents edits under Consultar');
+  assert.match(edited, /\[\[otra-página#Sección\|destino\]\]/); assert.match(edited, /!\[imagen\]\(\.\.\/assets\/idea\.png\)/, 'portable Markdown references remain text');
+});

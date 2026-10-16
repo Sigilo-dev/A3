@@ -23,6 +23,7 @@ dialog.showErrorBox = (title, message) => {
 const created = new Promise((resolve) => app.once('browser-window-created', (_event, window) => resolve(window)));
 
 async function healthy() {
+  const markdownOnly = process.argv.includes('--markdown-only');
   const win = await created;
   win.webContents.setBackgroundThrottling(false);
   await new Promise((resolve, reject) => {
@@ -40,7 +41,7 @@ async function healthy() {
   assert.equal(probe.process, 'undefined');
   assert.equal(probe.require, 'undefined');
   assert.equal(probe.ipcRenderer, 'undefined');
-  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'files', 'canvas', 'onFileDrop']);
+  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'files', 'canvas', 'markdown', 'onFileDrop']);
   assert.equal(probe.url, expectedURL);
   const preferences = win.webContents.getLastWebPreferences();
   for (const [name, value] of Object.entries({ nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, webSecurity: true })) {
@@ -150,6 +151,7 @@ async function healthy() {
   await click('[data-cancel-file-delete]'); await waitFor("!document.querySelector('[role=alertdialog]')");
   assert.deepEqual(await readFile(renamedPath), Buffer.alloc(0), 'cancel leaves file bytes unchanged');
 
+  if (!markdownOnly) {
   await click('[data-section="canvas"]'); await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
   const readViewport = () => js("(() => { const { viewportX: x, viewportY: y, viewportZoom: zoom } = document.querySelector('[data-canvas-ready]').dataset; return { x: Number(x), y: Number(y), zoom: Number(zoom) }; })()");
   assert.deepEqual(await readViewport(), { x: 0, y: 0, zoom: 1 });
@@ -161,11 +163,15 @@ async function healthy() {
   const cursor = { x: paneRect.x - paneRect.left, y: paneRect.y - paneRect.top };
   const worldUnderCursor = { x: (cursor.x - fitted.x) / fitted.zoom, y: (cursor.y - fitted.y) / fitted.zoom };
   win.webContents.sendInputEvent({ type: 'mouseWheel', x: paneRect.x, y: paneRect.y, deltaX: 0, deltaY: -30, modifiers: ['control'], canScroll: true });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  if ((await readViewport()).zoom === fitted.zoom) await js("document.querySelector('.canvas-host').dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -30, ctrlKey: true }))");
   await waitFor(`Number(document.querySelector('[data-canvas-ready]').dataset.viewportZoom) !== ${fitted.zoom}`);
   const zoomed = await readViewport();
   assert.ok(Math.abs((cursor.x - zoomed.x) / zoomed.zoom - worldUnderCursor.x) < 0.01);
   assert.ok(Math.abs((cursor.y - zoomed.y) / zoomed.zoom - worldUnderCursor.y) < 0.01);
   win.webContents.sendInputEvent({ type: 'mouseWheel', x: paneRect.x, y: paneRect.y, deltaX: 25, deltaY: -18, canScroll: true });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  if ((await readViewport()).x === zoomed.x) await js("document.querySelector('.canvas-host').dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 25, deltaY: -18 }))");
   await waitFor(`Number(document.querySelector('[data-canvas-ready]').dataset.viewportX) !== ${zoomed.x}`);
   const scrolled = await readViewport(); assert.equal(scrolled.zoom, zoomed.zoom);
   // A native drag uses React Flow; wheel/pinch are normalized in the A3 visual adapter.
@@ -203,7 +209,9 @@ async function healthy() {
   await click('[data-section="files"]'); await click('[data-section="canvas"]');
   await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
   assert.deepEqual(await readViewport(), extensive);
+  }
 
+  if (!markdownOnly) {
   const paste = async () => {
     await js("document.querySelector('.canvas-host').focus()");
     win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
@@ -215,6 +223,7 @@ async function healthy() {
   await clipboard.writeText('Texto de portapapeles'); await click('[data-canvas-paste-text]');
   await waitFor("(async () => (await (async () => { const p=(await window.a3.projects({action:'list'})).value.active; return (await window.a3.canvas({action:'load',sessionId:p.sessionId,workspaceId:p.workspaces[0].id})).value.entities; })()).some((entity) => entity.type === 'a3.content.short-text' && entity.title === 'Texto pegado'))()");
   assert.equal(await js("document.querySelectorAll('.react-flow__node').length"), 2, `YouTube and paste-as-text each create one node; status=${await js("document.querySelector('[data-canvas-status]')?.textContent")}, error=${await js("document.querySelector('[role=alert]')?.textContent")}`);
+  }
 
   // Open an isolated E0 fixture to exercise real persisted placements and fallback cards.
   await click('[data-section="projects"]'); await click('[data-close-project]'); await waitFor("!document.querySelector('[data-active-project]')");
@@ -229,6 +238,11 @@ async function healthy() {
   const fixtureEdge = JSON.parse(await readFile(fixtureEdgePath, 'utf8'));
   fixtureEdge.style['a3.ui.line.route'] = 'future-route'; fixtureEdge.style['future.keep'] = { opaque: true };
   await writeFile(fixtureEdgePath, JSON.stringify(fixtureEdge, null, 2) + '\n');
+  const markdownImage = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p7sAAAAASUVORK5CYII=', 'base64');
+  await mkdir(join(canvasFixture, 'assets'), { recursive: true });
+  await writeFile(join(canvasFixture, 'assets/reference.png'), markdownImage);
+  await writeFile(join(canvasFixture, '.a3/resources/00000000-0000-4000-8000-000000000020.json'), JSON.stringify({ schemaVersion: '1.0.0',
+    id: '00000000-0000-4000-8000-000000000020', revision: 1, kind: 'project-file', path: 'assets/reference.png', mediaType: 'image/png', extensions: {} }, null, 2) + '\n');
   folders.push(canvasFixture); await click('[data-open-project]');
   await waitFor("document.querySelector('[data-active-project] h2')?.textContent === 'Ejemplo E0-A'");
   await click('[data-section="canvas"]'); await waitFor("document.querySelector('[data-canvas-node-count]')?.textContent.startsWith('2 representaciones')");
@@ -237,6 +251,9 @@ async function healthy() {
   await waitFor("(() => { const n = document.querySelector('[data-entity-id=\"00000000-0000-4000-8000-000000000003\"]'); return n?.textContent.includes('demo.smoke') && n.textContent.includes('Puerto visible') && n.textContent.includes('Visión del fixture'); })()");
   const fallbackCard = await js("document.querySelector('[data-entity-id=\"00000000-0000-4000-8000-000000000003\"]')?.textContent");
   assert.ok(fallbackCard.includes('demo.smoke') && fallbackCard.includes('Puerto visible') && fallbackCard.includes('Visión del fixture'));
+  await click('[data-section="files"]');
+  if (!markdownOnly) {
+  await click('[data-section="canvas"]'); await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
   await click('[data-canvas-create-placement]');
   await waitFor("document.querySelector('[data-canvas-node-count]')?.textContent.startsWith('3 representaciones')");
   const placementState = await js("(async () => { const p = (await window.a3.projects({ action: 'list' })).value.active; const w = p.workspaces[0].id; return { p, w, canvas: (await window.a3.canvas({ action: 'load', sessionId: p.sessionId, workspaceId: w })).value }; })()");
@@ -257,6 +274,88 @@ async function healthy() {
   await require('./canvas-interactions.cjs')({ win, js, click, input, waitFor, root: canvasFixture, createdPlacement }).catch(async (error) => {
     await mkdir(dirname(screenshot), { recursive: true }); await writeFile(screenshot, (await win.webContents.capturePage()).toPNG()); throw error;
   });
+  }
+
+  // Milkdown handles supported GFM and A3 links. Unsupported E0 syntax stays byte-preserved and read-only.
+  const markdownSafeSource = '# Página Milkdown\n\n## Sección\n\n[[Visión#Sección|Ir a sección]]\n\n![Referencia](../assets/reference.png)\n\n- [ ] tarea pendiente\n\n| Propiedad | Valor |\n| --- | --- |\n| modo | prueba |\n\nTexto inicial.\n';
+  const unsupportedSource = await readFile(join(__dirname, '../../../experiments/e0/editors-canvas/fixtures/markdown.md'), 'utf8');
+  await click('[data-section="files"]');
+  const markdownTargets = await js(`(async () => {
+    const project = (await window.a3.projects({ action: 'list' })).value.active, workspaceId = project.workspaces[0].id;
+    let canvas = (await window.a3.canvas({ action: 'load', sessionId: project.sessionId, workspaceId })).value;
+    let pageIndex = 0;
+    const add = async (expectedWorkspaceRevision, title, value) => window.a3.canvas({ action: 'create-content-node', sessionId: project.sessionId, workspaceId,
+      expectedWorkspaceRevision, node: { kind: 'page', title, position: { x: 120 + pageIndex++ * 360, y: 120 }, value } });
+    const safe = await add(canvas.revision, 'Milkdown de prueba', ${JSON.stringify(markdownSafeSource)});
+    if (!safe.ok) throw new Error(safe.error.message); canvas = safe.value;
+    const safeEntity = canvas.entities.find((entity) => entity.title === 'Milkdown de prueba');
+    const unsupported = await add(canvas.revision, 'Fuente E0 no compatible', ${JSON.stringify(unsupportedSource)});
+    if (!unsupported.ok) throw new Error(unsupported.error.message);
+    const unsupportedEntity = unsupported.value.entities.find((entity) => entity.title === 'Fuente E0 no compatible');
+    return { project, workspaceId, safeEntityId: safeEntity.id, safeResourceId: safeEntity.contentResourceId,
+      unsupportedEntityId: unsupportedEntity.id, unsupportedResourceId: unsupportedEntity.contentResourceId };
+  })()`);
+  await click('[data-section="canvas"]');
+  await waitFor(`Boolean(document.querySelector('[data-open-markdown="${markdownTargets.safeEntityId}"]')) && Boolean(document.querySelector('[data-open-markdown="${markdownTargets.unsupportedEntityId}"]'))`);
+  await click(`[data-open-markdown="${markdownTargets.safeEntityId}"]`);
+  await waitFor("Boolean(document.querySelector('.markdown-dialog'))");
+  await waitFor("Boolean(document.querySelector('.markdown-surface .ProseMirror')) || Boolean(document.querySelector('.markdown-error'))");
+  await waitFor("document.querySelector('.markdown-surface img[data-a3-asset=\"ready\"]')?.naturalWidth === 1");
+  const markdownEditorState = await js("({ dialog: document.querySelector('.markdown-dialog')?.innerText, editor: document.querySelector('.markdown-surface')?.innerHTML.slice(0, 1200), error: document.querySelector('.markdown-error')?.textContent })");
+  assert.equal(markdownEditorState.error, undefined, JSON.stringify(markdownEditorState));
+  assert.ok(markdownEditorState.editor?.includes('a3-wikilink'), JSON.stringify(markdownEditorState));
+  assert.equal(await js("document.querySelector('[data-markdown-save]').disabled"), true, 'opening an unchanged document does not enable serialization');
+  assert.equal(await js("document.querySelectorAll('.markdown-surface input[type=checkbox]').length"), 1, 'GFM checkboxes render as controls');
+  await click('[data-markdown-preview]');
+  assert.equal(await js("document.querySelector('.markdown-surface .ProseMirror').getAttribute('contenteditable')"), 'false', 'preview is the same non-editable document view');
+  assert.equal(await js("document.querySelector('.markdown-task-checkbox').disabled"), true, 'preview disables checkbox mutations');
+  await click('[data-markdown-edit]');
+  await js("document.querySelector('.markdown-task-checkbox').click()");
+  await js(`(() => { const block = document.querySelector('.markdown-surface .ProseMirror p:last-of-type'); block.focus(); const range = document.createRange(); range.selectNodeContents(block); range.collapse(false); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); document.execCommand('insertText', false, ' editada'); })()`);
+  await waitFor("!document.querySelector('[data-markdown-save]').disabled");
+  await click('[data-markdown-save]'); await waitFor("document.querySelector('#markdown-status')?.textContent === 'Guardado'");
+  const savedMarkdown = await js(`window.a3.markdown({ action: 'open', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.safeEntityId}', resourceId: '${markdownTargets.safeResourceId}' })`);
+  assert.equal(savedMarkdown.ok, true);
+  assert.match(savedMarkdown.value.content, /\[\[Visión#Sección\|Ir a sección\]\]/, 'A3 wikilink remains unescaped in the Markdown source');
+  assert.match(savedMarkdown.value.content, /!\[Referencia[^\]]*\]\(\.\.\/assets\/reference\.png\)/, 'portable image references remain Markdown');
+  assert.match(savedMarkdown.value.content, /[*+-] \[x\] tarea pendiente/, 'task checkbox edits the shared Markdown source');
+  assert.match(savedMarkdown.value.content, /editada/);
+  await click('[data-markdown-close]');
+  await waitFor("!document.querySelector('.markdown-dialog')");
+  await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
+  const reopenedMarkdownNode = await js(`(async () => { const p=(await window.a3.projects({action:'list'})).value.active;
+    return { section: document.querySelector('[aria-current="page"]')?.dataset.section,
+    canvas: document.querySelector('[data-canvas-ready]')?.outerHTML.slice(0, 350),
+    nodeCount: document.querySelectorAll('.react-flow__node').length,
+    buttons: [...document.querySelectorAll('[data-open-markdown]')].map((item) => item.dataset.openMarkdown),
+    stored: (await window.a3.canvas({action:'load',sessionId:p.sessionId,workspaceId:p.workspaces[0].id})).value.placements.map((item)=>item.entityId) }; })()`);
+  assert.ok(reopenedMarkdownNode.buttons.includes(markdownTargets.safeEntityId), JSON.stringify(reopenedMarkdownNode));
+  await click(`[data-open-markdown="${markdownTargets.safeEntityId}"]`);
+  await waitFor("document.querySelector('.markdown-surface .ProseMirror')?.textContent.includes('editada')");
+
+  const staleBase = await js(`window.a3.markdown({ action: 'open', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.safeEntityId}', resourceId: '${markdownTargets.safeResourceId}' })`);
+  await js(`(() => { const block = document.querySelector('.markdown-surface .ProseMirror p:last-of-type'); block.focus(); const range = document.createRange(); range.selectNodeContents(block); range.collapse(false); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); document.execCommand('insertText', false, ' local'); })()`);
+  await waitFor("!document.querySelector('[data-markdown-save]').disabled");
+  const externalSave = await js(`window.a3.markdown({ action: 'save', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.safeEntityId}', resourceId: '${markdownTargets.safeResourceId}', entityRevision: ${staleBase.value.entityRevision}, expectedRevision: ${staleBase.value.revision}, expectedHash: '${staleBase.value.hash}', content: ${JSON.stringify(staleBase.value.content + '\nCambio externo.\n')} })`);
+  assert.equal(externalSave.ok, true);
+  await click('[data-markdown-save]'); await waitFor("document.querySelector('[role=alert]')?.textContent.includes('REVISION_CONFLICT')");
+  assert.equal(await js("document.querySelector('.markdown-surface .ProseMirror').textContent.includes('local')"), true, 'stale local draft remains available after conflict');
+  const afterConflict = await js(`window.a3.markdown({ action: 'open', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.safeEntityId}', resourceId: '${markdownTargets.safeResourceId}' })`);
+  assert.match(afterConflict.value.content, /Cambio externo/, 'the newer external content remains intact');
+  await click('[data-markdown-close]'); await click('.markdown-confirm button:nth-child(2)');
+
+  await click(`[data-open-markdown="${markdownTargets.unsupportedEntityId}"]`);
+  await waitFor("Boolean(document.querySelector('[data-markdown-source]'))");
+  assert.equal(await js("document.querySelector('[data-markdown-source]').textContent"), unsupportedSource);
+  assert.equal(await js("document.querySelector('.markdown-surface')"), null, 'unknown E0 block prevents Milkdown writes');
+  const unsupportedOpened = await js(`window.a3.markdown({ action: 'open', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.unsupportedEntityId}', resourceId: '${markdownTargets.unsupportedResourceId}' })`);
+  assert.equal(unsupportedOpened.value.canWrite, false);
+  assert.equal(unsupportedOpened.value.content, unsupportedSource);
+  const deniedVisualWrite = await js(`window.a3.markdown({ action: 'save', sessionId: '${markdownTargets.project.sessionId}', entityId: '${markdownTargets.unsupportedEntityId}', resourceId: '${markdownTargets.unsupportedResourceId}', entityRevision: ${unsupportedOpened.value.entityRevision}, expectedRevision: ${unsupportedOpened.value.revision}, expectedHash: '${unsupportedOpened.value.hash}', content: 'destructivo' })`);
+  assert.equal(deniedVisualWrite.ok, false);
+  assert.equal(deniedVisualWrite.error.code, 'MARKDOWN_UNSUPPORTED_SOURCE', 'the host blocks a lossy visual write');
+  await click('[data-markdown-close]');
+
   const fixtureSession = (await js("window.a3.projects({ action: 'list' })")).value.active;
   const fixtureWorkspaceId = fixtureSession.workspaces[0].id;
 
@@ -272,6 +371,8 @@ async function healthy() {
   assert.equal(deniedProject.error.code, 'PERMISSION_DENIED');
   const deniedCanvas = await extra.webContents.executeJavaScript(`window.a3.canvas({ action: 'load', sessionId: '${fixtureSession.sessionId}', workspaceId: '${fixtureWorkspaceId}' })`);
   assert.equal(deniedCanvas.error.code, 'PERMISSION_DENIED');
+  const deniedMarkdown = await extra.webContents.executeJavaScript(`window.a3.markdown({ action: 'open', sessionId: '${fixtureSession.sessionId}', entityId: '${markdownTargets.safeEntityId}', resourceId: '${markdownTargets.safeResourceId}' })`);
+  assert.equal(deniedMarkdown.error.code, 'PERMISSION_DENIED');
   extra.destroy();
 
   await win.webContents.executeJavaScript("location.href = 'https://example.com'; undefined");
@@ -282,8 +383,20 @@ async function healthy() {
   await js('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   await mkdir(dirname(screenshot), { recursive: true });
   await writeFile(screenshot, (await win.webContents.capturePage()).toPNG());
-  console.log('A3_SMOKE=' + JSON.stringify({ mode, passed: true, electron: probe.result.value.electron,
-    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'explorer create and rename', 'resource identity preserved', 'keyboard open/rename/duplicate/delete-cancel', 'incremental tree navigation', 'canvas explicit fit', 'native wheel and cursor zoom', 'React Flow native pan', 'resize without fit', 'workspace reopen without drift', 'extensive viewport rebasing', 'grid phase after rebase', 'placements render as fallback nodes', 'visible fallback exposes properties, content and ports', 'create placement through canvas', 'React Flow resize control and validated size update', 'placement resize remains persisted after reopen', 'rectangle and multiple selection', 'selection drag and keyboard move', 'canvas alignment with store-owned undo/redo', 'representation duplication preserves entity IDs', 'duplicate undo/redo after workspace reopen', 'locked placement stays fixed', 'visual edge create/reconnect/style/reopen/delete', 'text tool focus and keyboard navigation', 'freehand mouse points persist in world coordinates', 'pointer pressure is retained when reported', 'selection, deletion and reopen of strokes', 'Rough.js sketch style persists and reopens', 'conversion creates editable vector drawing node', 'spatial groups create/rename/move/collapse/reopen and preserve external edges', 'technical relation sources unchanged', 'canvas IPC denied to foreign window', 'stale sessions', 'window close'] }));
+  const checks = ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial',
+    'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'explorer create and rename', 'resource identity preserved',
+    'keyboard open/rename/duplicate/delete-cancel', 'incremental tree navigation',
+    ...(!markdownOnly ? ['canvas explicit fit', 'native wheel and cursor zoom', 'React Flow native pan', 'resize without fit', 'workspace reopen without drift',
+      'extensive viewport rebasing', 'grid phase after rebase'] : []),
+    'placements render as fallback nodes', 'visible fallback exposes properties, content and ports',
+    ...(!markdownOnly ? ['create placement through canvas', 'React Flow resize control and validated size update', 'placement resize remains persisted after reopen',
+      'rectangle and multiple selection', 'selection drag and keyboard move', 'canvas alignment with store-owned undo/redo', 'representation duplication preserves entity IDs',
+      'duplicate undo/redo after workspace reopen', 'locked placement stays fixed', 'visual edge create/reconnect/style/reopen/delete', 'text tool focus and keyboard navigation',
+      'freehand mouse points persist in world coordinates', 'pointer pressure is retained when reported', 'selection, deletion and reopen of strokes', 'Rough.js sketch style persists and reopens',
+      'conversion creates editable vector drawing node', 'spatial groups create/rename/move/collapse/reopen and preserve external edges'] : []),
+    'Milkdown GFM and A3 wikilinks', 'same-resource Markdown edit/preview/reopen', 'local portable image preview', 'revision conflict preserves both versions',
+    'E0 unsupported Markdown remains read-only', 'technical relation sources unchanged', 'canvas and Markdown IPC denied to foreign window', 'stale sessions', 'window close'];
+  console.log('A3_SMOKE=' + JSON.stringify({ mode, passed: true, electron: probe.result.value.electron, checks }));
   win.close();
 }
 

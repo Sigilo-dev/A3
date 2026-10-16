@@ -34,6 +34,11 @@
     "vite": "8.3.4"
   },
   "dependencies": {
+    "@milkdown/core": "7.22.3",
+    "@milkdown/plugin-listener": "7.22.3",
+    "@milkdown/preset-commonmark": "7.22.3",
+    "@milkdown/preset-gfm": "7.22.3",
+    "@milkdown/utils": "7.22.3",
     "perfect-freehand": "1.2.3",
     "roughjs": "4.6.6"
   }

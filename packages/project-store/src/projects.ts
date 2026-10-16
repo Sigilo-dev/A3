@@ -1,8 +1,8 @@
 import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { CONTENT_NODE_CATALOG, contentNodeDefinition, defaultRegistry, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
+import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
+import { CONTENT_NODE_CATALOG, contentNodeDefinition, defaultRegistry, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
@@ -77,6 +77,11 @@ export interface CanvasPlacementViewPatch { id: string; expectedRevision: number
 export interface CanvasSelectionRef { id: string; expectedRevision: number; }
 export interface CanvasSelection { placements: CanvasSelectionRef[]; drawings: CanvasSelectionRef[]; groups: CanvasSelectionRef[]; }
 export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; mediaType?: string; bytes?: Uint8Array; }
+export interface MarkdownDocument {
+  entityId: string; entityRevision: number; resourceId: string; revision: number; hash: string; content: string;
+  canWrite: boolean; readOnlyReason: string | null; unsupported: readonly string[];
+}
+export interface MarkdownAsset { reference: string; mediaType: string; bytes: Uint8Array; }
 export interface LocalCanvasWorkspace {
   sessionId: string; workspaceId: string; name: string; revision: number;
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
@@ -855,6 +860,134 @@ export class LocalProjectManager {
       if (purpose === 'playback' || mediaType.startsWith('image/')) return { entityId, resourceId, text: null, state: 'binary', mediaType, bytes: opened.value.bytes };
       try { return { entityId, resourceId, text: new TextDecoder('utf-8', { fatal: true }).decode(opened.value.bytes), state: 'ready', mediaType }; }
       catch { return { entityId, resourceId, text: null, state: 'binary', mediaType }; }
+    });
+  }
+  #markdownWriteAllowed(active: ActiveProjectBinding, resource: Extract<DomainRecord, { kind: 'resource' }>): boolean {
+    const state = active.lease.service.state;
+    if (resource.value.kind !== 'project-file' || state.mode !== 'writer' || state.externalConflict) return false;
+    return this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+      projectId: active.projectId, operation: 'write', paths: [resource.value.path], refs: [refOf(resource)], resources: [resource.value],
+      requiredCapabilities: ['document.edit'], stage: 'prepare' }).allowed;
+  }
+  #markdownReadOnlyReason(active: ActiveProjectBinding, resource: Extract<DomainRecord, { kind: 'resource' }>, editable: boolean): string | null {
+    if (resource.value.kind === 'mounted-file') return 'El recurso está montado como referencia de solo lectura.';
+    if (active.lease.service.state.mode !== 'writer') return 'El proyecto está abierto en modo de solo lectura.';
+    if (active.lease.service.state.externalConflict) return 'Hay cambios externos pendientes de resolver en el proyecto.';
+    if (!editable) return 'La fuente incluye sintaxis que el editor visual no puede conservar.';
+    if (!this.#markdownWriteAllowed(active, resource)) return 'El broker local no concede edición documental para este proyecto.';
+    return null;
+  }
+  openMarkdownDocument(sessionId: string, entityId: string, resourceId: string): Promise<MarkdownDocument> {
+    return this.#queue(async () => {
+      const active = this.#active;
+      demand(active && active.sessionId === sessionId, 'STALE_SESSION', 'El proyecto cambió antes de abrir la página.');
+      const snapshot = active.lease.service.state.project.snapshot;
+      const entity = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === entityId.toLowerCase());
+      demand(entity?.kind === 'entity' && ['a3.core.page', 'a3.content.short-text', 'a3.content.markdown'].includes(entity.value.type) &&
+        entity.value.contentResourceId?.toLowerCase() === resourceId.toLowerCase(), 'MARKDOWN_ENTITY_MISMATCH', 'La entidad ya no apunta a este recurso Markdown.');
+      const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> =>
+        record.kind === 'resource' && record.value.id.toLowerCase() === resourceId.toLowerCase());
+      demand(resource && resource.value.kind !== 'remote-url' && (resource.value.mediaType === 'text/markdown' || resource.value.path.toLowerCase().endsWith('.md')),
+        'MARKDOWN_RESOURCE_REQUIRED', 'El editor solo abre recursos Markdown UTF-8.');
+      const opened = await active.lease.service.openResource(resourceId, 2 * 1024 * 1024);
+      demand(opened.ok, opened.diagnostics.some((item) => item.code === 'PERMISSION_DENIED') ? 'PERMISSION_DENIED' : 'MARKDOWN_READ_FAILED',
+        opened.diagnostics.map((item) => item.message).join('\n') || 'No se pudo leer el recurso Markdown.');
+      let content: string;
+      try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(opened.value.bytes); }
+      catch { throw new LocalProjectError('MARKDOWN_ENCODING_UNSUPPORTED', 'El Markdown no es UTF-8 válido. Los bytes originales se conservan y la edición visual queda desactivada.'); }
+      const inspection = inspectMarkdownSource(content);
+      const readOnlyReason = this.#markdownReadOnlyReason(active, resource, inspection.editable);
+      return { entityId: entity.value.id, entityRevision: entity.value.revision, resourceId: resource.value.id, revision: opened.value.revision,
+        hash: opened.value.sha256, content, canWrite: readOnlyReason === null, readOnlyReason, unsupported: inspection.reasons };
+    });
+  }
+  openMarkdownImage(sessionId: string, entityId: string, resourceId: string, reference: string): Promise<MarkdownAsset> {
+    return this.#queue(async () => {
+      const active = this.#active;
+      demand(active && active.sessionId === sessionId, 'STALE_SESSION', 'El proyecto cambió antes de abrir la imagen Markdown.');
+      demand(typeof reference === 'string' && reference.length > 0 && reference.length <= 2048 && !/[\\\0?#]/.test(reference) &&
+        !/^(?:[a-z][a-z\d+.-]*:|\/\/|\/)/i.test(reference), 'MARKDOWN_ASSET_UNAVAILABLE', 'La imagen debe ser una referencia relativa portable del proyecto.');
+      let decoded: string;
+      try { decoded = decodeURIComponent(reference); }
+      catch { throw new LocalProjectError('MARKDOWN_ASSET_UNAVAILABLE', 'La referencia de imagen contiene codificación inválida.'); }
+      demand(!/[\\\0?#:]/.test(decoded), 'MARKDOWN_ASSET_UNAVAILABLE', 'La referencia de imagen no es una ruta portable.');
+      const snapshot = active.lease.service.state.project.snapshot;
+      const entity = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === entityId.toLowerCase());
+      demand(entity?.kind === 'entity' && ['a3.core.page', 'a3.content.short-text', 'a3.content.markdown'].includes(entity.value.type) &&
+        entity.value.contentResourceId?.toLowerCase() === resourceId.toLowerCase(), 'MARKDOWN_ENTITY_MISMATCH', 'La entidad ya no apunta a este recurso Markdown.');
+      const source = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> =>
+        record.kind === 'resource' && record.value.id.toLowerCase() === resourceId.toLowerCase());
+      demand(source?.kind === 'resource' && source.value.kind === 'project-file' &&
+        (source.value.mediaType === 'text/markdown' || source.value.path.toLowerCase().endsWith('.md')), 'MARKDOWN_RESOURCE_REQUIRED', 'El editor solo resuelve imágenes desde Markdown del proyecto.');
+      const path = posix.normalize(posix.join(posix.dirname(source.value.path), decoded));
+      demand(path !== '.' && path !== '..' && !path.startsWith('../') && !path.startsWith('/'), 'MARKDOWN_ASSET_UNAVAILABLE', 'La imagen sale de la raíz portable del proyecto.');
+      const matches = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'resource' }> =>
+        record.kind === 'resource' && record.value.kind === 'project-file' && record.value.path.toLowerCase() === path.toLowerCase());
+      demand(matches.length === 1 && !!matches[0], 'MARKDOWN_ASSET_UNAVAILABLE', 'La imagen local no tiene una referencia de recurso única en el proyecto.');
+      const asset = matches[0]!;
+      demand(asset.value.kind === 'project-file', 'MARKDOWN_ASSET_UNAVAILABLE', 'La referencia no es un archivo interno del proyecto.');
+      const allowedImages = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp']);
+      const imageMediaTypes: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+        '.webp': 'image/webp', '.avif': 'image/avif', '.bmp': 'image/bmp' };
+      const declaredMediaType = typeof asset.value.mediaType === 'string' ? asset.value.mediaType.toLowerCase() : undefined;
+      const mediaType = declaredMediaType ?? imageMediaTypes[posix.extname(asset.value.path).toLowerCase()];
+      demand(mediaType && allowedImages.has(mediaType), 'MARKDOWN_ASSET_UNAVAILABLE', 'Solo se previsualizan imágenes locales rasterizadas aprobadas; SVG y otros tipos permanecen como referencia de texto.');
+      const opened = await active.lease.service.openResource(asset.value.id, 4 * 1024 * 1024);
+      demand(opened.ok, opened.diagnostics.some((item) => item.code === 'PERMISSION_DENIED') ? 'PERMISSION_DENIED' : 'MARKDOWN_ASSET_UNAVAILABLE',
+        opened.diagnostics.map((item) => item.message).join('\n') || 'No se pudo leer la imagen local.');
+      return { reference, mediaType, bytes: opened.value.bytes };
+    });
+  }
+  saveMarkdownDocument(input: { sessionId: string; entityId: string; resourceId: string; entityRevision: number; expectedRevision: number; expectedHash: string; content: string }): Promise<MarkdownDocument> {
+    const content = input.content;
+    return this.#queue(async () => {
+      const active = this.#active;
+      demand(active && active.sessionId === input.sessionId, 'STALE_SESSION', 'El proyecto cambió; el borrador Markdown sigue en el editor.');
+      demand(typeof content === 'string' && content.length <= 2 * 1024 * 1024, 'MARKDOWN_SIZE_LIMIT', 'El documento supera el límite de edición visual de 2 MiB.');
+      const bytes = new TextEncoder().encode(content);
+      demand(bytes.byteLength <= 2 * 1024 * 1024, 'MARKDOWN_SIZE_LIMIT', 'El documento supera el límite de edición visual de 2 MiB.');
+      const snapshot = active.lease.service.state.project.snapshot;
+      const entity = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === input.entityId.toLowerCase());
+      demand(entity?.kind === 'entity' && ['a3.core.page', 'a3.content.short-text', 'a3.content.markdown'].includes(entity.value.type) &&
+        entity.value.contentResourceId?.toLowerCase() === input.resourceId.toLowerCase(), 'MARKDOWN_ENTITY_MISMATCH', 'La entidad o el recurso cambiaron; no se guardó el borrador.');
+      demand(entity.value.revision === input.entityRevision, 'REVISION_CONFLICT', 'La entidad cambió; vuelve a cargarla o copia el borrador antes de resolver el conflicto.');
+      const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> =>
+        record.kind === 'resource' && record.value.id.toLowerCase() === input.resourceId.toLowerCase());
+      demand(resource?.kind === 'resource' && resource.value.kind === 'project-file' &&
+        (resource.value.mediaType === 'text/markdown' || resource.value.path.toLowerCase().endsWith('.md')), 'MARKDOWN_READ_ONLY', 'Solo se guardan páginas Markdown internas del proyecto. Las referencias externas son de solo lectura.');
+      const opened = await active.lease.service.openResource(resource.value.id, 2 * 1024 * 1024);
+      demand(opened.ok, opened.diagnostics.some((item) => item.code === 'PERMISSION_DENIED') ? 'PERMISSION_DENIED' : 'MARKDOWN_READ_FAILED',
+        opened.diagnostics.map((item) => item.message).join('\n') || 'No se pudo verificar la revisión actual del recurso.');
+      demand(opened.value.revision === input.expectedRevision && opened.value.sha256 === input.expectedHash, 'REVISION_CONFLICT',
+        'El archivo Markdown cambió fuera de este editor. El borrador se conserva; recarga o copia antes de resolver.');
+      let current: string;
+      try { current = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(opened.value.bytes); }
+      catch { throw new LocalProjectError('MARKDOWN_ENCODING_UNSUPPORTED', 'El archivo dejó de ser UTF-8 válido. No se sobrescribió.'); }
+      const currentInspection = inspectMarkdownSource(current);
+      demand(currentInspection.editable, 'MARKDOWN_UNSUPPORTED_SOURCE', 'La fuente actual contiene sintaxis no compatible; se conservó el archivo original y se bloqueó el guardado visual.');
+      const nextInspection = inspectMarkdownSource(content);
+      demand(nextInspection.editable, 'MARKDOWN_UNSUPPORTED_SOURCE', 'El borrador contiene sintaxis no compatible con el editor visual; no se guardó.');
+      if (Buffer.from(bytes).equals(Buffer.from(opened.value.bytes))) {
+        const readOnlyReason = this.#markdownReadOnlyReason(active, resource, currentInspection.editable);
+        return {
+          entityId: entity.value.id, entityRevision: entity.value.revision, resourceId: resource.value.id, revision: opened.value.revision,
+          hash: opened.value.sha256, content: current, canWrite: readOnlyReason === null, readOnlyReason, unsupported: currentInspection.reasons
+        };
+      }
+      const plan = await active.lease.service.prepareResourceWrite({ operationId: randomUUID(), resourceId: resource.value.id,
+        expectedRevision: input.expectedRevision, expectedHash: input.expectedHash, bytes });
+      demand(plan.ok, plan.diagnostics.some((item) => item.code === 'PERMISSION_DENIED') ? 'PERMISSION_DENIED' :
+        plan.diagnostics.some((item) => item.code === 'REVISION_CONFLICT') ? 'REVISION_CONFLICT' : 'MARKDOWN_WRITE_REJECTED',
+      plan.diagnostics.map((item) => item.message).join('\n') || 'El servicio rechazó el guardado Markdown.');
+      const committed = await active.lease.service.commit(plan.value);
+      demand(committed.ok, committed.diagnostics.some((item) => item.code === 'PERMISSION_DENIED') ? 'PERMISSION_DENIED' :
+        committed.diagnostics.some((item) => item.code === 'REVISION_CONFLICT') ? 'REVISION_CONFLICT' : 'MARKDOWN_WRITE_FAILED',
+      committed.diagnostics.map((item) => item.message).join('\n') || 'No se pudo confirmar el guardado Markdown.');
+      const saved = await active.lease.service.openResource(resource.value.id, 2 * 1024 * 1024);
+      demand(saved.ok, 'MARKDOWN_VERIFY_FAILED', 'El guardado terminó, pero no se pudo volver a leer para verificarlo.');
+      const readOnlyReason = this.#markdownReadOnlyReason(active, resource, true);
+      return { entityId: entity.value.id, entityRevision: entity.value.revision, resourceId: resource.value.id, revision: saved.value.revision,
+        hash: saved.value.sha256, content, canWrite: readOnlyReason === null, readOnlyReason, unsupported: [] };
     });
   }
   approveCanvasDropMount(sessionId: string, mountId: string, selectedRoot: string): Promise<boolean> {
