@@ -80,6 +80,39 @@ test('a new representation preserves entity and resource IDs without semantic si
   assert.equal(plan.nextSnapshot.records.filter((r) => r.kind === 'relation').length, 1);
 });
 
+test('placement view edits revise only that workspace representation and preserve opaque style data', () => {
+  const state = fixture();
+  const before = structuredClone(state);
+  const plan = success(run(state, 'a3.core.update-placement-view', {
+    ref: { kind: 'placement', id: P1, workspaceId: W1 },
+    position: { x: 125.25, y: -88 }, size: { width: 420, height: 260 },
+    style: { 'future.palette': { accent: 'sage' } }
+  }, [], context()));
+  const changed = find(plan.nextSnapshot, 'placement', P1, W1);
+  const otherView = find(plan.nextSnapshot, 'placement', P3, W2);
+  assert.equal(changed.value.revision, 2);
+  assert.deepEqual(changed.value.position, { ...find(before, 'placement', P1, W1).value.position, x: 125.25, y: -88 });
+  assert.deepEqual(changed.value.size, { width: 420, height: 260 });
+  assert.deepEqual(changed.value.style['future.palette'], { accent: 'sage' });
+  assert.deepEqual(otherView.value, find(before, 'placement', P3, W2).value);
+  assert.deepEqual(find(plan.nextSnapshot, 'entity', E1).value, find(before, 'entity', E1).value);
+});
+
+test('placement view edits require a valid size and preserve existing style keys', () => {
+  const state = fixture();
+  rejection(run(state, 'a3.core.update-placement-view', {
+    ref: { kind: 'placement', id: P1, workspaceId: W1 }, size: { width: 0, height: 120 }
+  }, [], context()), 'invalid-placement-size');
+  const old = find(state, 'placement', P1, W1);
+  old.value.style['future.keep'] = { retained: true };
+  const plan = success(run(state, 'a3.core.update-placement-view', {
+    ref: { kind: 'placement', id: P1, workspaceId: W1 }, style: { 'a3.ui.accent': '#74a778' }
+  }, [], context()));
+  assert.deepEqual(find(plan.nextSnapshot, 'placement', P1, W1).value.style, {
+    'future.keep': { retained: true }, 'a3.ui.accent': '#74a778'
+  });
+});
+
 test('A3-005: duplicate content remaps internal graph and retains originals and opaque metadata', () => {
   const state = fixture();
   const before = structuredClone(state);

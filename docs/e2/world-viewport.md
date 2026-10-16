@@ -2,6 +2,8 @@
 
 Se integra React Flow `12.12.0`, el candidato ensayado en E0-D1, en una sección Lienzo con selector de workspace. El archivo canónico sigue siendo el Workspace E0 y el writer E1 guarda sus cambios con revisiones, broker, snapshots y journal. La decisión de coordenadas y origen visual está en [ADR 0009](../adr/0009-world-viewport.md).
 
+E2-A2 añade [placements y tarjetas de entidad al lienzo](placement-nodes.md); las reglas de cámara y persistencia del viewport siguen siendo las de este documento.
+
 ## Uso
 
 - Arrastrar con botón izquierdo o central desplaza el lienzo. La rueda y el desplazamiento de dos dedos también desplazan; Shift+rueda vertical desplaza horizontalmente. Ctrl/Cmd+rueda o el evento de pellizco de trackpad hace zoom sobre el cursor. Se normalizan deltas en píxeles, líneas y páginas.

@@ -2,7 +2,7 @@ import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir } from 'no
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { defaultRegistry, revisionsOf, validateSnapshot, type DomainRecord, type Project, type Workspace } from '@a3/domain';
+import { defaultRegistry, revisionsOf, validateSnapshot, type DomainRecord, type Entity, type Placement, type Project, type TypeRegistry, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
@@ -34,9 +34,19 @@ export interface LocalProjectsState {
   preview: ProjectInitializationPreview | null;
 }
 export interface WorkspaceViewport { x: number; y: number; zoom: number; }
+export interface CanvasEntitySummary {
+  id: string; revision: number; type: string; typeVersion: string; title: string; properties: Entity['properties']; ports: Entity['ports'];
+  contentResourceId?: string; typeAvailable: boolean;
+}
+export interface CanvasEntityChoice { id: string; type: string; typeVersion: string; title: string; }
+export interface CanvasPlacementView {
+  id: string; revision: number; entityId: string; position: Placement['position']; size: Placement['size']; style: Placement['style'];
+}
+export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; }
 export interface LocalCanvasWorkspace {
   sessionId: string; workspaceId: string; name: string; revision: number;
-  viewport: WorkspaceViewport; canWrite: boolean; pending: boolean;
+  viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
+  placements: readonly CanvasPlacementView[];
 }
 export interface LocalExplorerEntry extends Omit<ExplorerDirectoryPage['entries'][number], 'path' | 'identity'> { id: string; path: string; }
 export interface LocalExplorerMount extends Omit<ExplorerMountEntry, 'resourceId'> { id: string; }
@@ -54,6 +64,8 @@ interface Catalog { version: 1; recents: RecentProject[]; pending: Initializatio
 interface PreviewData { public: ProjectInitializationPreview; parent: string; identity: string; initialization: Initialization; resume: boolean; }
 export interface LocalProjectsOptions {
   stateDirectory: string; host: StoreHost;
+  /** Trusted host registry; project documents cannot install or activate their own node renderers. */
+  registry?: TypeRegistry;
   /** Trusted main-process prompt, called only for unresolved external changes/recovery. */
   confirmClose?: (session: LocalProjectSession) => Promise<boolean>;
   fault?: ServiceOptions['fault'];
@@ -214,7 +226,7 @@ export class LocalProjectManager {
     const projectId = value.projectId;
     demand(!expectedId || expectedId.toLowerCase() === projectId.toLowerCase(), 'PROJECT_ID_MISMATCH', 'La carpeta seleccionada pertenece a otro proyecto.');
     await this.#approve(root, projectId);
-    const candidate = await openProjectService(root, { host: this.options.host });
+    const candidate = await openProjectService(root, { host: this.options.host, registry: this.options.registry ?? defaultRegistry() });
     demand(candidate.ok, 'OPEN_FAILED', candidate.diagnostics.map((d) => `${d.path}: ${d.message}`).join('\n'));
     const name = typeof value.name === 'string' ? value.name : 'Proyecto sin nombre';
     const previous = this.#active;
@@ -350,9 +362,19 @@ export class LocalProjectManager {
     const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
     const edit = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
       projectId: active.projectId, operation: 'write', paths: [], refs: [{ kind: 'workspace', id: workspaceId }], resources: [], requiredCapabilities: ['diagram.edit'], stage: 'prepare' });
+    const snapshot = active.lease.service.state.project.snapshot;
+    const choices = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'entity' }> => record.kind === 'entity');
+    const placements = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'placement' }> => record.kind === 'placement' && record.workspaceId === workspaceId)
+      .map(({ value }) => ({ id: value.id, revision: value.revision, entityId: value.entityId, position: value.position, size: value.size, style: value.style }));
+    const placedIds = new Set(placements.map((placement) => placement.entityId.toLowerCase()));
+    const entities = choices.filter(({ value }) => placedIds.has(value.id.toLowerCase()))
+      .map(({ value }) => ({ id: value.id, revision: value.revision, type: value.type, typeVersion: value.typeVersion,
+        title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId } : {}),
+        typeAvailable: (this.options.registry ?? defaultRegistry()).nodeTypes.some((definition) => definition.name === value.type && definition.version === value.typeVersion) }));
+    const entityChoices = choices.map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
     const draft = this.#viewportDrafts.get(workspaceId);
     const { x, y, zoom } = draft?.viewport ?? workspace.viewport;
-    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft,
+    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, placements,
       canWrite: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && edit.allowed };
   }
   loadCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
@@ -393,6 +415,62 @@ export class LocalProjectManager {
   }
   discardCanvasViewport(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
     return this.#queue(async () => { this.#canvasContext(sessionId, workspaceId); this.#viewportDrafts.delete(workspaceId); return this.#canvasWorkspace(sessionId, workspaceId); });
+  }
+  createCanvasPlacement(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, entityId: string, position: { x: number; y: number }): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision, 'REVISION_CONFLICT', 'El workspace cambió; recarga antes de crear la representación.');
+      demand(position && Number.isFinite(position.x) && Number.isFinite(position.y), 'INVALID_PLACEMENT_POSITION', 'La posición debe usar coordenadas finitas.');
+      const snapshot = active.lease.service.state.project.snapshot;
+      const entity = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === entityId.toLowerCase());
+      demand(entity?.kind === 'entity', 'ENTITY_MISSING', 'La entidad ya no está disponible en este proyecto.');
+      const id = randomUUID();
+      const record: DomainRecord = { kind: 'placement', workspaceId, value: { schemaVersion: '1.0.0', id, revision: 1, entityId: entity.value.id,
+        position: { x: position.x, y: position.y }, size: { width: 300, height: 190 }, style: {}, extensions: {} } };
+      const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
+        command: 'a3.core.create-document', payload: { record }, expectedRevisions: [...revisionsOf(snapshot), { kind: 'placement', id, workspaceId, revision: null }],
+        expectedContentHashes: [], scope: { entityIds: [entity.value.id] } });
+      demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'PLACEMENT_CREATE_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
+      const committed = await active.lease.service.commit(prepared.value);
+      demand(committed.ok, committed.diagnostics[0]?.code ?? 'PLACEMENT_CREATE_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  updateCanvasPlacement(sessionId: string, workspaceId: string, placementId: string, expectedRevision: number,
+    patch: { position?: { x: number; y: number }; size?: { width: number; height: number }; style?: Record<string, unknown> }): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const snapshot = active.lease.service.state.project.snapshot;
+      const record = snapshot.records.find((item) => item.kind === 'placement' && item.workspaceId === workspaceId && item.value.id.toLowerCase() === placementId.toLowerCase());
+      demand(record?.kind === 'placement', 'PLACEMENT_MISSING', 'La representación ya no existe en este workspace.');
+      demand(Number.isSafeInteger(expectedRevision) && expectedRevision === record.value.revision, 'REVISION_CONFLICT', 'La representación cambió; vuelve a cargar el placement antes de guardarlo.');
+      const payload = { ref: { kind: 'placement' as const, id: record.value.id, workspaceId }, ...patch };
+      const command = patch.position && !patch.size && !patch.style ? 'a3.core.move-placement' : 'a3.core.update-placement-view';
+      const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
+        command, payload: command === 'a3.core.move-placement' ? { ref: payload.ref, position: patch.position } : payload,
+        expectedRevisions: revisionsOf(snapshot), expectedContentHashes: [], scope: { entityIds: [record.value.entityId] } });
+      demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'PLACEMENT_UPDATE_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
+      const committed = await active.lease.service.commit(prepared.value);
+      demand(committed.ok, committed.diagnostics[0]?.code ?? 'PLACEMENT_UPDATE_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  loadCanvasContent(sessionId: string, workspaceId: string, entityId: string, resourceId: string): Promise<CanvasResourcePreview> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const snapshot = active.lease.service.state.project.snapshot;
+      const entity = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === entityId.toLowerCase());
+      demand(entity?.kind === 'entity' && entity.value.contentResourceId?.toLowerCase() === resourceId.toLowerCase() &&
+        snapshot.records.some((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.entityId.toLowerCase() === entityId.toLowerCase()),
+      'RESOURCE_NOT_IN_VIEW', 'El recurso no pertenece a una entidad representada en este workspace.');
+      const opened = await active.lease.service.openResource(resourceId, 64 * 1024);
+      if (!opened.ok) {
+        const tooLarge = opened.diagnostics.some((item) => item.detail.includes('read-limit') || item.detail.includes('size-limit') || item.detail.includes('resource-too-large'));
+        return { entityId, resourceId, text: null, state: tooLarge ? 'too-large' : 'unavailable' };
+      }
+      try { return { entityId, resourceId, text: new TextDecoder('utf-8', { fatal: true }).decode(opened.value.bytes), state: 'ready' }; }
+      catch { return { entityId, resourceId, text: null, state: 'binary' }; }
+    });
   }
   #clearExplorer(): void {
     this.#explorerSessionId = ''; this.#explorerItems.clear(); this.#explorerPaths.clear(); this.#explorerPages.clear(); this.#explorerDeletes.clear();

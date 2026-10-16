@@ -86,6 +86,21 @@ button:focus-visible, a:focus-visible { outline: 2px solid #c3ed82; outline-offs
 .canvas-reference rect { fill: #20332c; stroke: #9bc279; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .canvas-reference text { fill: #e8edf0; font-size: 14px; }
 .canvas-status { justify-content: space-between; font-size: 10px; color: #aab7c2; padding-top: 9px; }
+.canvas-heading select, .canvas-toolbar select { max-width: min(360px, 38vw); padding: 6px; border: 1px solid #41515e; border-radius: 4px; background: #10151b; color: #e8edf0; font-size: 11px; }
+.canvas-entity-node { box-sizing: border-box; width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #718765; border-radius: 8px; background: #17211e; color: #e8edf0; box-shadow: 0 7px 24px #05090c77; }
+.canvas-entity-header { display: grid; gap: 4px; padding: 12px 14px 9px; border-bottom: 1px solid #34423b; background: #202d27; }
+.canvas-entity-header strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-entity-header small { font: 10px ui-monospace, Consolas, monospace; color: #aab7c2; overflow: hidden; text-overflow: ellipsis; }
+.canvas-fallback-label, .canvas-content-state { color: #d4bd93; font-size: 10px; margin: 7px 12px; }
+.canvas-entity-body { overflow: auto; min-height: 0; padding: 8px 12px 12px; font-size: 10px; }
+.canvas-entity-body details { margin: 6px 0; }
+.canvas-entity-body summary { cursor: pointer; color: #c3ed82; }
+.canvas-entity-body pre { max-height: 92px; overflow: auto; margin: 5px 0 0; padding: 7px; border-radius: 4px; background: #0d1217; color: #c8d2d5; font: 9px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.canvas-entity-body .canvas-content-preview { max-height: 120px; }
+.canvas-ports { display: flex; flex-wrap: wrap; gap: 5px; margin: 4px 0 8px; }
+.canvas-ports span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; border: 1px solid #45574e; border-radius: 10px; padding: 2px 7px; color: #b8ccbf; font-size: 9px; }
+.canvas-toolbar label { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.canvas-toolbar label select { max-width: 260px; }
 .shell { display: grid; grid-template-columns: 214px minmax(360px, 1fr) 260px; grid-template-rows: 58px minmax(0, 1fr) 36px auto; height: 100vh; min-height: 500px; }
 .topbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 32px; padding: 0 24px; border-bottom: 1px solid #293139; }
 .brand { font-size: 24px; font-weight: 750; letter-spacing: -1px; display: flex; gap: 4px; align-items: baseline; }

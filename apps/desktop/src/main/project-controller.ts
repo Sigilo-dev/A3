@@ -1,15 +1,30 @@
 import { clipboard, dialog, type BrowserWindow } from 'electron';
 import { join } from 'node:path';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { CanvasRequest, CanvasResult, FilesRequest, FilesResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, FilesRequest, FilesResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
 
-function validCanvasRequest(value: unknown): value is CanvasRequest {
+function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasContentRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const input = value as Record<string, unknown>;
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (typeof input.action !== 'string' || typeof input.sessionId !== 'string' || typeof input.workspaceId !== 'string' || !uuid.test(input.sessionId) || !uuid.test(input.workspaceId)) return false;
   if (input.action === 'stage') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) >= 1 && validViewport(input.viewport);
+  if (input.action === 'create-placement') return Object.keys(input).length === 6 && uuid.test(String(input.entityId)) && Number.isSafeInteger(input.expectedWorkspaceRevision) &&
+    Number(input.expectedWorkspaceRevision) >= 1 && !!input.position && typeof input.position === 'object' && !Array.isArray(input.position) &&
+    Object.keys(input.position).length === 2 && Number.isFinite((input.position as Record<string, unknown>).x) && Number.isFinite((input.position as Record<string, unknown>).y);
+  if (input.action === 'update-placement') {
+    if (Object.keys(input).length !== 6 || !uuid.test(String(input.placementId)) || !Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 1 ||
+        !input.patch || typeof input.patch !== 'object' || Array.isArray(input.patch)) return false;
+    const patch = input.patch as Record<string, unknown>;
+    if (!Object.keys(patch).length || Object.keys(patch).some((key) => !['position', 'size', 'style'].includes(key))) return false;
+    if ('position' in patch && (!patch.position || typeof patch.position !== 'object' || Array.isArray(patch.position) || Object.keys(patch.position).length !== 2 ||
+        !Number.isFinite((patch.position as Record<string, unknown>).x) || !Number.isFinite((patch.position as Record<string, unknown>).y))) return false;
+    if ('size' in patch && (!patch.size || typeof patch.size !== 'object' || Array.isArray(patch.size) || Object.keys(patch.size).length !== 2 ||
+        !Number.isFinite((patch.size as Record<string, unknown>).width) || !Number.isFinite((patch.size as Record<string, unknown>).height))) return false;
+    return true;
+  }
+  if (input.action === 'content') return Object.keys(input).length === 5 && uuid.test(String(input.entityId)) && uuid.test(String(input.resourceId));
   return ['load', 'flush', 'discard'].includes(String(input.action)) && Object.keys(input).length === 3;
 }
 
@@ -60,7 +75,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
-    async handleCanvas(value: unknown): Promise<CanvasResult> {
+    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult> {
       if (!validCanvasRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de lienzo inválida.', recovery: 'Reabre el workspace.' } };
       try {
         switch (value.action) {
@@ -68,9 +83,12 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'stage': return { ok: true, value: await manager.stageCanvasViewport(value.sessionId, value.workspaceId, value.expectedRevision, value.viewport) };
           case 'flush': return { ok: true, value: await manager.flushCanvasWorkspace(value.sessionId, value.workspaceId) };
           case 'discard': return { ok: true, value: await manager.discardCanvasViewport(value.sessionId, value.workspaceId) };
+          case 'create-placement': return { ok: true, value: await manager.createCanvasPlacement(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.entityId, value.position) };
+          case 'update-placement': return { ok: true, value: await manager.updateCanvasPlacement(value.sessionId, value.workspaceId, value.placementId, value.expectedRevision, value.patch) };
+          case 'content': return { ok: true, value: await manager.loadCanvasContent(value.sessionId, value.workspaceId, value.entityId, value.resourceId) };
         }
       } catch (error) {
-        return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED', message: error instanceof LocalProjectError ? error.message : 'No se pudo guardar la vista del workspace.',
+        return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED', message: error instanceof LocalProjectError ? error.message : 'No se pudo completar la operación del lienzo.',
           recovery: 'La vista pendiente se conserva en la sesión. Reintenta guardar o descártala explícitamente antes de releer.' } };
       }
     },

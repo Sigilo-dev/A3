@@ -109,6 +109,7 @@ export type Payloads = {
   'a3.core.set-workspace-viewport': { workspaceId: UUID; viewport: { x: number; y: number; zoom: number } };
   'a3.core.update-entity': EntityPatch;
   'a3.core.move-placement': { ref: DocumentRef; position: Point };
+  'a3.core.update-placement-view': { ref: DocumentRef; position?: Point; size?: Pick<Placement['size'], 'width' | 'height'>; style?: ExtensionMap };
   'a3.core.move-resource': { resourceId: UUID; location: ResourceLocation };
   'a3.core.move-group': { ref: DocumentRef; offset: Point };
   'a3.core.set-group-members': { ref: DocumentRef; members: GroupMember[] };

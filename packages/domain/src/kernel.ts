@@ -9,7 +9,7 @@ function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnost
   throw new DomainFault(diagnostic(detail, message, ref, code));
 }
 const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity',
-  'a3.core.move-placement', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-collection-members',
+  'a3.core.move-placement', 'a3.core.update-placement-view', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-collection-members',
   'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
 const kinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
 const scoped = new Set(['placement', 'visual-edge', 'relation-view', 'group', 'drawing']);
@@ -333,6 +333,26 @@ function apply(draft: Draft): void {
     }
     case 'a3.core.move-placement':
       draft.edit(request.payload.ref, 'placement', (value) => { value.position = { ...value.position, ...copy(request.payload.position) }; }); break;
+    case 'a3.core.update-placement-view': {
+      const { position, size, style } = request.payload;
+      if (Object.keys(request.payload).some((key) => !['ref', 'position', 'size', 'style'].includes(key)) ||
+          (!position && !size && !style)) fail('invalid-placement-view-patch', 'La propuesta debe cambiar posición, tamaño o estilo de vista.', request.payload.ref);
+      if (position && (!isObject(position) || Object.keys(position).some((key) => !['x', 'y'].includes(key)) ||
+          !Number.isFinite(position.x) || !Number.isFinite(position.y))) {
+        fail('invalid-placement-position', 'La posición debe contener coordenadas finitas.', request.payload.ref);
+      }
+      if (size && (!isObject(size) || Object.keys(size).some((key) => !['width', 'height'].includes(key)) ||
+          !Number.isFinite(size.width) || !Number.isFinite(size.height) || size.width <= 0 || size.height <= 0)) {
+        fail('invalid-placement-size', 'El tamaño debe tener ancho y alto finitos mayores que cero.', request.payload.ref);
+      }
+      if (style && !isObject(style)) fail('invalid-placement-style', 'El estilo de vista debe ser un mapa JSON namespaced.', request.payload.ref);
+      draft.edit(request.payload.ref, 'placement', (value) => {
+        if (position) value.position = { ...value.position, ...copy(position) };
+        if (size) value.size = { ...value.size, ...copy(size) };
+        if (style) value.style = { ...value.style, ...copy(style) };
+      });
+      break;
+    }
     case 'a3.core.move-resource': {
       const ref: DocumentRef = { kind: 'resource', id: request.payload.resourceId };
       const record = draft.require(ref);

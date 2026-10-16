@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { mkdir, writeFile, readFile, rename, lstat } = require('node:fs/promises');
+const { mkdir, writeFile, readFile, rename, lstat, cp } = require('node:fs/promises');
 const { dirname, join } = require('node:path');
 const { app, BrowserWindow, dialog } = require('electron');
 
@@ -204,6 +204,42 @@ async function healthy() {
   await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
   assert.deepEqual(await readViewport(), extensive);
 
+  // Open an isolated E0 fixture to exercise real persisted placements and fallback cards.
+  await click('[data-section="projects"]'); await click('[data-close-project]'); await waitFor("!document.querySelector('[data-active-project]')");
+  const canvasFixture = join(projectParent, 'Canvas fixture');
+  await cp(join(__dirname, '../../../fixtures/e0/project'), canvasFixture, { recursive: true });
+  const fixtureEntityPath = join(canvasFixture, '.a3', 'entities', '00000000-0000-4000-8000-000000000002.json');
+  const fixtureEntity = JSON.parse(await readFile(fixtureEntityPath, 'utf8'));
+  fixtureEntity.properties['demo.smoke'] = 'Fallback property'; fixtureEntity.ports = [{ id: 'smoke-port', label: 'Puerto visible' }];
+  await writeFile(fixtureEntityPath, JSON.stringify(fixtureEntity, null, 2) + '\n');
+  folders.push(canvasFixture); await click('[data-open-project]');
+  await waitFor("document.querySelector('[data-active-project] h2')?.textContent === 'Ejemplo E0-A'");
+  await click('[data-section="canvas"]'); await waitFor("document.querySelector('[data-canvas-node-count]')?.textContent.startsWith('2 representaciones')");
+  assert.equal(await js("document.querySelectorAll('.react-flow__node').length"), 2);
+  assert.equal(await js("document.querySelectorAll('[data-node-fallback=\"true\"]').length"), 2);
+  await waitFor("(() => { const n = document.querySelector('[data-entity-id=\"00000000-0000-4000-8000-000000000002\"]'); return n?.textContent.includes('demo.smoke') && n.textContent.includes('Puerto visible') && n.textContent.includes('Visión del fixture'); })()");
+  const fallbackCard = await js("document.querySelector('[data-entity-id=\"00000000-0000-4000-8000-000000000002\"]')?.textContent");
+  assert.ok(fallbackCard.includes('demo.smoke') && fallbackCard.includes('Puerto visible') && fallbackCard.includes('Visión del fixture'));
+  await click('[data-canvas-create-placement]');
+  await waitFor("document.querySelector('[data-canvas-node-count]')?.textContent.startsWith('3 representaciones')");
+  const placementState = await js("(async () => { const p = (await window.a3.projects({ action: 'list' })).value.active; const w = p.workspaces[0].id; return { p, w, canvas: (await window.a3.canvas({ action: 'load', sessionId: p.sessionId, workspaceId: w })).value }; })()");
+  const fixturePlacementIds = ['00000000-0000-4000-8000-000000000008', '00000000-0000-4000-8000-000000000010'];
+  const createdPlacement = placementState.canvas.placements.find((item) => !fixturePlacementIds.includes(item.id));
+  assert.ok(createdPlacement); assert.equal(createdPlacement.entityId, '00000000-0000-4000-8000-000000000002');
+  await js(`document.querySelector('.react-flow__node[data-id="${createdPlacement.id}"]').click(); undefined`);
+  await waitFor(`Boolean(document.querySelector('.react-flow__node[data-id="${createdPlacement.id}"] .react-flow__resize-control.bottom.right.handle'))`);
+  const resizedCanvas = await js(`window.a3.canvas({ action: 'update-placement', sessionId: '${placementState.p.sessionId}', workspaceId: '${placementState.w}', placementId: '${createdPlacement.id}', expectedRevision: ${createdPlacement.revision}, patch: { size: { width: 440, height: 270 } } })`);
+  assert.equal(resizedCanvas.ok, true);
+  const resizedPlacement = resizedCanvas.value.placements.find((item) => item.id === createdPlacement.id);
+  assert.deepEqual(resizedPlacement.size, { width: 440, height: 270 });
+  await click('[data-section="files"]'); await click('[data-section="canvas"]');
+  await waitFor("document.querySelector('[data-canvas-node-count]')?.textContent.startsWith('3 representaciones')");
+  const reopenedNodeSize = await js(`(() => { const n = document.querySelector('.react-flow__node[data-id="${createdPlacement.id}"]'); return { width: Number.parseFloat(n.style.width), height: Number.parseFloat(n.style.height) }; })()`);
+  assert.deepEqual(reopenedNodeSize, resizedPlacement.size);
+  assert.equal(await js("document.querySelectorAll('.react-flow__edge').length"), 0);
+  const fixtureSession = (await js("window.a3.projects({ action: 'list' })")).value.active;
+  const fixtureWorkspaceId = fixtureSession.workspaces[0].id;
+
   const extra = new BrowserWindow({ show: false, webPreferences: {
     session: win.webContents.session, preload: join(dirname(entry), '../preload/index.cjs'),
     contextIsolation: true, sandbox: true, nodeIntegration: false
@@ -214,7 +250,7 @@ async function healthy() {
   assert.equal(denied.error.code, 'PERMISSION_DENIED');
   const deniedProject = await extra.webContents.executeJavaScript("window.a3.projects({ action: 'list' })");
   assert.equal(deniedProject.error.code, 'PERMISSION_DENIED');
-  const deniedCanvas = await extra.webContents.executeJavaScript(`window.a3.canvas({ action: 'load', sessionId: '${canvasActive.sessionId}', workspaceId: '${canvasWorkspaceId}' })`);
+  const deniedCanvas = await extra.webContents.executeJavaScript(`window.a3.canvas({ action: 'load', sessionId: '${fixtureSession.sessionId}', workspaceId: '${fixtureWorkspaceId}' })`);
   assert.equal(deniedCanvas.error.code, 'PERMISSION_DENIED');
   extra.destroy();
 
@@ -227,7 +263,7 @@ async function healthy() {
   await mkdir(dirname(screenshot), { recursive: true });
   await writeFile(screenshot, (await win.webContents.capturePage()).toPNG());
   console.log('A3_SMOKE=' + JSON.stringify({ mode, passed: true, electron: probe.result.value.electron,
-    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'explorer create and rename', 'resource identity preserved', 'keyboard open/rename/duplicate/delete-cancel', 'incremental tree navigation', 'canvas explicit fit', 'native wheel and cursor zoom', 'React Flow native pan', 'resize without fit', 'workspace reopen without drift', 'extensive viewport rebasing', 'grid phase after rebase', 'canvas IPC denied to foreign window', 'stale sessions', 'window close'] }));
+    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'explorer create and rename', 'resource identity preserved', 'keyboard open/rename/duplicate/delete-cancel', 'incremental tree navigation', 'canvas explicit fit', 'native wheel and cursor zoom', 'React Flow native pan', 'resize without fit', 'workspace reopen without drift', 'extensive viewport rebasing', 'grid phase after rebase', 'placements render as fallback nodes', 'visible fallback exposes properties, content and ports', 'create placement through canvas', 'React Flow resize control and validated size update', 'placement resize remains persisted after reopen without edges', 'canvas IPC denied to foreign window', 'stale sessions', 'window close'] }));
   win.close();
 }
 

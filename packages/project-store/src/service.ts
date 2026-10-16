@@ -793,9 +793,12 @@ export class ProjectService {
     };
     await visit(rootPath); return found;
   }
-  openResource(resourceId: string): Promise<StoreResult<OpenResource>> {
+  openResource(resourceId: string, maxBytes = this.#resourceLimit): Promise<StoreResult<OpenResource>> {
     return this.#queue(async () => {
       if (this.#closing) return failure([issue('resource', 'io', 'service-closed', 'El servicio está cerrado.')]);
+      if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > this.#resourceLimit) {
+        return failure([issue('resource', 'io', 'invalid-read-limit', 'El límite de lectura solicitado no es válido.')]);
+      }
       try {
         const next = await this.#scan(true); this.#acceptObservation(next);
         const record = getRecord(next.project.snapshot, { kind: 'resource', id: resourceId });
@@ -805,8 +808,8 @@ export class ProjectService {
           'Las URLs remotas siguen deshabilitadas; no se inicia red desde el lector de proyectos.', { code: 'PERMISSION_DENIED', missingCapability: 'network.access' })]);
         const opened = record.value.kind === 'mounted-file'
           ? await readMountedResource({ projectRoot: this.root, projectId: this.#projectId() ?? '', actor: this.options.host.authenticatedActor,
-              broker: this.options.host.capabilities, resource: record.value, maxBytes: this.#resourceLimit })
-          : await readProjectResource(this.root, record.value, this.#resourceLimit);
+              broker: this.options.host.capabilities, resource: record.value, maxBytes })
+          : await readProjectResource(this.root, record.value, maxBytes);
         if (!opened.ok) return opened;
         const doc = next.project.documents.find((d) => d.record === record)!;
         if (record.value.kind === 'project-file' && opened.value.sha256 !== next.files.get(opened.value.path)?.hash) return failure([conflict(opened.value.path)]);

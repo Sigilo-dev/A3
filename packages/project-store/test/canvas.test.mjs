@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { LocalProjectManager } from '../dist/index.js';
-import { scratch, fixtureHost, W1 } from './fixture.mjs';
+import { LocalProjectManager, openProjectService } from '../dist/index.js';
+import { scratch, fixtureHost, W1, E1 } from './fixture.mjs';
 const windows = { skip: process.platform !== 'win32' };
 const W2 = '00000000-0000-4000-8000-000000000007';
+const R1 = '00000000-0000-4000-8000-000000000004';
 const pathOf = (root, id) => join(root, '.a3', 'workspaces', id, 'workspace.json');
 
 test('A3-006/007: viewport drafts flush on close, remain independent per workspace and reopen without drift', windows, async (t) => {
@@ -62,4 +63,67 @@ test('an external workspace replacement conflicts with a pending viewport and pr
   assert.deepEqual(await readFile(file), bytes);
   assert.equal((await manager.getState()).active.pendingViewport, true);
   await manager.discardCanvasViewport(active.sessionId, W1);
+});
+
+test('A3-004/006: placements share live entity content but move and resize independently, then reopen exactly', windows, async (t) => {
+  const { root, tempRoot } = await scratch(t);
+  const host = await fixtureHost(root, 'canvas-placement-projection');
+  const manager = new LocalProjectManager({ stateDirectory: join(tempRoot, 'catalog'), host }); t.after(() => manager.dispose());
+  let extraLease;
+  t.after(async () => { await extraLease?.close(); });
+  const active = (await manager.openFolder(root)).active;
+  let first = await manager.loadCanvasWorkspace(active.sessionId, W1);
+  let second = await manager.loadCanvasWorkspace(active.sessionId, W2);
+  const firstPlacement = first.placements.find((placement) => placement.entityId === E1);
+  const secondPlacement = second.placements.find((placement) => placement.entityId === E1);
+  assert.ok(firstPlacement && secondPlacement);
+  assert.notEqual(firstPlacement.id, secondPlacement.id);
+  assert.equal(first.entities.find((entity) => entity.id === E1).id, second.entities.find((entity) => entity.id === E1).id);
+  assert.equal(first.entities.find((entity) => entity.id === E1).title, 'Visión');
+  assert.equal(first.entities.find((entity) => entity.id === E1).typeAvailable, false);
+  assert.ok(first.entities.find((entity) => entity.id === E1).ports);
+
+  // Update canonical Markdown through the existing validated writer.
+  const leaseResult = await openProjectService(root, { host });
+  assert.equal(leaseResult.ok, true);
+  extraLease = leaseResult.value;
+  const opened = await extraLease.service.openResource(R1);
+  assert.equal(opened.ok, true);
+  const changedText = '# Visión revisada\n\nLa misma entidad se representa en dos workspaces.\n';
+  const proposal = await extraLease.service.prepareResourceWrite({ operationId: '8f4e5577-88b0-4fc6-8a77-885f32b19449', resourceId: R1,
+    expectedRevision: opened.value.revision, expectedHash: opened.value.sha256, bytes: Buffer.from(changedText, 'utf8') });
+  assert.equal(proposal.ok, true, proposal.diagnostics?.map((item) => item.message).join('\n'));
+  const written = await extraLease.service.commit(proposal.value);
+  assert.equal(written.ok, true, written.diagnostics?.map((item) => item.message).join('\n'));
+  await extraLease.close(); extraLease = undefined;
+  assert.equal((await manager.loadCanvasContent(active.sessionId, W1, E1, R1)).text, changedText);
+  assert.equal((await manager.loadCanvasContent(active.sessionId, W2, E1, R1)).text, changedText);
+
+  first = await manager.loadCanvasWorkspace(active.sessionId, W1);
+  const moved = await manager.updateCanvasPlacement(active.sessionId, W1, firstPlacement.id, firstPlacement.revision, {
+    position: { x: 730.25, y: -112.5 }, size: { width: 480, height: 310 }, style: { 'a3.ui.accent': '#78a9d1' }
+  });
+  const movedPlacement = moved.placements.find((placement) => placement.id === firstPlacement.id);
+  const untouched = (await manager.loadCanvasWorkspace(active.sessionId, W2)).placements.find((placement) => placement.id === secondPlacement.id);
+  assert.deepEqual(movedPlacement.position, { x: 730.25, y: -112.5 });
+  assert.deepEqual(movedPlacement.size, { width: 480, height: 310 });
+  assert.equal(movedPlacement.style['a3.ui.accent'], '#78a9d1');
+  assert.deepEqual(untouched.position, secondPlacement.position);
+  assert.deepEqual(untouched.size, secondPlacement.size);
+
+  second = await manager.loadCanvasWorkspace(active.sessionId, W2);
+  const created = await manager.createCanvasPlacement(active.sessionId, W2, second.revision, E1, { x: 2000.125, y: -2500.5 });
+  const newPlacement = created.placements.find((placement) => !second.placements.some((old) => old.id === placement.id));
+  assert.ok(newPlacement);
+  assert.equal(newPlacement.entityId, E1);
+  assert.deepEqual(newPlacement.size, { width: 300, height: 190 });
+
+  await manager.closeActive(active.sessionId);
+  const reopenedProject = (await manager.openFolder(root)).active;
+  const reopenedFirst = await manager.loadCanvasWorkspace(reopenedProject.sessionId, W1);
+  const reopenedSecond = await manager.loadCanvasWorkspace(reopenedProject.sessionId, W2);
+  assert.deepEqual(reopenedFirst.placements.find((placement) => placement.id === firstPlacement.id), movedPlacement);
+  assert.deepEqual(reopenedSecond.placements.find((placement) => placement.id === newPlacement.id), newPlacement);
+  assert.equal(reopenedSecond.entities.find((entity) => entity.id === E1).title, 'Visión');
+  assert.equal((await manager.loadCanvasContent(reopenedProject.sessionId, W2, E1, R1)).text, changedText);
 });
