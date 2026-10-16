@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "1.0.0",
+  "instances": [
+    { "entityId": "90000000-0000-4000-8000-000000000201", "reference": "MCU1", "parameters": {} },
+    { "entityId": "90000000-0000-4000-8000-000000000202", "reference": "U1", "parameters": {} }
+  ],
+  "nets": [
+    {
+      "id": "90000000-0000-4000-8000-000000000301",
+      "name": "I2C",
+      "kind": "bus",
+      "endpoints": [],
+      "junctions": [],
+      "bus": { "protocol": { "state": "known", "value": "I2C" }, "members": [
+        { "id": "90000000-0000-4000-8000-000000000411", "name": "SDA", "endpoints": [
+          { "entityId": "90000000-0000-4000-8000-000000000201", "portId": "j3.06" },
+          { "entityId": "90000000-0000-4000-8000-000000000202", "portId": "package.3" }
+        ], "junctions": [{ "id": "90000000-0000-4000-8000-000000000401", "label": "J-SDA", "position": { "x": 90, "y": 120 } }] },
+        { "id": "90000000-0000-4000-8000-000000000412", "name": "SCL", "endpoints": [
+          { "entityId": "90000000-0000-4000-8000-000000000201", "portId": "j3.03" },
+          { "entityId": "90000000-0000-4000-8000-000000000202", "portId": "package.4" }
+        ], "junctions": [] }
+      ] },
+      "notes": ["El protocolo está seleccionado por la persona; los pines del ESP32 siguen indicando funciones alternativas."],
+      "extensions": { "demo.net-note": "Preservar extensiones namespaced." }
+    },
+    {
+      "id": "90000000-0000-4000-8000-000000000302",
+      "name": "3V3",
+      "kind": "power",
+      "endpoints": [
+        { "entityId": "90000000-0000-4000-8000-000000000201", "portId": "j2.01" },
+        { "entityId": "90000000-0000-4000-8000-000000000202", "portId": "package.8" }
+      ],
+      "junctions": [],
+      "notes": [],
+      "extensions": {}
+    },
+    {
+      "id": "90000000-0000-4000-8000-000000000303",
+      "name": "GND",
+      "kind": "ground",
+      "endpoints": [
+        { "entityId": "90000000-0000-4000-8000-000000000201", "portId": "j2.14" },
+        { "entityId": "90000000-0000-4000-8000-000000000202", "portId": "package.1" },
+        { "entityId": "90000000-0000-4000-8000-000000000202", "portId": "package.7" }
+      ],
+      "junctions": [{ "id": "90000000-0000-4000-8000-000000000402", "label": "GND star" }],
+      "notes": [],
+      "extensions": {}
+    }
+  ],
+  "parameters": [
+    { "id": "90000000-0000-4000-8000-000000000501", "name": "i2c.frequency", "value": { "state": "known", "value": 400000 }, "unit": "Hz", "source": "Project decision" }
+  ],
+  "requirements": ["Read temperature, pressure and relative humidity."],
+  "constraints": [
+    { "id": "90000000-0000-4000-8000-000000000601", "statement": "Use I2C for this build.", "state": "known", "source": "Project decision" },
+    { "id": "90000000-0000-4000-8000-000000000602", "statement": "Board-level pull-up values not selected.", "state": "unknown" }
+  ],
+  "notes": [{ "id": "90000000-0000-4000-8000-000000000701", "markdown": "The BME280 fixture models the IC package, not a breakout board." }],
+  "questions": ["Which I2C pull-up value should the final assembly use?"],
+  "codeProposals": [],
+  "extensions": { "demo.circuit-note": "Unknown package fields survive round-trip." }
+}

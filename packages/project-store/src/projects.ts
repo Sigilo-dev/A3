@@ -1,6 +1,7 @@
 import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { c4Category, isC4Diagram, validC4Operation, type C4Category, type C4Change, type C4Operation } from '@a3/domain';
+import { isIotCircuit, validIotCircuitOperation, type IotCircuitData } from '@a3/domain/iot-circuit';
 import { projectC4Canvas, type CanvasC4State } from './c4-canvas.js';
 import { umlData, umlKind, validUmlOperation, type UmlChange, type UmlOperation } from '@a3/domain';
 import { projectUmlCanvas, type CanvasUmlState } from './uml-canvas.js';
@@ -690,7 +691,7 @@ export class LocalProjectManager {
         title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
           ...(resources.get(value.contentResourceId.toLowerCase()) ? { contentResource: resourceDescriptor(resources.get(value.contentResourceId.toLowerCase())!) } : {}) } : {}),
         ...(c4Category(value, registry) ? { c4Category: c4Category(value, registry)! } : {}),
-        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined || erTable(value) && erData(value) !== undefined || isIotComponent(value) }));
+        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined || erTable(value) && erData(value) !== undefined || isIotComponent(value) || isIotCircuit(value) }));
     const entityChoices = choices.filter(({ value }) => !isC4Diagram(value)).map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
     const resourceChoices = resourceRecords.map((record) => resourceDescriptor(record));
     const placementIds = new Map(placements.map((placement) => [placement.id.toLowerCase(), placement.id]));
@@ -1544,6 +1545,37 @@ export class LocalProjectManager {
       const entityId = randomUUID(), placementId = randomUUID();
       await this.#commitCanvasCommand(active, { command: 'a3.iot.create-component', payload: { workspaceId, entityId, placementId, catalogId, title: title.trim(), position } },
         [entityId], [{ kind: 'entity', id: entityId }, { kind: 'placement', id: placementId, workspaceId }]);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  createCanvasIotCircuit(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, title: string, position: { x: number; y: number }): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId), view = this.#canvasWorkspace(sessionId, workspaceId);
+      demand(view.canWrite, 'PERMISSION_DENIED', 'El proyecto no permite crear un circuito IoT.');
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision,
+        'REVISION_CONFLICT', 'El workspace cambió; recarga antes de crear el circuito.');
+      demand(typeof title === 'string' && title.trim().length > 0 && title.trim().length <= 200 && position && Number.isFinite(position.x) && Number.isFinite(position.y),
+        'IOT_CIRCUIT_INVALID', 'El título y la posición del circuito deben ser válidos.');
+      const entityId = randomUUID(), placementId = randomUUID();
+      await this.#commitCanvasCommand(active, { command: 'a3.iot.create-circuit', payload: { workspaceId, entityId, placementId, title: title.trim(), position } },
+        [entityId], [{ kind: 'entity', id: entityId }, { kind: 'placement', id: placementId, workspaceId }]);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  changeCanvasIotCircuit(sessionId: string, workspaceId: string, entityId: string, expectedRevision: number, model: IotCircuitData): Promise<LocalCanvasWorkspace> {
+    const captured = structuredClone(model);
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId), view = this.#canvasWorkspace(sessionId, workspaceId);
+      demand(view.canWrite, 'PERMISSION_DENIED', 'El proyecto no permite editar el circuito IoT.');
+      const record = active.lease.service.state.project.snapshot.records.find((item) => item.kind === 'entity' && item.value.id.toLowerCase() === entityId.toLowerCase());
+      demand(record?.kind === 'entity' && isIotCircuit(record.value), 'IOT_CIRCUIT_MISSING', 'El circuito ya no está disponible en el proyecto.');
+      demand(Number.isSafeInteger(expectedRevision) && record.value.revision === expectedRevision, 'REVISION_CONFLICT', 'El circuito cambió; compara el modelo antes de guardar.');
+      demand(validIotCircuitOperation({ kind: 'replace-model', model: captured }), 'IOT_CIRCUIT_INVALID', 'El modelo del circuito no cumple el formato A3.');
+      const workspaceEntityIds = new Set(view.entities.filter((entity) => isIotComponent(entity)).map((entity) => entity.id.toLowerCase()));
+      demand(captured.instances.every((instance) => workspaceEntityIds.has(instance.entityId.toLowerCase())), 'IOT_INSTANCE_NOT_IN_WORKSPACE',
+        'Cada instancia del circuito debe ser un componente IoT visible en este workspace.');
+      const scope = [record.value.id, ...captured.instances.map((instance) => instance.entityId)];
+      await this.#commitCanvasCommand(active, { command: 'a3.iot.change-circuit', payload: { entityId: record.value.id, operation: { kind: 'replace-model', model: captured } } }, scope);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }

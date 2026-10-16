@@ -7,6 +7,7 @@ import { remapUmlReferences, umlData, umlKind } from './uml.js';
 import { applyErChange } from './er-commands.js';
 import { erData, erTable, remapErReferences } from './er.js';
 import { createIotEntity, iotCatalogEntry, validCreateIotComponent } from './iot.js';
+import { createIotCircuitEntity, validIotCircuitOperation, IOT_CIRCUIT_KEY, IOT_CIRCUIT_TYPE, IOT_CIRCUIT_VERSION } from './iot-circuit.js';
 import { c4Category, c4Data } from './c4.js';
 import { CONCEPTUAL_KIND_KEY, CONCEPTUAL_LABEL_KEY, CONCEPTUAL_RELATION_TYPE, CONCEPTUAL_RELATION_VERSION,
   conceptualNodeDefinition, isConceptualEntity, isConceptualNodeKind, isConceptualRelation, isConceptualRelationKind } from './conceptual-diagrams.js';
@@ -23,6 +24,7 @@ const commands = new Set(['a3.core.create-project', 'a3.core.create-document', '
   'a3.uml.change',
   'a3.er.change',
   'a3.iot.create-component',
+  'a3.iot.create-circuit', 'a3.iot.change-circuit',
   'a3.core.create-content-node',
   'a3.conceptual.create-node', 'a3.conceptual.update-node', 'a3.conceptual.create-relation', 'a3.conceptual.update-relation', 'a3.conceptual.delete-relation',
   'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-placement-views', 'a3.core.update-visual-edge', 'a3.core.update-drawing', 'a3.core.convert-drawings-to-node', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-group-collapsed', 'a3.core.set-collection-members',
@@ -643,6 +645,29 @@ function apply(draft: Draft): void {
       draft.add({ kind: 'entity', value: createIotEntity(payload.entityId, payload.title.trim(), entry) });
       draft.add({ kind: 'placement', workspaceId: payload.workspaceId, value: { schemaVersion: '1.0.0', id: payload.placementId, revision: 1,
         entityId: payload.entityId, position: copy(payload.position), size: { width: 340, height: 230 }, style: {}, extensions: {} } });
+      break;
+    }
+    case 'a3.iot.create-circuit': {
+      const payload = request.payload;
+      if (!isObject(payload) || Object.keys(payload).length !== 5 || !UUID_PATTERN.test(String(payload.workspaceId)) ||
+          !UUID_PATTERN.test(String(payload.entityId)) || !UUID_PATTERN.test(String(payload.placementId)) || typeof payload.title !== 'string' ||
+          !payload.title.trim() || payload.title.length > 200 || !isObject(payload.position) || !Number.isFinite(payload.position.x) || !Number.isFinite(payload.position.y)) {
+        fail('iot-circuit-command-invalid', 'El circuito necesita título, posición finita e identidades válidas.');
+      }
+      draft.require({ kind: 'workspace', id: payload.workspaceId });
+      draft.add({ kind: 'entity', value: createIotCircuitEntity(payload.entityId, payload.title.trim()) });
+      draft.add({ kind: 'placement', workspaceId: payload.workspaceId, value: { schemaVersion: '1.0.0', id: payload.placementId, revision: 1,
+        entityId: payload.entityId, position: copy(payload.position), size: { width: 420, height: 280 }, style: {}, extensions: {} } });
+      break;
+    }
+    case 'a3.iot.change-circuit': {
+      const { entityId, operation } = request.payload;
+      if (Object.keys(request.payload).length !== 2 || !UUID_PATTERN.test(String(entityId)) || !validIotCircuitOperation(operation)) fail('iot-circuit-operation-invalid', 'La operación de circuito no cumple el contrato.', { kind: 'entity', id: String(entityId) });
+      const record = draft.require({ kind: 'entity', id: entityId });
+      if (record.kind !== 'entity' || record.value.type !== IOT_CIRCUIT_TYPE || record.value.typeVersion !== IOT_CIRCUIT_VERSION) {
+        fail('iot-circuit-missing', 'La entidad no es un circuito IoT A3 compatible.', { kind: 'entity', id: entityId });
+      }
+      draft.edit({ kind: 'entity', id: entityId }, 'entity', (value) => { value.properties[IOT_CIRCUIT_KEY] = copy(operation.model) as unknown as import('./models.js').JsonValue; });
       break;
     }
     case 'a3.uml.change': applyUmlChange(draft, request.payload, fail); break;

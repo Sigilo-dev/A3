@@ -3,6 +3,7 @@ import type { ConceptualNodeKind, ConceptualRelationKind, Drawing, DrawingParame
 import type { C4Operation } from '@a3/domain';
 import type { UmlOperation } from '@a3/domain';
 import type { ErOperation } from '@a3/domain/er';
+import type { IotCircuitData } from '@a3/domain/iot-circuit';
 export type { CanvasErState, CanvasErElement, CanvasErRelationship, CanvasErRelationView } from '@a3/project-store';
 export type { CanvasUmlState, CanvasUmlElement, CanvasUmlRelationship, CanvasUmlRelationView } from '@a3/project-store';
 export type { CanvasC4State, CanvasC4Element, CanvasC4Relationship, CanvasC4RelationView } from '@a3/project-store';
@@ -42,6 +43,8 @@ export type CanvasRequest =
   | { action: 'uml'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: UmlOperation }
   | { action: 'er'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: ErOperation }
   | { action: 'create-iot-component'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; catalogId: string; title: string; position: { x: number; y: number } }
+  | { action: 'create-iot-circuit'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; title: string; position: { x: number; y: number } }
+  | { action: 'change-iot-circuit'; sessionId: string; workspaceId: string; entityId: string; expectedRevision: number; model: IotCircuitData }
   | { action: 'c4'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: C4Operation }
   | { action: 'load' | 'flush' | 'discard' | 'approve-edge-delete' | 'approve-drawing-delete' | 'approve-history-delete'; sessionId: string; workspaceId: string }
   | { action: 'stage'; sessionId: string; workspaceId: string; expectedRevision: number; viewport: WorkspaceViewport }

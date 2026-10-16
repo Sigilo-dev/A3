@@ -8,6 +8,7 @@ import { c4NodeDefinition, c4RelationDefinition, isC4Category, validateC4Snapsho
 import { umlNodeDefinition, umlRelationDefinition, validateUmlSnapshot } from './uml.js';
 import { erNodeDefinition, erRelationDefinition, validateErSnapshot } from './er.js';
 import { iotNodeDefinition, validateIotSnapshot } from './iot.js';
+import { IOT_CIRCUIT_TYPE, IOT_CIRCUIT_VERSION, validateIotCircuitSnapshot } from './iot-circuit.js';
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, coerceTypes: false, useDefaults: false, removeAdditional: false });
 ajv.addFormat('utc-date-time', (value: string) => {
@@ -99,8 +100,15 @@ export function validateRecord(record: unknown): Diagnostic[] {
 
 export const matchesValueType = (value: JsonValue, type: ValueType): boolean => type === 'json' || typeof value === type;
 const typeKey = (value: { name: string; version: string }): string => `${value.name}@${value.version}`;
-export const findNodeType = (registry: TypeRegistry, entity: Entity): NodeType | undefined =>
-  (entity.typeVersion === '1.0.0' ? conceptualNodeTypeDefinition(entity.type) ?? c4NodeDefinition(entity.type) ?? umlNodeDefinition(entity.type) ?? erNodeDefinition(entity.type) ?? iotNodeDefinition(entity.type) : undefined) ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
+export const findNodeType = (registry: TypeRegistry, entity: Entity): NodeType | undefined => {
+  const builtin = entity.typeVersion === '1.0.0'
+    ? conceptualNodeTypeDefinition(entity.type) ?? c4NodeDefinition(entity.type) ?? umlNodeDefinition(entity.type) ?? erNodeDefinition(entity.type) ?? iotNodeDefinition(entity.type)
+    : undefined;
+  const circuit = entity.type === IOT_CIRCUIT_TYPE && entity.typeVersion === IOT_CIRCUIT_VERSION
+    ? { name: IOT_CIRCUIT_TYPE, version: IOT_CIRCUIT_VERSION, packageId: 'a3.builtin.iot', fields: [], ports: [], bindingFields: [], extensions: {} }
+    : undefined;
+  return builtin ?? circuit ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
+};
 export const findRelationType = (registry: TypeRegistry, relation: Relation): RelationType | undefined =>
   (relation.type === 'a3.conceptual.relationship' && relation.typeVersion === '1.0.0' ? conceptualRelationType() : undefined) ??
   (relation.type === 'a3.c4.relationship' && relation.typeVersion === '1.0.0' ? c4RelationDefinition() : undefined) ??
@@ -246,7 +254,7 @@ export function validateSnapshot(snapshot: DomainSnapshot, registry: TypeRegistr
       }
     }
   }
-  return [...diagnostics, ...validateC4Snapshot(snapshot, registry), ...validateUmlSnapshot(snapshot), ...validateErSnapshot(snapshot), ...validateIotSnapshot(snapshot)];
+  return [...diagnostics, ...validateC4Snapshot(snapshot, registry), ...validateUmlSnapshot(snapshot), ...validateErSnapshot(snapshot), ...validateIotSnapshot(snapshot), ...validateIotCircuitSnapshot(snapshot)];
 }
 
 export function defaultRegistry(): TypeRegistry {

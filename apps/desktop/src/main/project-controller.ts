@@ -5,6 +5,7 @@ import { lstat, realpath, readdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, parse, relative, resolve } from 'node:path';
 import { CONTENT_NODE_CATALOG, CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_RELATION_KINDS, IOT_CATALOG, resolveSmartPastePayload } from '@a3/domain';
+import { validIotCircuitOperation } from '@a3/domain/iot-circuit';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
@@ -81,6 +82,10 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
   if (input.action === 'create-iot-component') return Object.keys(input).length === 7 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 &&
     typeof input.catalogId === 'string' && IOT_CATALOG.some((entry) => entry.catalogId === input.catalogId && !entry.template) &&
     typeof input.title === 'string' && input.title.trim().length > 0 && input.title.length <= 200 && validPoint(input.position);
+  if (input.action === 'create-iot-circuit') return Object.keys(input).length === 6 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 &&
+    typeof input.title === 'string' && input.title.trim().length > 0 && input.title.length <= 200 && validPoint(input.position);
+  if (input.action === 'change-iot-circuit') return Object.keys(input).length === 6 && uuid.test(String(input.entityId)) &&
+    Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) >= 1 && validIotCircuitOperation({ kind: 'replace-model', model: input.model });
   if (input.action === 'c4') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 && validC4Operation(input.operation);
   if (input.action === 'stage') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) >= 1 && validViewport(input.viewport);
   if (input.action === 'create-placement') return Object.keys(input).length === 6 && uuid.test(String(input.entityId)) && Number.isSafeInteger(input.expectedWorkspaceRevision) &&
@@ -418,6 +423,8 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'uml': return { ok: true, value: await manager.changeCanvasUml(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.operation) };
           case 'er': return { ok: true, value: await manager.changeCanvasEr(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.operation) };
           case 'create-iot-component': return { ok: true, value: await manager.createCanvasIotComponent(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.catalogId, value.title, value.position) };
+          case 'create-iot-circuit': return { ok: true, value: await manager.createCanvasIotCircuit(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.title, value.position) };
+          case 'change-iot-circuit': return { ok: true, value: await manager.changeCanvasIotCircuit(value.sessionId, value.workspaceId, value.entityId, value.expectedRevision, value.model) };
           case 'create-conceptual-node': return { ok: true, value: await manager.createCanvasConceptualNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.kind, value.title, value.position) };
           case 'update-conceptual-node': return { ok: true, value: await manager.updateCanvasConceptualNode(value.sessionId, value.workspaceId, value.entityId, value.expectedRevision, value.patch) };
           case 'create-conceptual-relation': return { ok: true, value: await manager.createCanvasConceptualRelation(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision,

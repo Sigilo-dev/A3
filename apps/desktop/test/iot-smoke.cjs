@@ -15,7 +15,7 @@ async function run() {
   });
   win.webContents.on('render-process-gone', (_event, details) => console.error(`renderer process gone: ${JSON.stringify(details)}`));
   await new Promise((resolve) => win.webContents.once('did-finish-load', resolve));
-  const js = (source) => win.webContents.executeJavaScript(source);
+  const js = (source) => win.webContents.executeJavaScript(source).catch((error) => { console.error(`executeJavaScript failed: ${source}`); throw error; });
   async function waitFor(condition) {
     for (let i = 0; i < 500; i++) {
       if (await js(condition)) return;
@@ -54,9 +54,24 @@ async function run() {
   const placement = saved.placements.find((item) => item.entityId === entity.id);
   assert.ok(placement);
   assert.ok(saved.history.canUndo);
+  await input('[data-iot-create-circuit] input[name="title"]', 'Circuito UI smoke');
+  await click('[data-iot-create-circuit] button[type="submit"]');
+  await waitState(`r.value.entities.some(e=>e.title==='Circuito UI smoke'&&e.type==='a3.iot.circuit')`);
+  const circuitState = await load(), circuit = circuitState.entities.find((item) => item.title === 'Circuito UI smoke');
+  assert.ok(circuit);
+  await waitFor("Boolean(document.querySelector('[data-iot-export] button'))");
+  await js("[...document.querySelectorAll('[data-iot-circuit-editor] button')].find(button=>button.textContent.includes('Incluir BME280 UI smoke')).click(); undefined");
+  await waitFor("document.querySelector('[data-iot-circuit-editor]')?.innerText.includes('U1')");
+  await js(`(()=>{const form=document.querySelector('[data-iot-create-net]');const input=form.querySelector('[name=name]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Pending SDA');input.dispatchEvent(new Event('input',{bubbles:true}));const select=form.querySelector('[name=endpoint]');for(const option of select.options)option.selected=option.value===${JSON.stringify(`${entity.id}|package.3`)};select.dispatchEvent(new Event('change',{bubbles:true}));form.requestSubmit();})()`);
+  await waitFor("Boolean(document.querySelector('[data-iot-issue-state=incomplete]'))");
+  assert.match(await js("document.querySelector('[data-iot-validation]')?.innerText ?? ''"), /Incompleto/);
+  const savedModel = (await load()).entities.find((item) => item.id === circuit.id).properties['a3.iot.circuit'];
+  assert.equal(savedModel.nets[0].endpoints[0].portId, 'package.3');
+  assert.equal((await load()).history.canUndo, true);
   const reopened = await load();
   assert.deepEqual(reopened.entities.find((item) => item.id === entity.id).ports.map((port) => port.id), entity.ports.map((port) => port.id));
-  console.log('A3_IOT_SMOKE=' + JSON.stringify({ passed: true, checks: ['catalog inspector and known limits', 'host-mediated insertion', 'stable port identities', 'saved placement and history', 'persisted workspace reload'] }));
+  assert.deepEqual(reopened.entities.find((item) => item.id === circuit.id).properties['a3.iot.circuit'].nets[0].endpoints, savedModel.nets[0].endpoints);
+  console.log('A3_IOT_SMOKE=' + JSON.stringify({ passed: true, checks: ['catalog inspector and known limits', 'host-mediated component/circuit insertion', 'stable port identities', 'multi-file circuit update through broker/history', 'incomplete diagnostics and export controls', 'persisted workspace reload'] }));
   win.close();
 }
 

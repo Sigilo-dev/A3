@@ -3,6 +3,7 @@ import type { ConceptualNodeKind, ConceptualRelationKind } from './conceptual-di
 import type { C4Change } from './c4.js';
 import type { UmlChange } from './uml.js';
 import type { ErChange } from './er.js';
+import type { ChangeIotCircuit, CreateIotCircuit } from './iot-circuit.js';
 export type UUID = string;
 export type Namespace = string;
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -156,6 +157,8 @@ export type Payloads = {
   'a3.conceptual.update-relation': UpdateConceptualRelation;
   'a3.conceptual.delete-relation': { workspaceId: UUID; relationId: UUID };
   'a3.iot.create-component': CreateIotComponent;
+  'a3.iot.create-circuit': CreateIotCircuit;
+  'a3.iot.change-circuit': ChangeIotCircuit;
   'a3.core.rename': { ref: DocumentRef; name: string };
   'a3.core.set-workspace-viewport': { workspaceId: UUID; viewport: { x: number; y: number; zoom: number } };
   'a3.core.update-entity': EntityPatch;

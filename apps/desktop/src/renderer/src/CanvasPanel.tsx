@@ -20,6 +20,7 @@ import { ErInspector } from './ErInspector';
 import type { ErOperation } from '@a3/domain/er';
 import { IotInspector } from './IotInspector';
 import { IotNodeBody } from './IotNodeBody';
+import type { IotCircuitData } from '@a3/domain/iot-circuit';
 import { C4_CATALOG, c4Data, type C4Operation } from '@a3/domain/c4';
 const CodeOpenContext = createContext<((target: CodeEditorTarget) => void) | undefined>(undefined);
 const ContentVersionContext = createContext(0);
@@ -977,6 +978,25 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
       if (added) { setSelection({ nodeIds: [added.id], groupIds: [], edgeIds: [], drawingIds: [] }); setNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === added.id }))); }
     });
   }
+  function createIotCircuit(title: string): void {
+    const before = new Set(workspaceRef.current?.placements.map((placement) => placement.id) ?? []);
+    const rect = hostRef.current?.getBoundingClientRect(); if (!rect) return;
+    const center = screenToWorld({ x: rect.width / 2, y: rect.height / 2 }, current.current), occupied = workspaceRef.current?.placements ?? [];
+    let position = center;
+    for (let slot = 0; slot <= occupied.length + 16; slot++) {
+      position = { x: center.x + slot % 3 * 460, y: center.y + Math.floor(slot / 3) * 320 };
+      if (!occupied.some((placement) => position.x < placement.position.x + placement.size.width && position.x + 420 > placement.position.x &&
+          position.y < placement.position.y + placement.size.height && position.y + 280 > placement.position.y)) break;
+    }
+    void mutateCanvas((state) => ({ action: 'create-iot-circuit', sessionId, workspaceId, expectedWorkspaceRevision: state.revision, title, position }), 'Circuito IoT creado').then((ok) => {
+      if (!ok) return;
+      const added = workspaceRef.current?.placements.find((placement) => !before.has(placement.id));
+      if (added) { setSelection({ nodeIds: [added.id], groupIds: [], edgeIds: [], drawingIds: [] }); setNodes((nodes) => nodes.map((node) => ({ ...node, selected: node.id === added.id }))); }
+    });
+  }
+  function changeIotCircuit(entityId: string, expectedRevision: number, model: IotCircuitData): void {
+    void mutateCanvas(() => ({ action: 'change-iot-circuit', sessionId, workspaceId, entityId, expectedRevision, model }), 'Circuito IoT guardado');
+  }
   function changeC4(operation: C4Operation): void {
     const before = new Set(workspaceRef.current?.placements.map((p) => p.id) ?? []);
     if (operation.action === 'create-element' || operation.action === 'show-element') {
@@ -1278,7 +1298,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     {workspace && <C4Inspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onOperation={changeC4} onOpenWorkspace={onOpenWorkspace} />}
     {workspace && <UmlInspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onOperation={changeUml} />}
     {workspace && <ErInspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onOperation={changeEr} />}
-    {workspace && <IotInspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onCreate={createIotComponent} />}
+    {workspace && <IotInspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onCreate={createIotComponent} onCreateCircuit={createIotCircuit} onChangeCircuit={changeIotCircuit} />}
     {showReference && <p className="canvas-help">La referencia es un fixture aislado y no se añade al proyecto.</p>}
     {menu && <ContextMenu menu={{ ...menu, actions: canvasActions() }} permissions={permissions} onClose={() => setMenu(null)} />}{promptDialog}
   </>;
