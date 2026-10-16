@@ -7,7 +7,7 @@ import type { IotCircuitData } from '@a3/domain/iot-circuit';
 export type { CanvasErState, CanvasErElement, CanvasErRelationship, CanvasErRelationView } from '@a3/project-store';
 export type { CanvasUmlState, CanvasUmlElement, CanvasUmlRelationship, CanvasUmlRelationView } from '@a3/project-store';
 export type { CanvasC4State, CanvasC4Element, CanvasC4Relationship, CanvasC4RelationView } from '@a3/project-store';
-export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasConceptualRelationView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, CanvasMermaidImportPreview, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace } from '@a3/project-store';
+export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasConceptualRelationView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, CanvasMermaidImportPreview, CanvasPlantUmlImportPreview, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
@@ -41,6 +41,8 @@ export type CodeResult = { ok: true; value: import('@a3/project-store').CodeDocu
 export const DROP_STAGE_CHANNEL = 'a3.canvas:stage-drop';
 export type CanvasRequest =
   | { action: 'plantuml-render'; sessionId: string; workspaceId: string; sourceEntityId: string }
+  | { action: 'plantuml-import-preview'; sessionId: string; workspaceId: string; sourceEntityId: string }
+  | { action: 'plantuml-import-apply'; sessionId: string; workspaceId: string; token: string; authority: 'source' | 'a3-model' }
   | { action: 'mermaid-import-preview'; sessionId: string; workspaceId: string; sourceEntityId: string }
   | { action: 'mermaid-import-apply'; sessionId: string; workspaceId: string; token: string; authority: 'source' | 'a3-model' }
   | { action: 'uml'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: UmlOperation }
@@ -87,6 +89,7 @@ export type MarkdownRequest =
 export type MarkdownResult = { ok: true; value: import('@a3/project-store').MarkdownDocument | import('@a3/project-store').MarkdownAsset } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasResult = { ok: true; value: LocalCanvasWorkspace } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasMermaidImportResult = { ok: true; value: import('@a3/project-store').CanvasMermaidImportPreview } | { ok: false; error: { code: string; message: string; recovery: string } };
+export type CanvasPlantUmlImportResult = { ok: true; value: import('@a3/project-store').CanvasPlantUmlImportPreview } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasPlantUmlRenderOutcome =
   | { state: 'rendered'; svg: string; sourceHash: string; rendererVersion: string; javaVersion: string }
   | { state: 'invalid' | 'timeout' | 'unavailable' | 'too-large'; message: string; line?: number; sourceHash?: string };
@@ -137,6 +140,9 @@ export interface DesktopAPI {
   navigation(request: NavigationRequest): Promise<NavigationResult>;
   files(request: FilesRequest): Promise<FilesResult>;
   canvas(request: Extract<CanvasRequest, { action: 'mermaid-import-preview' }>): Promise<CanvasMermaidImportResult>;
+  canvas(request: Extract<CanvasRequest, { action: 'mermaid-import-apply' }>): Promise<CanvasResult>;
+  canvas(request: Extract<CanvasRequest, { action: 'plantuml-import-preview' }>): Promise<CanvasPlantUmlImportResult>;
+  canvas(request: Extract<CanvasRequest, { action: 'plantuml-import-apply' }>): Promise<CanvasResult>;
   canvas(request: Extract<CanvasRequest, { action: 'plantuml-render' }>): Promise<CanvasPlantUmlResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;
   canvas(request: CanvasContentRequest): Promise<CanvasContentResult>;

@@ -1,0 +1,7 @@
+@startuml
+class Account {
+  +run(value): Result
+  fieldWithoutType
+}
+Account -- Ledger : records
+@enduml

@@ -1,0 +1,14 @@
+@startuml
+!include helpers.puml
+!includeurl https://example.invalid/types.puml
+skinparam classAttributeIconSize 0
+class Account
+class Ledger
+Account --> Ledger : records
+note right of Account
+  Keep this in source mode.
+end note
+package internal {
+  class Hidden
+}
+@enduml

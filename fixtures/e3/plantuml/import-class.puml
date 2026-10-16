@@ -1,0 +1,23 @@
+@startuml
+class Account {
+  -id: UUID
+  +close(reason: String): Boolean
+}
+interface Repository
+class Entity
+class Service
+class Animal
+class Dog
+interface Store
+class MemoryStore
+class Library
+class Book
+class House
+class Room
+Account -- Entity : owns
+Service ..> Repository : uses
+Dog --|> Animal
+MemoryStore ..|> Store
+Library o-- Book : catalog
+House *-- Room : rooms
+@enduml

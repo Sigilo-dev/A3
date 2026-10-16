@@ -15,6 +15,7 @@
     "./mermaid-source": { "types": "./dist/src/mermaid-source.d.ts", "import": "./dist/src/mermaid-source.js" },
     "./plantuml-source": { "types": "./dist/src/plantuml-source.d.ts", "import": "./dist/src/plantuml-source.js" },
     "./mermaid-import": { "types": "./dist/src/mermaid-import.d.ts", "import": "./dist/src/mermaid-import.js" },
+    "./plantuml-import": { "types": "./dist/src/plantuml-import.d.ts", "import": "./dist/src/plantuml-import.js" },
     "./shortcuts": { "types": "./dist/src/shortcuts.d.ts", "import": "./dist/src/shortcuts.js" },
     "./conceptual-diagrams": { "types": "./dist/src/conceptual-diagrams.d.ts", "import": "./dist/src/conceptual-diagrams.js" },
     ".": {

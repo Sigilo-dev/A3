@@ -6,6 +6,7 @@ export type MermaidDiagramFamily = 'flowchart' | 'class' | 'er';
 export interface MermaidImportIssue { line: number; source: string; reason: string; }
 export interface MermaidImportGraphNode {
   id: string; title: string; family: MermaidDiagramFamily;
+  umlKind?: 'class' | 'interface';
   attributes?: UmlAttribute[]; methods?: UmlMethod[]; fields?: ErField[];
 }
 export interface MermaidImportGraphRelation {
@@ -216,7 +217,7 @@ export function parseMermaidImport(source: string): MermaidImportGraph {
 
 export interface MermaidImportIdentityMap { [sourceKey: string]: string; }
 export interface MermaidImportRecords { records: DomainRecord[]; mapping: MermaidImportIdentityMap; }
-function marker(sourceEntityId: string, key: string): ExtensionMap { return { 'a3.mermaid.import': { sourceEntityId, sourceKey: key } }; }
+function marker(sourceEntityId: string, key: string, format: 'mermaid' | 'plantuml'): ExtensionMap { return { [`a3.${format}.import`]: { sourceEntityId, sourceKey: key } }; }
 function mapId(mapping: MermaidImportIdentityMap, key: string): string {
   const value = mapping[key];
   if (!value) throw new TypeError(`Falta identidad mapeada para ${key}.`);
@@ -228,7 +229,7 @@ function baseEntity(id: string, type: string, title: string, properties: Extensi
 }
 
 /** Builds native, typed records from the accepted subset without rewriting the source Resource. */
-export function buildMermaidImportRecords(graph: MermaidImportGraph, workspaceId: string, sourceEntityId: string, mapping: MermaidImportIdentityMap): MermaidImportRecords {
+export function buildMermaidImportRecords(graph: MermaidImportGraph, workspaceId: string, sourceEntityId: string, mapping: MermaidImportIdentityMap, format: 'mermaid' | 'plantuml' = 'mermaid'): MermaidImportRecords {
   if (!graph.family || graph.idConflicts.length) throw new TypeError('La fuente contiene conflictos de identidad o no tiene una familia admitida.');
   const records: DomainRecord[] = [];
   const entityFor = new Map<string, string>(), placementFor = new Map<string, string>();
@@ -243,7 +244,7 @@ export function buildMermaidImportRecords(graph: MermaidImportGraph, workspaceId
     if (graph.family === 'flowchart') {
       type = 'a3.conceptual.idea'; properties = {};
     } else if (graph.family === 'class') {
-      type = 'a3.uml.class';
+      type = `a3.uml.${node.umlKind ?? 'class'}`;
       const attrs = node.attributes ?? [], methods = node.methods ?? [];
       for (const attr of attrs) {
         const target = entityFor.get(attr.type.name.toLowerCase());
@@ -263,8 +264,8 @@ export function buildMermaidImportRecords(graph: MermaidImportGraph, workspaceId
       type = 'a3.er.table'; properties = { 'a3.er': { description: '', fields: (node.fields ?? []) as unknown as JsonValue } };
       for (const field of node.fields ?? []) field.id = mapId(mapping, `member:field:${node.id}:${field.name}`);
     }
-    records.push({ kind: 'entity', value: baseEntity(entityId, type, node.title, properties, marker(sourceEntityId, key)) });
-    records.push({ kind: 'placement', workspaceId, value: { schemaVersion: '1.0.0', id: placementId, revision: 1, entityId, position: position(index), size: { width: 340, height: 240 }, style: {}, extensions: marker(sourceEntityId, key) } });
+    records.push({ kind: 'entity', value: baseEntity(entityId, type, node.title, properties, marker(sourceEntityId, key, format)) });
+    records.push({ kind: 'placement', workspaceId, value: { schemaVersion: '1.0.0', id: placementId, revision: 1, entityId, position: position(index), size: { width: 340, height: 240 }, style: {}, extensions: marker(sourceEntityId, key, format) } });
   });
   graph.relations.forEach((relation) => {
     const key = `relation:${relation.id}`, relationId = mapId(mapping, `relation:${key}`), relationViewId = mapId(mapping, `relationView:${key}`);
@@ -273,16 +274,16 @@ export function buildMermaidImportRecords(graph: MermaidImportGraph, workspaceId
     if (!sourceId || !targetId || !sourcePlacementId || !targetPlacementId) throw new TypeError(`Relación ${relation.id} apunta a un nodo no convertido.`);
     if (graph.family === 'flowchart') {
       records.push({ kind: 'relation', value: { schemaVersion: '1.0.0', id: relationId, revision: 1, type: 'a3.conceptual.relationship', typeVersion: '1.0.0', source: { entityId: sourceId }, target: { entityId: targetId },
-        properties: { 'a3.conceptual.label': relation.label || 'conecta', 'a3.conceptual.kind': 'association' }, extensions: marker(sourceEntityId, key) } });
+        properties: { 'a3.conceptual.label': relation.label || 'conecta', 'a3.conceptual.kind': 'association' }, extensions: marker(sourceEntityId, key, format) } });
     } else if (graph.family === 'class') {
       const kind = relation.kind ?? 'association';
       records.push({ kind: 'relation', value: { schemaVersion: '1.0.0', id: relationId, revision: 1, type: `a3.uml.${kind}`, typeVersion: '1.0.0', source: { entityId: sourceId }, target: { entityId: targetId },
-        properties: { 'a3.uml': { label: relation.label, source: { role: '', multiplicity: { lower: 0, upper: kind === 'composition' ? 1 : '*' }, navigable: false }, target: { role: '', multiplicity: { lower: 0, upper: '*' }, navigable: false }, stereotypes: [], constraints: [] } }, extensions: marker(sourceEntityId, key) } });
+        properties: { 'a3.uml': { label: relation.label, source: { role: '', multiplicity: { lower: 0, upper: kind === 'composition' ? 1 : '*' }, navigable: false }, target: { role: '', multiplicity: { lower: 0, upper: '*' }, navigable: false }, stereotypes: [], constraints: [] } }, extensions: marker(sourceEntityId, key, format) } });
     } else {
       records.push({ kind: 'relation', value: { schemaVersion: '1.0.0', id: relationId, revision: 1, type: 'a3.er.relationship', typeVersion: '1.0.0', source: { entityId: sourceId }, target: { entityId: targetId },
-        properties: { 'a3.er': { label: relation.label, sourceCardinality: relation.sourceCardinality ?? 'one', targetCardinality: relation.targetCardinality ?? 'many', identifying: relation.identifying ?? true } }, extensions: marker(sourceEntityId, key) } });
+        properties: { 'a3.er': { label: relation.label, sourceCardinality: relation.sourceCardinality ?? 'one', targetCardinality: relation.targetCardinality ?? 'many', identifying: relation.identifying ?? true } }, extensions: marker(sourceEntityId, key, format) } });
     }
-    records.push({ kind: 'relation-view', workspaceId, value: { schemaVersion: '1.0.0', id: relationViewId, revision: 1, relationId, sourcePlacementId, targetPlacementId, waypoints: [], style: {}, extensions: marker(sourceEntityId, key) } });
+    records.push({ kind: 'relation-view', workspaceId, value: { schemaVersion: '1.0.0', id: relationViewId, revision: 1, relationId, sourcePlacementId, targetPlacementId, waypoints: [], style: {}, extensions: marker(sourceEntityId, key, format) } });
   });
   return { records, mapping: { ...mapping } };
 }

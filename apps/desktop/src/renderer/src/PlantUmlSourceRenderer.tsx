@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
-import { PLANTUML_RENDERER_VERSION, PLANTUML_SOURCE_LIMIT, supportsPlantUmlSourceRenderer } from '@a3/domain/plantuml-source';
-import type { CanvasEntitySummary, CanvasPlantUmlRenderOutcome } from '../../shared/desktop-api';
+import { PLANTUML_RENDERER_VERSION, PLANTUML_SOURCE_LIMIT, PLANTUML_SOURCE_TYPE, supportsPlantUmlSourceRenderer } from '@a3/domain/plantuml-source';
+import type { CanvasEntitySummary, CanvasPlantUmlImportPreview, CanvasPlantUmlRenderOutcome, LocalCanvasWorkspace } from '../../shared/desktop-api';
 
 function sanitizeSvg(svg: string): string {
   const clean = DOMPurify.sanitize(svg, {
@@ -26,13 +26,20 @@ async function sha256Text(source: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function PlantUmlSourceRenderer({ entity, source, unavailableMessage, sessionId, workspaceId }: {
+export function PlantUmlSourceRenderer({ entity, source, unavailableMessage, sessionId, workspaceId, onImported, canApply }: {
   entity: CanvasEntitySummary; source: string | null; unavailableMessage?: string; sessionId: string; workspaceId: string;
+  onImported?: (workspace: LocalCanvasWorkspace) => void; canApply: boolean;
 }): React.JSX.Element {
   const container = useRef<HTMLElement>(null);
   const [visible, setVisible] = useState(false);
   const [result, setResult] = useState<CanvasPlantUmlRenderOutcome | null>(null);
+  const [importPreview, setImportPreview] = useState<CanvasPlantUmlImportPreview | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importStatus, setImportStatus] = useState('');
   const authoritySupported = supportsPlantUmlSourceRenderer(entity.type, entity.typeVersion, entity.properties);
+  const importCompatible = entity.type === PLANTUML_SOURCE_TYPE && entity.typeVersion === '1.0.0' && entity.properties['a3.diagram.format'] === 'plantuml';
+  const authorityLabel = entity.properties['a3.diagram.authority'] === 'a3-model' ? 'authority A3 model' : 'authority source';
 
   useEffect(() => {
     const node = container.current;
@@ -74,6 +81,30 @@ export function PlantUmlSourceRenderer({ entity, source, unavailableMessage, ses
     return () => { current = false; };
   }, [authoritySupported, entity.id, sessionId, source, visible, workspaceId]);
 
+  async function prepareImport(): Promise<void> {
+    if (!window.a3 || importBusy) return;
+    setImportBusy(true); setImportError(null); setImportStatus('');
+    try {
+      const response = await window.a3.canvas({ action: 'plantuml-import-preview', sessionId, workspaceId, sourceEntityId: entity.id });
+      if (!response.ok) throw new Error(`${response.error.code}: ${response.error.message} ${response.error.recovery}`);
+      setImportPreview(response.value); setImportStatus(response.value.message);
+    } catch (error) { setImportError(error instanceof Error ? error.message : 'No se pudo preparar la vista previa.'); }
+    finally { setImportBusy(false); }
+  }
+
+  async function applyImport(authority: 'source' | 'a3-model'): Promise<void> {
+    if (!window.a3 || !importPreview?.canApply || !canApply || importBusy) return;
+    setImportBusy(true); setImportError(null); setImportStatus('');
+    try {
+      const response = await window.a3.canvas({ action: 'plantuml-import-apply', sessionId, workspaceId, token: importPreview.token, authority });
+      if (!response.ok) throw new Error(`${response.error.code}: ${response.error.message} ${response.error.recovery}`);
+      onImported?.(response.value); setImportPreview(null);
+      setImportStatus(authority === 'source' ? 'Modelo actualizado; la fuente PlantUML sigue siendo la autoridad y no se reescribe.' :
+        'Modelo actualizado y autoridad cambiada explícitamente a A3; la fuente se conserva sin regeneración automática.');
+    } catch (error) { setImportError(error instanceof Error ? error.message : 'No se pudo aplicar la importación. Prepara otra vista previa.'); }
+    finally { setImportBusy(false); }
+  }
+
   const state = !authoritySupported ? 'fallback' : source === null ? 'unavailable' : result?.state ?? (visible ? 'loading' : 'deferred');
   const message = !authoritySupported ? 'No se reconoce la autoridad o versión de esta fuente; solo se muestra el original.' :
     source === null ? unavailableMessage ?? 'No se puede leer la fuente. Se conserva para localizar o revisar permisos.' :
@@ -84,6 +115,36 @@ export function PlantUmlSourceRenderer({ entity, source, unavailableMessage, ses
     {result?.state === 'rendered' ? <div className="plantuml-source-output" role="img" aria-label={`Diagrama PlantUML: ${entity.title}`} dangerouslySetInnerHTML={{ __html: result.svg }} /> :
       <p className="canvas-content-state" role={['invalid', 'unavailable', 'timeout', 'too-large', 'fallback'].includes(state) ? 'alert' : 'status'}>{message}</p>}
     {source !== null && <details className="plantuml-source-original"><summary>Fuente PlantUML preservada</summary><pre>{source}</pre></details>}
-    <small>{entity.contentResource?.label ?? 'Fuente PlantUML'} · PlantUML {PLANTUML_RENDERER_VERSION}{result?.state === 'rendered' ? ` · Java ${result.javaVersion}` : ''} · authority source</small>
+    {importCompatible && <section className="mermaid-import" aria-label="Conversión PlantUML a UML A3">
+      <p>Conversión parcial explícita: class/interface, firmas simples y relaciones básicas. La fuente completa se conserva; A3 no la regenera al editar el modelo.</p>
+      <button className="quiet" type="button" data-plantuml-import-preview onClick={() => void prepareImport()} disabled={importBusy}>
+        {importBusy && !importPreview ? 'Preparando vista previa…' : importPreview ? 'Volver a preparar vista previa' : 'Previsualizar conversión a UML A3'}
+      </button>
+      {importError && <p role="alert" className="canvas-content-state">{importError}</p>}
+      {importStatus && <p role="status" className="canvas-content-state">{importStatus}</p>}
+      {importPreview && <div className="mermaid-import-preview" data-import-mode={importPreview.mode}>
+        <h4>Vista previa · {importPreview.mode === 'new' ? 'crear modelo' : 'actualizar importación existente'}</h4>
+        <p>SHA-256 <code>{importPreview.sourceHash}</code> · autoridad actual <code>{importPreview.authority}</code>. Los IDs se muestran antes de escribir.</p>
+        {importPreview.converted.length > 0 && <div className="mermaid-import-table" role="table" aria-label="Elementos UML convertidos">
+          <div role="row" className="mermaid-import-row mermaid-import-head"><span>Clave de origen</span><span>Elemento</span><span>Acción</span></div>
+          {importPreview.converted.map((item) => <div role="row" className="mermaid-import-row" key={`${item.key}:${item.kind}`}>
+            <code>{item.key}</code><span>{item.title || item.kind}</span><span>{item.action}</span></div>)}
+        </div>}
+        <details><summary>Mapa estable de IDs ({Object.keys(importPreview.mapping).length})</summary><ul>{Object.entries(importPreview.mapping).map(([key, id]) =>
+          <li key={key}><code>{key}</code> → <code>{id}</code></li>)}</ul></details>
+        {importPreview.staleSourceKeys.length > 0 && <p>Claves antiguas no presentes en la fuente (no se borran automáticamente): {importPreview.staleSourceKeys.map((key) => <code key={key}>{key} </code>)}</p>}
+        {importPreview.unconverted.length > 0 && <section className="mermaid-import-issues" aria-label="Construcciones conservadas en la fuente"><strong>Sintaxis no convertida</strong><ul>{importPreview.unconverted.map((item, index) =>
+          <li key={`${item.line}:${index}`}><span>Línea {item.line}</span> <code>{item.source}</code> · {item.reason}</li>)}</ul></section>}
+        {importPreview.idConflicts.length > 0 && <section role="alert" aria-label="Conflictos de identidad"><strong>Conflictos</strong><ul>{importPreview.idConflicts.map((item, index) =>
+          <li key={`${item.line}:${index}`}><span>Línea {item.line}</span> <code>{item.source}</code> · {item.reason}</li>)}</ul></section>}
+        {importPreview.missingResources.length > 0 && <section aria-label="Recursos ausentes"><strong>Recursos sin resolver</strong><ul>{importPreview.missingResources.map((item, index) => <li key={index}>{item.reason}</li>)}</ul></section>}
+        <div className="mermaid-import-actions" aria-label="Aplicar importación y declarar autoridad">
+          <button className="quiet" type="button" data-plantuml-import-apply="source" onClick={() => void applyImport('source')} disabled={!importPreview.canApply || !canApply || importBusy}>Aplicar y conservar autoridad source</button>
+          <button className="quiet" type="button" data-plantuml-import-apply="a3-model" onClick={() => void applyImport('a3-model')} disabled={!importPreview.canApply || !canApply || importBusy}>Aplicar y cambiar autoridad a modelo A3</button>
+        </div>
+        {!canApply && <p className="canvas-content-state">El proyecto no permite escribir ahora; puedes revisar el informe sin aplicarlo.</p>}
+      </div>}
+    </section>}
+    <small>{entity.contentResource?.label ?? 'Fuente PlantUML'} · PlantUML {PLANTUML_RENDERER_VERSION}{result?.state === 'rendered' ? ` · Java ${result.javaVersion}` : ''} · {authorityLabel}</small>
   </section>;
 }

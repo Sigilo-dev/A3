@@ -9,6 +9,7 @@ import { erData, erTable, validErOperation, type ErChange, type ErOperation } fr
 import { MERMAID_SOURCE_TYPE, mermaidSourceProperties } from '@a3/domain/mermaid-source';
 import { PLANTUML_SOURCE_LIMIT, PLANTUML_SOURCE_TYPE, plantUmlSourceProperties, supportsPlantUmlSourceRenderer } from '@a3/domain/plantuml-source';
 import { buildMermaidImportRecords, parseMermaidImport, requiredMermaidMapping, type MermaidImportGraph, type MermaidImportIdentityMap, type MermaidImportIssue } from '@a3/domain/mermaid-import';
+import { parsePlantUmlClassImport } from '@a3/domain/plantuml-import';
 import { projectErCanvas, type CanvasErState } from './er-canvas.js';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
@@ -106,6 +107,7 @@ export interface CanvasMermaidImportPreview {
   missingResources: readonly MermaidImportIssue[]; idConflicts: readonly MermaidImportIssue[]; staleSourceKeys: readonly string[];
   mapping: Readonly<MermaidImportIdentityMap>; canApply: boolean; message: string;
 }
+export type CanvasPlantUmlImportPreview = Omit<CanvasMermaidImportPreview, 'family'> & { family: 'class' | null };
 export interface MarkdownDocument {
   entityId: string; entityRevision: number; resourceId: string; revision: number; hash: string; content: string;
   canWrite: boolean; readOnlyReason: string | null; unsupported: readonly string[];
@@ -146,6 +148,10 @@ interface CanvasHistoryState {
 interface MermaidImportPreviewBinding {
   sessionId: string; workspaceId: string; sourceEntityId: string; sourceRevision: number; resourceId: string; sourceHash: string;
   family: 'flowchart' | 'class' | 'er'; mode: 'new' | 'update'; graph: MermaidImportGraph; mapping: MermaidImportIdentityMap; records: DomainRecord[]; expiresAt: number;
+}
+interface PlantUmlImportPreviewBinding {
+  sessionId: string; workspaceId: string; sourceEntityId: string; sourceRevision: number; resourceId: string; sourceHash: string;
+  family: 'class'; mode: 'new' | 'update'; graph: MermaidImportGraph; mapping: MermaidImportIdentityMap; records: DomainRecord[]; expiresAt: number;
 }
 function historyRequiresDelete(event: ReversibleCanvasCommand, direction: 'undo' | 'redo'): boolean {
   const removesRecord = event.changes.some((change) => {
@@ -260,6 +266,7 @@ export class LocalProjectManager {
   #viewportDrafts = new Map<string, { sessionId: string; expectedRevision: number; viewport: WorkspaceViewport }>();
   #canvasHistories = new Map<string, CanvasHistoryState>();
   #mermaidImportPreviews = new Map<string, MermaidImportPreviewBinding>();
+  #plantUmlImportPreviews = new Map<string, PlantUmlImportPreviewBinding>();
   #resetExplorerBindings = (): void => {
     this.#explorerSessionId = ''; this.#explorerItems.clear(); this.#explorerPaths.clear(); this.#explorerPages.clear(); this.#explorerDeletes.clear(); this.#codeDocuments.clear();
   };
@@ -1276,6 +1283,110 @@ export class LocalProjectManager {
         family: binding.family, authority, mode: binding.mode, mapping: binding.mapping, records: binding.records } }, entityIds, missingRefs,
       [{ resourceId: binding.resourceId, hash: binding.sourceHash }]);
       this.#mermaidImportPreviews.delete(token);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  previewCanvasPlantUmlImport(sessionId: string, workspaceId: string, sourceEntityId: string): Promise<CanvasPlantUmlImportPreview> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId), snapshot = active.lease.service.state.project.snapshot;
+      const source = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === sourceEntityId.toLowerCase());
+      demand(source?.kind === 'entity' && source.value.type === PLANTUML_SOURCE_TYPE && source.value.typeVersion === '1.0.0' && source.value.properties['a3.diagram.format'] === 'plantuml' &&
+        typeof source.value.contentResourceId === 'string' && snapshot.records.some((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.entityId.toLowerCase() === sourceEntityId.toLowerCase()),
+      'PLANTUML_SOURCE_MISSING', 'La fuente PlantUML no está en este workspace o su autoridad ya no se reconoce; se conserva el documento.');
+      const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === source.value.contentResourceId!.toLowerCase());
+      demand(resource?.value.kind === 'project-file' && /\.(?:puml|plantuml)$/i.test(resource.value.path),
+        'PLANTUML_IMPORT_SOURCE_UNAVAILABLE', 'La importación estructurada solo lee un recurso PlantUML interno del proyecto; los montajes y URLs no se recorren.');
+      const opened = await active.lease.service.openResource(resource.value.id, PLANTUML_SOURCE_LIMIT);
+      demand(opened.ok, opened.diagnostics[0]?.code ?? 'PLANTUML_IMPORT_SOURCE_UNAVAILABLE', opened.diagnostics.map((item) => item.message).join('\n'));
+      let text: string;
+      try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(opened.value.bytes); }
+      catch { throw new LocalProjectError('PLANTUML_IMPORT_SOURCE_ENCODING', 'La fuente no es UTF-8 válido; sus bytes originales se conservan.'); }
+
+      const graph = parsePlantUmlClassImport(text), priorImport = recordObject(source.value.properties['a3.diagram.import']);
+      const priorMapping = recordObject(priorImport?.mapping) as MermaidImportIdentityMap | undefined;
+      const priorCompatible = priorImport?.format === 'plantuml' && priorImport.schemaVersion === '1.0.0' && priorImport.family === 'class';
+      const mode: 'new' | 'update' = priorCompatible ? 'update' : 'new';
+      const mapping: MermaidImportIdentityMap = {};
+      const idConflicts = [...graph.idConflicts];
+      if (priorImport && !priorCompatible) idConflicts.push({ line: 1, source: '', reason: 'La importación existente no pertenece a PlantUML clase o no tiene una versión/mapeo conocido.' });
+      if (priorCompatible && !priorMapping) idConflicts.push({ line: 1, source: '', reason: 'La importación existente no contiene un mapa verificable de IDs.' });
+      if (priorMapping) for (const [key, value] of Object.entries(priorMapping)) {
+        if (typeof value !== 'string' || !uuid.test(value)) idConflicts.push({ line: 1, source: key, reason: 'El mapa persistido contiene un ID inválido.' });
+        else mapping[key] = value;
+      }
+      for (const key of requiredMermaidMapping(graph)) if (!mapping[key]) mapping[key] = randomUUID();
+      const mapValues = Object.values(mapping).map((value) => value.toLowerCase());
+      if (new Set(mapValues).size !== mapValues.length) idConflicts.push({ line: 1, source: '', reason: 'El mapa persistido repite IDs; no se elegirá una identidad automáticamente.' });
+      let records: DomainRecord[] = [];
+      if (graph.family === 'class' && !idConflicts.length) {
+        try { records = buildMermaidImportRecords(graph, workspaceId, source.value.id, mapping, 'plantuml').records; }
+        catch (error) { idConflicts.push({ line: 1, source: '', reason: error instanceof Error ? error.message : 'No se pudo formar el modelo UML A3.' }); }
+      }
+
+      const report: CanvasMermaidImportItem[] = [];
+      const sourceKey = (record: DomainRecord): string => {
+        const marker = recordObject(record.value.extensions['a3.plantuml.import']); return typeof marker?.sourceKey === 'string' ? marker.sourceKey : '';
+      };
+      const recordTitle = (record: DomainRecord): string => {
+        if (record.kind === 'entity') return record.value.title;
+        if (record.kind !== 'relation') return '';
+        return String(record.value.properties['a3.uml'] && recordObject(record.value.properties['a3.uml'])?.label || '');
+      };
+      for (const record of records) {
+        const existing = snapshot.records.find((candidate) => String(candidate.value.id).toLowerCase() === String(record.value.id).toLowerCase());
+        const key = sourceKey(record);
+        if (existing) {
+          const marker = recordObject(existing.value.extensions['a3.plantuml.import']);
+          if (refKey(refOf(existing)) !== refKey(refOf(record)) || mode !== 'update' || marker?.sourceEntityId !== source.value.id || marker.sourceKey !== key) {
+            if (record.kind === 'entity' || record.kind === 'relation') report.push({ key, kind: record.value.type, title: recordTitle(record), action: 'conflict' });
+            idConflicts.push({ line: 1, source: key, reason: `El ID ${record.value.id} está ocupado por un documento que no pertenece a esta importación.` });
+          } else if (record.kind === 'entity' || record.kind === 'relation') {
+            const before = structuredClone(existing); before.value.revision = 1;
+            const after = structuredClone(record); after.value.revision = 1;
+            report.push({ key, kind: record.value.type, title: recordTitle(record), action: stableJson(before) === stableJson(after) ? 'unchanged' : 'update' });
+          }
+        } else if (record.kind === 'entity' || record.kind === 'relation') report.push({ key, kind: record.value.type, title: recordTitle(record), action: 'create' });
+      }
+      const needed = new Set(requiredMermaidMapping(graph));
+      const staleSourceKeys = Object.keys(priorMapping ?? {}).filter((key) => !needed.has(key));
+      const token = randomUUID();
+      const binding: PlantUmlImportPreviewBinding = { sessionId, workspaceId, sourceEntityId: source.value.id, sourceRevision: source.value.revision,
+        resourceId: resource.value.id, sourceHash: opened.value.sha256, family: 'class', mode, graph, mapping, records, expiresAt: Date.now() + 10 * 60_000 };
+      for (const [key, value] of this.#plantUmlImportPreviews) if (value.expiresAt < Date.now() || value.sessionId !== sessionId) this.#plantUmlImportPreviews.delete(key);
+      if (this.#plantUmlImportPreviews.size >= 20) this.#plantUmlImportPreviews.delete(this.#plantUmlImportPreviews.keys().next().value!);
+      this.#plantUmlImportPreviews.set(token, binding);
+      const authority = source.value.properties['a3.diagram.authority'] === 'a3-model' ? 'a3-model' : 'source';
+      const writeDecision = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+        projectId: active.projectId, operation: 'write', paths: [resource.value.path], refs: [{ kind: 'workspace', id: workspaceId }, { kind: 'entity', id: source.value.id }], resources: [resource.value],
+        requiredCapabilities: ['diagram.edit', 'document.edit'], stage: 'prepare' });
+      const historyLimitOk = records.length > 0 && records.length < 1024;
+      const canApply = graph.family === 'class' && graph.nodes.length > 0 && historyLimitOk && idConflicts.length === 0 && writeDecision.allowed &&
+        active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict;
+      const message = canApply ? graph.unconverted.length ? 'Conversión parcial lista; revisa las construcciones omitidas, IDs y diferencias. La fuente completa no se reescribe.' : 'Vista previa lista; revisa IDs y diferencias antes de aplicar.' :
+        !historyLimitOk ? 'La operación supera el límite reversible de documentos; reduce la fuente antes de aplicar.' : idConflicts.length ? 'La vista previa tiene conflictos de identidad o mapeo que deben resolverse.' :
+          !writeDecision.allowed || active.lease.service.state.mode !== 'writer' || active.lease.service.state.externalConflict ? 'El proyecto no permite escribir en este momento; la vista previa se conserva.' : 'No se detectó una clase UML compatible.';
+      return { token, sourceEntityId: source.value.id, sourceRevision: source.value.revision, resourceId: resource.value.id, family: graph.family === 'class' ? 'class' : null,
+        mode, sourceHash: opened.value.sha256, authority, converted: report, unconverted: graph.unconverted, missingResources: graph.missingResources, idConflicts,
+        staleSourceKeys, mapping: { ...mapping }, canApply, message };
+    });
+  }
+  applyCanvasPlantUmlImport(sessionId: string, workspaceId: string, token: string, authority: 'source' | 'a3-model'): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const binding = this.#plantUmlImportPreviews.get(token);
+      demand(binding?.sessionId === sessionId && binding.workspaceId === workspaceId && binding.expiresAt > Date.now(), 'PLANTUML_IMPORT_PREVIEW_EXPIRED', 'La vista previa venció o pertenece a otra sesión; vuelve a prepararla.');
+      const { active } = this.#canvasContext(sessionId, workspaceId), snapshot = active.lease.service.state.project.snapshot;
+      const source = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === binding.sourceEntityId.toLowerCase());
+      demand(source?.kind === 'entity' && source.value.revision === binding.sourceRevision && source.value.contentResourceId?.toLowerCase() === binding.resourceId.toLowerCase(),
+        'REVISION_CONFLICT', 'La fuente o sus metadatos cambiaron desde la vista previa; prepara un diff actualizado.');
+      const opened = await active.lease.service.openResource(binding.resourceId, PLANTUML_SOURCE_LIMIT);
+      demand(opened.ok && opened.value.sha256 === binding.sourceHash, 'REVISION_CONFLICT', 'La fuente cambió después de la vista previa; conserva ambas versiones y prepara de nuevo.');
+      const missingRefs = binding.records.filter((record) => !snapshot.records.some((current) => refKey(refOf(current)) === refKey(refOf(record)))).map(refOf);
+      const entityIds = [binding.sourceEntityId, ...binding.records.flatMap((record) => record.kind === 'entity' ? [record.value.id] : record.kind === 'relation' ? [record.value.source.entityId, record.value.target.entityId] : [])];
+      await this.#commitCanvasCommand(active, { command: 'a3.plantuml.import', payload: { workspaceId, sourceEntityId: binding.sourceEntityId,
+        expectedSourceRevision: binding.sourceRevision, sourceResourceId: binding.resourceId, sourceHash: binding.sourceHash,
+        family: 'class', authority, mode: binding.mode, mapping: binding.mapping, records: binding.records } }, entityIds, missingRefs,
+      [{ resourceId: binding.resourceId, hash: binding.sourceHash }]);
+      this.#plantUmlImportPreviews.delete(token);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }
