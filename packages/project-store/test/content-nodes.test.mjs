@@ -18,10 +18,12 @@ test('A3-006/008/025: typed content nodes create, render and reopen with canonic
     { id: id(610), path: 'assets/photo.png', mediaType: 'image/png', kind: 'image' },
     { id: id(611), path: 'assets/clip.mp4', mediaType: 'video/mp4', kind: 'video' },
     { id: id(612), path: 'assets/voice.wav', mediaType: 'audio/wav', kind: 'audio' },
-    { id: id(613), path: 'assets/manual.bin', mediaType: 'application/octet-stream', kind: 'file' }
+    { id: id(613), path: 'assets/manual.bin', mediaType: 'application/octet-stream', kind: 'file' },
+    { id: id(614), path: 'assets/source.mmd', mediaType: 'text/plain', kind: 'file' }
   ];
   for (const resource of externalResources) {
-    await writeFile(join(root, resource.path), Buffer.from([0, 1, 2, 3, 4]));
+    const content = resource.path.endsWith('.mmd') ? Buffer.from('flowchart TD\n A-->B\n') : Buffer.from([0, 1, 2, 3, 4]);
+    await writeFile(join(root, resource.path), content);
     await writeFile(resourcePath(root, resource.id), JSON.stringify({ schemaVersion: '1.0.0', id: resource.id, revision: 1,
       kind: 'project-file', path: resource.path, mediaType: resource.mediaType, extensions: {} }, null, 2) + '\n');
   }
@@ -43,7 +45,8 @@ test('A3-006/008/025: typed content nodes create, render and reopen with canonic
     { kind: 'web-link', title: 'Web', url: 'https://example.com/reference' },
     { kind: 'file', title: 'Archivo', resourceId: id(613) },
     { kind: 'code', title: 'Código', value: 'const answer = 42;\n', language: 'javascript' },
-    { kind: 'drawing', title: 'Dibujo', value: '{"schemaVersion":"1.0.0","strokes":[]}\n' }
+    { kind: 'drawing', title: 'Dibujo', value: '{"schemaVersion":"1.0.0","strokes":[]}\n' },
+    { kind: 'mermaid', title: 'Mermaid existente', resourceId: id(614) }
   ];
   const created = [];
   const placementIds = new Set(canvas.placements.map((item) => item.id));
@@ -80,6 +83,10 @@ test('A3-006/008/025: typed content nodes create, render and reopen with canonic
   const youtube = canvas.entities.find((entity) => entity.title === 'YouTube');
   assert.equal(youtube.contentResource.url, 'https://youtu.be/dQw4w9WgXcQ');
   assert.equal(await readFile(join(root, 'content', `${page.contentResourceId}.md`), 'utf8'), '# Página\n\nTexto Markdown.\n');
+  const mermaid = canvas.entities.find((entity) => entity.title === 'Mermaid existente');
+  assert.equal(mermaid.contentResourceId, id(614));
+  assert.equal(mermaid.properties['a3.diagram.authority'], 'source');
+  assert.equal((await manager.loadCanvasContent(active.sessionId, W1, mermaid.id, mermaid.contentResourceId)).text, 'flowchart TD\n A-->B\n');
 
   await manager.closeActive(active.sessionId);
   const reopened = (await manager.openFolder(root)).active;

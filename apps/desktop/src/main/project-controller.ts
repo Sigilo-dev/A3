@@ -102,7 +102,10 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
         !node || typeof node !== 'object' || Array.isArray(node) || Object.keys(node).some((key) => !['kind', 'title', 'position', 'value', 'url', 'resourceId', 'description', 'altText', 'language'].includes(key)) ||
         !CONTENT_NODE_CATALOG.some((item) => item.kind === node.kind) || typeof node.title !== 'string' || !node.title.trim() || node.title.length > 200 || !validPoint(node.position)) return false;
     const definition = CONTENT_NODE_CATALOG.find((item) => item.kind === node.kind)!;
-    if (definition.source === 'inline') return typeof node.value === 'string' && node.value.length <= 1_000_000 && !('url' in node) && !('resourceId' in node);
+    if (definition.source === 'inline') {
+      if (node.kind === 'mermaid' && typeof node.resourceId === 'string') return uuid.test(node.resourceId) && !('value' in node) && !('url' in node);
+      return typeof node.value === 'string' && node.value.length <= 1_000_000 && !('url' in node) && !('resourceId' in node);
+    }
     if (definition.source === 'url') return typeof node.url === 'string' && node.url.length <= 2048 && !('value' in node) && !('resourceId' in node);
     if (node.kind === 'image' && typeof node.url === 'string') return node.url.length <= 2048 && !('value' in node) && !('resourceId' in node);
     return typeof node.resourceId === 'string' && uuid.test(node.resourceId) && !('value' in node) && !('url' in node);

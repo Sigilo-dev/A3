@@ -6,6 +6,7 @@ import { projectC4Canvas, type CanvasC4State } from './c4-canvas.js';
 import { umlData, umlKind, validUmlOperation, type UmlChange, type UmlOperation } from '@a3/domain';
 import { projectUmlCanvas, type CanvasUmlState } from './uml-canvas.js';
 import { erData, erTable, validErOperation, type ErChange, type ErOperation } from '@a3/domain';
+import { MERMAID_SOURCE_TYPE, mermaidSourceProperties } from '@a3/domain/mermaid-source';
 import { projectErCanvas, type CanvasErState } from './er-canvas.js';
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
@@ -822,8 +823,11 @@ export class LocalProjectManager {
           properties[key] = value;
         }
       }
+      if (input.kind === 'mermaid') {
+        Object.assign(properties, mermaidSourceProperties());
+      }
       let source: CreateContentNodeSource;
-      if (definition.source === 'inline') {
+      if (definition.source === 'inline' && !(input.kind === 'mermaid' && input.resourceId)) {
         demand(typeof input.value === 'string' && input.value.length <= 1_000_000, 'INVALID_CONTENT_SOURCE', 'Escribe contenido de hasta 1 MB para el nodo.');
         source = { kind: 'inline', resourceId, path: `content/${resourceId}${definition.extension}`, mediaType: definition.mediaType, content: input.value };
         absent.push({ kind: 'resource', id: resourceId });
@@ -831,6 +835,12 @@ export class LocalProjectManager {
         demand(typeof input.url === 'string' && input.url.length <= 2048, 'INVALID_CONTENT_URL', 'Escribe una URL absoluta válida.');
         source = { kind: 'url', resourceId, url: input.url };
         absent.push({ kind: 'resource', id: resourceId });
+      } else if (input.kind === 'mermaid' && input.resourceId) {
+        demand(uuid.test(input.resourceId), 'INVALID_MERMAID_RESOURCE', 'El recurso Mermaid seleccionado no tiene una identidad válida.');
+        const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === input.resourceId!.toLowerCase());
+        const sourcePath = resource && resource.value.kind !== 'remote-url' ? resource.value.path : '';
+        demand(resource && resource.value.kind !== 'remote-url' && /\.(?:mmd|mermaid)$/i.test(sourcePath), 'INVALID_MERMAID_RESOURCE', 'Selecciona un archivo Mermaid local o montado con extensión .mmd o .mermaid.');
+        source = { kind: 'existing-resource', resourceId: resource.value.id };
       } else if (captured.dropMode || captured.dropMountId || captured.dropPath) {
         demand(['image', 'video', 'audio', 'file'].includes(input.kind) && ['copy', 'reference'].includes(captured.dropMode ?? '') &&
           uuid.test(captured.dropMountId ?? '') && typeof captured.dropPath === 'string', 'INVALID_DROP_SOURCE', 'La selección externa ya no es válida.');
@@ -1028,7 +1038,8 @@ export class LocalProjectManager {
       }
       // Renderer receives bounded transient bytes for small image previews or explicit media playback;
       // A3 never writes a preview copy beside the original resource.
-      const limit = purpose === 'playback' ? 32 * 1024 * 1024 : mediaType.startsWith('image/') ? 4 * 1024 * 1024 : 64 * 1024;
+      const isMermaidSource = entity.value.type === MERMAID_SOURCE_TYPE && entity.value.properties['a3.diagram.authority'] === 'source';
+      const limit = purpose === 'playback' ? 32 * 1024 * 1024 : mediaType.startsWith('image/') ? 4 * 1024 * 1024 : isMermaidSource ? 1024 * 1024 : 64 * 1024;
       const opened = await active.lease.service.openResource(resourceId, limit);
       if (!opened.ok) {
         const tooLarge = opened.diagnostics.some((item) => item.detail.includes('read-limit') || item.detail.includes('size-limit') || item.detail.includes('resource-too-large'));

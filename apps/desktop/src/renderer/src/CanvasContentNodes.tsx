@@ -1,5 +1,7 @@
 import type { CanvasEntitySummary, CanvasResourcePreview } from '../../shared/desktop-api';
 import { CONCEPTUAL_NODE_CATALOG, conceptualNodeKind } from '@a3/domain/conceptual-diagrams';
+import { MERMAID_SOURCE_TYPE } from '@a3/domain/mermaid-source';
+import { MermaidSourceRenderer } from './MermaidSourceRenderer';
 
 function textProperty(entity: CanvasEntitySummary, key: string): string {
   const value = entity.properties[key];
@@ -48,6 +50,9 @@ export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback,
   const shortText = entity.type === 'a3.content.short-text';
   const code = entity.type === 'a3.content.code';
   const drawing = entity.type === 'a3.core.drawing';
+  if (entity.type === MERMAID_SOURCE_TYPE) return <MermaidSourceRenderer entity={entity} source={text}
+    unavailableMessage={preview?.state === 'too-large' ? 'La vista segura supera el límite de lectura; el recurso y sus bytes originales permanecen intactos.' :
+      preview?.state === 'binary' ? 'El recurso no es texto UTF-8; se conserva como fuente sin renderizar.' : unavailable || undefined} />;
   const conceptualKind = conceptualNodeKind(entity.type, entity.typeVersion);
 
   if (conceptualKind) return <section className={`canvas-content-card conceptual-node conceptual-node-${conceptualKind}`} data-content-renderer="conceptual" data-conceptual-kind={conceptualKind}

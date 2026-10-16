@@ -24,7 +24,9 @@
     "test:c4": "node test/run-c4.mjs",
     "test:uml": "node test/run-uml.mjs",
     "test:er": "node test/run-er.mjs",
-    "test:iot": "node test/run-iot.mjs"
+    "test:iot": "node test/run-iot.mjs",
+    "test:mermaid": "node --test test/mermaid-source.test.mjs",
+    "test:mermaid:smoke": "node test/run-mermaid.mjs"
   },
   "devDependencies": {
     "@a3/project-store": "0.1.0-dev.0",
@@ -63,6 +65,8 @@
     "@milkdown/prose": "7.22.3",
     "@milkdown/utils": "7.22.3",
     "codemirror": "6.0.2",
+    "dompurify": "3.4.17",
+    "mermaid": "12.2.0",
     "perfect-freehand": "1.2.3",
     "roughjs": "4.6.6"
   }

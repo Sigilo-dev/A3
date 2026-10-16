@@ -244,7 +244,10 @@ function createContentNode(draft: Draft, payload: Payloads['a3.core.create-conte
   const resourceId = payload.source?.resourceId;
   if (typeof resourceId !== 'string' || !UUID_PATTERN.test(resourceId)) fail('invalid-content-resource', 'El nodo requiere un Resource ID válido.');
   let newResource: DomainRecord | undefined;
-  if (definition.source === 'inline') {
+  if (payload.source.kind === 'existing-resource' && (definition.source !== 'inline' || payload.kind === 'mermaid')) {
+    const sourceResource = draft.require({ kind: 'resource', id: resourceId });
+    if (sourceResource.kind !== 'resource') fail('invalid-content-resource', 'El recurso elegido no está disponible.');
+  } else if (definition.source === 'inline') {
     if (payload.source.kind !== 'inline' || typeof payload.source.content !== 'string' || payload.source.content.length > 1_000_000 ||
         payload.source.path !== `content/${resourceId}${definition.extension}` || payload.source.mediaType !== definition.mediaType) {
       fail('invalid-content-source', `El nodo ${definition.label} requiere contenido local en su formato canónico.`);
@@ -291,9 +294,7 @@ function createContentNode(draft: Draft, payload: Payloads['a3.core.create-conte
     newResource = { kind: 'resource', value: { schemaVersion: '1.0.0', id: resourceId, revision: 1,
       kind: 'mounted-file', mountId: source.mountId, path: source.path, mediaType: source.mediaType, extensions: {} } };
   } else {
-    if (payload.source.kind !== 'existing-resource') fail('invalid-content-source', `El nodo ${definition.label} requiere un recurso existente.`);
-    const sourceResource = draft.require({ kind: 'resource', id: resourceId });
-    if (sourceResource.kind !== 'resource') fail('invalid-content-resource', 'El recurso elegido no está disponible.');
+    fail('invalid-content-source', `El nodo ${definition.label} requiere un recurso existente.`);
   }
   if (newResource) draft.add(newResource);
   const entity: DomainRecord = { kind: 'entity', value: { schemaVersion: '1.0.0', id: payload.entityId, revision: 1,
