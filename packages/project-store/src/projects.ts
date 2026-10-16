@@ -5,6 +5,7 @@ import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
+import { initialPageView, insertFocusTab, readWorkspaceSession, writeWorkspaceSession, validCanvasView, validPageView, type WorkspaceSession, type WorkspaceSessionAction, type PageReference } from './workspace-session.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
 import { checkedPath, fileBytes } from './reader.js';
@@ -51,6 +52,7 @@ export interface LocalProjectsState {
   active: LocalProjectSession | null;
   recents: (RecentProject & { available: boolean })[];
   preview: ProjectInitializationPreview | null;
+  restoreNotice?: string;
 }
 export interface WorkspaceViewport { x: number; y: number; zoom: number; }
 export interface CanvasEntitySummary {
@@ -103,7 +105,7 @@ interface ActiveProjectBinding { lease: ProjectLease; sessionId: string; project
 interface Initialization {
   root: string; rootIdentity: string; project: Project; workspace: Workspace;
 }
-interface Catalog { version: 1; recents: RecentProject[]; pending: Initialization[]; }
+interface Catalog { version: 1; recents: RecentProject[]; pending: Initialization[]; resumeId?: string; }
 interface PreviewData { public: ProjectInitializationPreview; parent: string; identity: string; initialization: Initialization; resume: boolean; }
 interface CanvasHistoryPending { action: 'push' | 'undo' | 'redo'; event: ReversibleCanvasCommand; cursorBefore: number; }
 interface CanvasHistoryState {
@@ -209,6 +211,8 @@ export class LocalProjectManager {
   #catalogOwnership: Ownership | undefined;
   #stateRoot = '';
   #sequence = 0;
+  #focusSession: WorkspaceSession | undefined;
+  #restoreNotice: string | undefined;
   #explorerSessionId = '';
   #explorerItems = new Map<string, ExplorerItemBinding>();
   #explorerPaths = new Map<string, { id: string; identity: string }>();
@@ -240,6 +244,7 @@ export class LocalProjectManager {
         'LOCAL_CATALOG_INVALID', 'El catálogo local tiene una versión o estructura desconocida.');
       for (const recent of value.recents) demand(recent && uuid.test(recent.id) && uuid.test(recent.projectId) && isAbsolute(recent.root) && typeof recent.name === 'string' && typeof recent.lastOpened === 'string', 'LOCAL_CATALOG_INVALID', 'Entrada reciente inválida.');
       for (const item of value.pending) { demand(item && isAbsolute(item.root) && /^[a-f0-9]{64}$/.test(item.rootIdentity), 'LOCAL_CATALOG_INVALID', 'Inicialización local inválida.'); initialFiles(item); }
+      demand(value.resumeId === undefined || typeof value.resumeId === 'string' && uuid.test(value.resumeId), 'LOCAL_CATALOG_INVALID', 'Referencia de restauración local inválida.');
       this.#catalog = value;
     } catch (error) {
       if (!missing(error)) throw error instanceof LocalProjectError ? error : new LocalProjectError('LOCAL_CATALOG_INVALID', 'No se pudo leer el catálogo local; no se reemplazó su contenido.');
@@ -272,9 +277,21 @@ export class LocalProjectManager {
       try { await localRoot(recent.root); available = await exists(join(recent.root, 'a3.project.json')); } catch { /* Missing/offline never creates a directory. */ }
       return { ...recent, available };
     }));
-    return { sequence: ++this.#sequence, active: this.#summary(), recents, preview: this.#preview ? structuredClone(this.#preview.public) : null };
+    return { sequence: ++this.#sequence, active: this.#summary(), recents, preview: this.#preview ? structuredClone(this.#preview.public) : null, ...(this.#restoreNotice ? { restoreNotice: this.#restoreNotice } : {}) };
   }
   getState(): Promise<LocalProjectsState> { return this.#queue(() => this.#state()); }
+  restoreLastProject(): Promise<LocalProjectsState> { return this.#queue(async () => {
+    if (!this.#active && this.#catalog.resumeId) {
+      const recent = this.#catalog.recents.find((r) => r.id === this.#catalog.resumeId);
+      if (recent) try {
+        const allowed = this.options.host.capabilities.authorizeAccess({ root: recent.root, projectId: recent.projectId, actor: this.options.host.authenticatedActor,
+          operation: 'open-project', paths: ['a3.project.json'], refs: [], resources: [] });
+        demand(allowed.allowed, 'PERMISSION_DENIED', 'La reapertura requiere aprobación local; abre el proyecto desde Recientes.');
+        await this.#openFolder(recent.root, recent.projectId);
+      } catch { this.#restoreNotice = 'No se pudo reabrir el último proyecto. Conservamos su referencia; usa Recientes o Localizar.'; }
+    }
+    return this.#state();
+  }); }
   async #approve(root: string, projectId: string): Promise<void> {
     this.#assertLocalState(root);
     const broker = this.options.host.capabilities;
@@ -305,12 +322,14 @@ export class LocalProjectManager {
     const previousCatalog = this.#catalog;
     try {
       const old = this.#catalog.recents.find((r) => r.projectId.toLowerCase() === projectId.toLowerCase() && (r.root.toLowerCase() === root.toLowerCase() || expectedId));
-      this.#catalog = { version: 1,
-        recents: [{ id: old?.id ?? randomUUID(), projectId, name, root, lastOpened: new Date().toISOString() }, ...this.#catalog.recents.filter((r) => r !== old && r.root.toLowerCase() !== root.toLowerCase())].slice(0, 30),
+      const recentId = old?.id ?? randomUUID();
+      this.#catalog = { version: 1, resumeId: recentId,
+        recents: [{ id: recentId, projectId, name, root, lastOpened: new Date().toISOString() }, ...this.#catalog.recents.filter((r) => r !== old && r.root.toLowerCase() !== root.toLowerCase())].slice(0, 30),
         pending: this.#catalog.pending.filter((p) => p.root.toLowerCase() !== root.toLowerCase()) };
       await this.#persist();
       await previous?.lease.close();
       this.#active = { lease: candidate.value, sessionId: randomUUID(), projectId, name, rootIdentity: await projectIdentity(root) };
+      this.#focusSession = undefined; this.#restoreNotice = undefined;
       this.#viewportDrafts.clear();
       this.#nameDraft = undefined;
       this.#preview = undefined;
@@ -418,7 +437,78 @@ export class LocalProjectManager {
   }); }
   closeActive(sessionId: string): Promise<LocalProjectsState> { return this.#queue(async () => {
     demand(this.#active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión ya cambió.'); await this.#allowSwitch();
+    const resumeId = this.#catalog.resumeId; delete this.#catalog.resumeId;
+    try { await this.#persist(); } catch (error) { if (resumeId) this.#catalog.resumeId = resumeId; throw error; }
+    this.#focusSession = undefined;
     await this.#active.lease.close(); this.#active = undefined; this.#preview = undefined; this.#nameDraft = undefined; this.#clearExplorer(); return this.#state();
+  }); }
+  async #loadFocusSession(active: ActiveProjectBinding): Promise<WorkspaceSession> {
+    if (this.#focusSession) return this.#focusSession;
+    try {
+      const saved = await readWorkspaceSession(this.#stateRoot, active.projectId, active.rootIdentity);
+      if (saved) return this.#focusSession = saved;
+      const workspace = active.lease.service.state.project.snapshot.records.find((r) => r.kind === 'workspace');
+      const state: WorkspaceSession = { schemaVersion: '1.0.0', projectId: active.projectId, rootIdentity: active.rootIdentity, revision: 0, tabs: [], selectedId: null };
+      if (workspace?.kind === 'workspace') insertFocusTab(state, { id: randomUUID(), kind: 'workspace', workspaceId: workspace.value.id, title: workspace.value.name.slice(0, 512), view: null });
+      return this.#focusSession = state;
+    } catch (error) { throw new LocalProjectError('LOCAL_SESSION_INVALID', error instanceof Error ? error.message : 'No se pudo leer la sesión local.'); }
+  }
+  workspaceSession(sessionId: string, action: WorkspaceSessionAction, expectedRevision?: number): Promise<WorkspaceSession> {
+    return this.#queue(async () => {
+      const active = this.#active; demand(active?.sessionId === sessionId, 'STALE_SESSION', 'Las pestañas pertenecen a otra sesión del proyecto.');
+      const current = await this.#loadFocusSession(active);
+      if (action.action === 'load') return structuredClone(current);
+      demand(expectedRevision === current.revision, 'SESSION_REVISION_CONFLICT', 'La sesión local cambió; recarga las pestañas antes de reintentar.');
+      const next = structuredClone(current), snapshot = active.lease.service.state.project.snapshot;
+      if (action.action === 'open-page') {
+        const entity = snapshot.records.find((r) => r.kind === 'entity' && r.value.id === action.entityId);
+        demand(entity?.kind === 'entity' && ['a3.core.page', 'a3.content.short-text', 'a3.content.markdown'].includes(entity.value.type) && entity.value.contentResourceId, 'PAGE_MISSING', 'La página no tiene una referencia Markdown; sus datos se conservan.');
+        insertFocusTab(next, { id: randomUUID(), kind: 'page', entityId: entity.value.id, resourceId: entity.value.contentResourceId, title: entity.value.title.slice(0, 512), view: initialPageView() }, action.anotherView);
+      } else if (action.action === 'open-workspace') {
+        const workspace = snapshot.records.find((r) => r.kind === 'workspace' && r.value.id === action.workspaceId);
+        demand(workspace?.kind === 'workspace', 'WORKSPACE_MISSING', 'El workspace ya no está disponible.');
+        insertFocusTab(next, { id: randomUUID(), kind: 'workspace', workspaceId: workspace.value.id, title: workspace.value.name.slice(0, 512), view: null });
+      } else if (action.action === 'reorder') {
+        demand(action.tabIds.length === next.tabs.length && new Set(action.tabIds).size === next.tabs.length && action.tabIds.every((id) => next.tabs.some((t) => t.id === id)), 'INVALID_TAB_ORDER', 'El orden debe incluir exactamente las pestañas actuales.');
+        next.tabs = action.tabIds.map((id) => next.tabs.find((t) => t.id === id)!);
+      } else {
+        const index = next.tabs.findIndex((tab) => tab.id === action.tabId), tab = next.tabs[index];
+        demand(tab, 'TAB_MISSING', 'La pestaña ya se cerró.');
+        if (action.action === 'activate') next.selectedId = tab.id;
+        else if (action.action === 'close') { next.tabs.splice(index, 1); if (next.selectedId === tab.id) next.selectedId = next.tabs[Math.min(index, next.tabs.length - 1)]?.id ?? null; }
+        else if (action.action === 'view') {
+          demand(tab.kind === 'page' ? validPageView(action.view) : validCanvasView(action.view), 'INVALID_VIEW_STATE', 'La posición o selección de la vista no es válida.');
+          if (tab.kind === 'page' && validPageView(action.view)) tab.view = structuredClone(action.view);
+          else if (tab.kind === 'workspace' && validCanvasView(action.view)) tab.view = { ...action.view };
+        }
+      }
+      next.revision++;
+      try { await writeWorkspaceSession(this.#stateRoot, next); } catch { throw new LocalProjectError('LOCAL_SESSION_SAVE_FAILED', 'No se guardó la sesión local; las pestañas anteriores y los documentos se conservan.'); }
+      this.#focusSession = next; return structuredClone(next);
+    });
+  }
+  pageReference(sessionId: string, tabId: string): Promise<PageReference> { return this.#queue(async () => {
+    const active = this.#active; demand(active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión cambió.');
+    const state = await this.#loadFocusSession(active), tab = state.tabs.find((t) => t.id === tabId);
+    demand(tab?.kind === 'page', 'TAB_MISSING', 'Selecciona una pestaña de página.');
+    const snapshot = active.lease.service.state.project.snapshot;
+    const resource = snapshot.records.find((r) => r.kind === 'resource' && r.value.id === tab.resourceId);
+    return { entityId: tab.entityId, resourceId: tab.resourceId, title: tab.title, kind: resource?.kind === 'resource' ? resource.value.kind : 'missing',
+      relativePath: resource?.kind === 'resource' && resource.value.kind !== 'remote-url' ? resource.value.path : null,
+      ...(resource?.kind === 'resource' && resource.value.kind === 'mounted-file' ? { mountId: resource.value.mountId } : {}) };
+  }); }
+  locatePageResource(sessionId: string, tabId: string, selectedPath: string): Promise<void> { return this.#queue(async () => {
+    const active = this.#active; demand(active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión cambió antes de localizar el recurso.');
+    const tab = (await this.#loadFocusSession(active)).tabs.find((t) => t.id === tabId);
+    demand(tab?.kind === 'page', 'TAB_MISSING', 'La pestaña no está disponible.');
+    const resource = active.lease.service.state.project.snapshot.records.find((r) => r.kind === 'resource' && r.value.id === tab.resourceId);
+    demand(resource?.kind === 'resource' && resource.value.kind === 'project-file', 'LOCAL_RESOURCE_REQUIRED', 'La referencia necesita su descriptor o la aprobación local del montaje; no se creó un documento vacío.');
+    demand(isAbsolute(selectedPath), 'INVALID_ROOT', 'Usa el selector nativo de archivos.');
+    const path = relative(active.lease.service.root, selectedPath).replaceAll('\\', '/');
+    const prepared = await active.lease.service.prepareResourceRelocation({ operationId: randomUUID(), resourceId: resource.value.id, expectedRevision: resource.value.revision, path });
+    demand(prepared.ok, 'RESOURCE_RELOCATION_FAILED', prepared.diagnostics.map((d) => d.message).join('\n'));
+    const saved = await active.lease.service.commit(prepared.value);
+    demand(saved.ok, 'RESOURCE_RELOCATION_FAILED', saved.diagnostics.map((d) => d.message).join('\n'));
   }); }
   #canvasHistoryLocation(rootIdentity: string, projectId: string, workspaceId: string): { key: string; directory: string; path: string } {
     const directory = join(this.#stateRoot, 'canvas-history');

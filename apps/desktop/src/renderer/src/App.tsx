@@ -2,11 +2,10 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import type { AppInfo, LocalProjectsState } from '../../shared/desktop-api';
 import { ProjectsPanel } from './ProjectsPanel';
 import { FileExplorerPanel } from './FileExplorerPanel';
-import type { MarkdownEditorTarget } from './MarkdownEditor';
-import type { CodeEditorTarget } from './CodeEditor';
+import type { CodeEditorTarget, CodeEditorHandle } from './CodeEditor';
+import type { FocusWorkspaceHandle } from './FocusWorkspace';
+const FocusWorkspace = lazy(() => import('./FocusWorkspace').then((module) => ({ default: module.FocusWorkspace })));
 const CodeEditorDialog = lazy(() => import('./CodeEditor').then((module) => ({ default: module.CodeEditorDialog })));
-const CanvasPanel = lazy(() => import('./CanvasPanel').then((module) => ({ default: module.CanvasPanel })));
-const MarkdownEditorDialog = lazy(() => import('./MarkdownEditor').then((module) => ({ default: module.MarkdownEditorDialog })));
 
 const sections = [
   ['projects', 'Proyectos', 'Inicio y selección de proyectos locales.'],
@@ -34,34 +33,32 @@ export function App(): React.JSX.Element {
   const [attempt, setAttempt] = useState(0);
   const [activityOpen, setActivityOpen] = useState(false);
   const [projects, setProjects] = useState<LocalProjectsState | null>(null);
-  const [markdownTarget, setMarkdownTarget] = useState<MarkdownEditorTarget | null>(null);
-  const [markdownDirty, setMarkdownDirty] = useState(false);
+  const focus = useRef<FocusWorkspaceHandle | null>(null), codeController = useRef<CodeEditorHandle | null>(null);
   const [codeTarget, setCodeTarget] = useState<CodeEditorTarget | null>(null), [codeDirty, setCodeDirty] = useState(false);
   const [contentVersion, setContentVersion] = useState(0);
   const codeSaved = useCallback((): void => setContentVersion((v) => v + 1), []);
   const codeTargetRef = useRef(codeTarget); codeTargetRef.current = codeTarget;
   const codeDirtyRef = useRef(codeDirty); codeDirtyRef.current = codeDirty;
-  const markdownTargetRef = useRef(markdownTarget); markdownTargetRef.current = markdownTarget;
-  const markdownDirtyRef = useRef(markdownDirty); markdownDirtyRef.current = markdownDirty;
   const acceptProjects = (value: LocalProjectsState): void => setProjects((previous) => previous && previous.sequence > value.sequence ? previous : value);
-  const openMarkdown = useCallback((target: MarkdownEditorTarget): void => {
-    if (codeTargetRef.current && codeDirtyRef.current && !window.confirm('El archivo de código tiene cambios sin guardar. ¿Descartar su borrador?')) return;
-    setCodeTarget(null); setCodeDirty(false);
-    const current = markdownTargetRef.current;
-    if (current?.sessionId === target.sessionId && current.entityId === target.entityId && current.resourceId === target.resourceId) return;
-    if (current && markdownDirtyRef.current && !window.confirm('El documento actual tiene cambios sin guardar. ¿Descartar el borrador y abrir otra página?')) return;
-    setMarkdownDirty(false); setMarkdownTarget(target);
-  }, []);
-  const closeMarkdown = useCallback((): void => { setMarkdownTarget(null); setMarkdownDirty(false); }, []);
-  const updateMarkdownDirty = useCallback((dirty: boolean): void => setMarkdownDirty(dirty), []);
   const openCode = useCallback((target: CodeEditorTarget): void => {
     if (codeTargetRef.current?.sessionId === target.sessionId && JSON.stringify(codeTargetRef.current.target) === JSON.stringify(target.target)) return;
     if (codeDirtyRef.current && !window.confirm('El archivo de código tiene cambios sin guardar. ¿Descartar el borrador y abrir otro archivo?')) return;
-    if (markdownDirtyRef.current && !window.confirm('La página tiene cambios sin guardar. ¿Descartar el borrador y abrir el archivo?')) return;
-    setMarkdownTarget(null); setMarkdownDirty(false); setCodeTarget(target); setCodeDirty(false);
+    setCodeTarget(target); setCodeDirty(false);
   }, []);
   const closeCode = useCallback((): void => { setCodeTarget(null); setCodeDirty(false); }, []);
   const updateCodeDirty = useCallback((dirty: boolean): void => setCodeDirty(dirty), []);
+  const revealFocus = useCallback((): void => setActive('canvas'), []);
+  async function beforeProjectSwitch(): Promise<boolean> {
+    if (codeDirtyRef.current && (!window.confirm('¿Guardar el código antes de cambiar de proyecto? Cancelar conserva el archivo y la sesión abiertos.') || !await codeController.current?.save())) return false;
+    return await focus.current?.settle('cambiar de proyecto') ?? true;
+  }
+  function selectSection(id: SectionId): void {
+    if (id === 'canvas' && focus.current) { void focus.current.openCanvas().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'No se abrió el workspace.')); return; }
+    void (focus.current?.flush() ?? Promise.resolve()).then(() => setActive(id)).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'No se guardó el estado de la vista.'));
+  }
+  useEffect(() => {
+    if (codeTargetRef.current && codeTargetRef.current.sessionId !== projects?.active?.sessionId) { setCodeTarget(null); setCodeDirty(false); }
+  }, [projects?.active?.sessionId]);
   const section = sections.find(([id]) => id === active)!;
 
   useEffect(() => {
@@ -74,7 +71,7 @@ export function App(): React.JSX.Element {
         if (!mounted) return;
         if (result.ok) {
           setInfo(result.value);
-          const local = await window.a3.projects({ action: 'list' });
+          const local = await window.a3.projects({ action: 'restore' });
           if (mounted && local.ok) acceptProjects(local.value);
           else if (mounted && !local.ok) setError(local.error.message);
         }
@@ -98,7 +95,7 @@ export function App(): React.JSX.Element {
       <p className="eyebrow">Tu espacio de trabajo</p>
       <nav aria-label="Herramientas de A3">
         {sections.map(([id, label], index) => <button key={id} data-section={id}
-          aria-current={active === id ? 'page' : undefined} onClick={() => setActive(id)}>
+          aria-current={active === id ? 'page' : undefined} onClick={() => selectSection(id)}>
           <span className="nav-number" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>{label}
         </button>)}
       </nav>
@@ -106,7 +103,8 @@ export function App(): React.JSX.Element {
     </aside>
     <main id="content" className="content" tabIndex={-1}>
       <div className="breadcrumb">A3 <span>/</span> {section[1]}</div>
-      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} /> : active === 'canvas' ? <Suspense fallback={<p role="status">Abriendo lienzo…</p>}><CanvasPanel active={projects?.active} onOpenMarkdown={openMarkdown} onOpenCode={openCode} contentVersion={contentVersion} /></Suspense> : active === 'files' ? <FileExplorerPanel active={projects?.active} onOpenCode={openCode} contentVersion={contentVersion} /> : <><section className="intro" aria-labelledby="section-title">
+      {projects?.restoreNotice && <p role="status">{projects.restoreNotice}</p>}
+      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} beforeSwitch={beforeProjectSwitch} /> : active === 'canvas' ? !projects?.active && <p>Abre un proyecto para restaurar sus vistas.</p> : active === 'files' ? <FileExplorerPanel active={projects?.active} onOpenCode={openCode} contentVersion={contentVersion} /> : <><section className="intro" aria-labelledby="section-title">
         <p className="eyebrow">Un lugar para tus ideas</p>
         <h1 id="section-title">{section[1]}</h1>
         <p className="lead">{section[2]}</p>
@@ -114,6 +112,8 @@ export function App(): React.JSX.Element {
           <div><strong>Área preparada</strong><p>La navegación está disponible. Las funciones de esta sección se incorporarán en las próximas etapas.</p></div>
         </div>
       </section></>}
+      {projects?.active && <Suspense fallback={active === 'canvas' ? <p role="status">Restaurando sesión…</p> : null}><FocusWorkspace key={projects.active.sessionId} project={projects.active} visible={active === 'canvas'} onReveal={revealFocus}
+        controllerRef={focus} onOpenCode={openCode} contentVersion={contentVersion} onSaved={codeSaved} /></Suspense>}
       {active !== 'projects' && active !== 'canvas' && <section className="foundation" aria-labelledby="foundation-title">
         <div><p className="eyebrow">Primer paso</p><h2 id="foundation-title">Una base común</h2></div>
         <p>Explora las secciones desde la barra izquierda. Esta entrega prepara la ventana y la comunicación de escritorio.</p>
@@ -142,12 +142,8 @@ export function App(): React.JSX.Element {
     {activityOpen && <section id="activity" className="activity" aria-label="Actividad de inicio">
       <h2>Actividad de inicio</h2><p>{error ?? (info ? 'Ventana y puente de escritorio iniciados.' : 'Esperando conexión del proceso principal.')}</p>
     </section>}
-    {markdownTarget && <Suspense fallback={<div className="markdown-backdrop"><p role="status">Preparando editor Markdown…</p></div>}>
-      <MarkdownEditorDialog key={`${markdownTarget.sessionId}:${markdownTarget.entityId}:${markdownTarget.resourceId}`} target={markdownTarget}
-        activeSessionId={projects?.active?.sessionId ?? null} onDirtyChange={updateMarkdownDirty} onClose={closeMarkdown} />
-    </Suspense>}
     {codeTarget && <Suspense fallback={<div className="markdown-backdrop"><p role="status">Preparando editor de código…</p></div>}>
-      <CodeEditorDialog key={`${codeTarget.sessionId}:${JSON.stringify(codeTarget.target)}`} target={codeTarget} activeSessionId={projects?.active?.sessionId ?? null} onDirtyChange={updateCodeDirty} onSaved={codeSaved} onClose={closeCode} />
+      <CodeEditorDialog key={`${codeTarget.sessionId}:${JSON.stringify(codeTarget.target)}`} target={codeTarget} activeSessionId={projects?.active?.sessionId ?? null} onDirtyChange={updateCodeDirty} onSaved={codeSaved} onClose={closeCode} controllerRef={codeController} />
     </Suspense>}
   </div>;
 }

@@ -1,0 +1,113 @@
+const assert = require('node:assert/strict');
+const { readFile, writeFile } = require('node:fs/promises');
+const { join } = require('node:path');
+
+exports.prepare = async ({ js, click, waitFor, root, profile }) => {
+  console.log('FOCUS_PHASE=opening');
+  await click('[data-section="canvas"]'); await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
+  const project = (await js("window.a3.projects({ action: 'list' })")).value.active;
+  const session = async () => (await js(`window.a3.workspaceSession({ action: 'load', sessionId: '${project.sessionId}' })`)).value;
+  const flush = () => js("(async () => { const pending=[]; window.dispatchEvent(new CustomEvent('a3:flush-session', { detail: pending })); await Promise.all(pending); })()");
+  const source = '# Focus smoke\n\nShared base.\n\n' + Array.from({ length: 220 }, (_, i) => `Paragraph ${i} · Unicode niño 😀.\n\n`).join('');
+  const entity = await js(`(async () => { const workspaceId='${project.workspaces[0].id}'; const canvas=(await window.a3.canvas({ action:'load', sessionId:'${project.sessionId}', workspaceId })).value;
+    const added=await window.a3.canvas({ action:'create-content-node', sessionId:'${project.sessionId}', workspaceId, expectedWorkspaceRevision:canvas.revision,
+      node:{kind:'page',title:'Focus smoke',value:${JSON.stringify(source)},position:{x:(80-canvas.viewport.x)/canvas.viewport.zoom,y:(80-canvas.viewport.y)/canvas.viewport.zoom}}});
+    if(!added.ok)throw new Error(added.error.message); return added.value.entities.find((e)=>e.title==='Focus smoke'); })()`);
+  await click('[data-section="files"]'); await click('[data-section="canvas"]');
+  await waitFor(`Boolean(document.querySelector('[data-open-markdown="${entity.id}"]'))`);
+  const doubleClick = () => js(`document.querySelector('[data-entity-id="${entity.id}"]').dispatchEvent(new MouseEvent('dblclick',{bubbles:true})); undefined`);
+  const countBefore = (await session()).tabs.length; await doubleClick();
+  await waitFor("document.querySelector('#markdown-title')?.textContent === 'Focus smoke' && Boolean(document.querySelector('.ProseMirror'))");
+  const firstState = await session(), first = firstState.selectedId, workspace = firstState.tabs.find((t) => t.kind === 'workspace').id;
+  assert.equal(firstState.tabs.length, countBefore + 1); assert.equal(firstState.tabs[firstState.tabs.findIndex((t) => t.id === workspace) + 1].id, first);
+  assert.equal(await js("document.querySelector('.markdown-focus .markdown-dialog').getAttribute('role')"), 'region');
+  await click(`[data-focus-tab="${workspace}"]`); await waitFor(`Boolean(document.querySelector('[data-open-markdown="${entity.id}"]'))`); await doubleClick();
+  await waitFor(`document.querySelector('[data-focus-tab="${first}"]')?.getAttribute('aria-selected') === 'true'`);
+  assert.equal((await session()).tabs.length, firstState.tabs.length, 'repeated page open activates the existing tab');
+  await click('[data-markdown-source-mode]'); await waitFor("Boolean(document.querySelector('[data-markdown-source-editor] .cm-content'))");
+  const editSource = (old, value) => js(`(() => { const element=document.querySelector('[data-markdown-source-editor] .cm-content');element.focus();const walker=document.createTreeWalker(element,NodeFilter.SHOW_TEXT);let node;
+    while(node=walker.nextNode()){const at=node.textContent.indexOf(${JSON.stringify(old)});if(at>=0){const range=document.createRange();range.setStart(node,at);range.setEnd(node,at+${old.length});const selection=getSelection();selection.removeAllRanges();selection.addRange(range);document.execCommand('insertText',false,${JSON.stringify(value)});return true;}}return false;})()`);
+  assert.equal(await editSource('Shared base.', 'Shared saved.'), true);
+  await click('[data-markdown-save]'); await waitFor("document.querySelector('#markdown-status')?.textContent==='Guardado'");
+  await js('new Promise((resolve)=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  await js("(() => { const scroller=document.querySelector('[data-markdown-source-editor] .cm-scroller');scroller.scrollTop=440;scroller.dispatchEvent(new Event('scroll')); })()");
+  await flush(); const firstView = (await session()).tabs.find((t) => t.id === first).view; assert.ok(firstView.scrollTop > 300, JSON.stringify(await js("[...document.querySelectorAll('.focus-panel:not([hidden]),.markdown-focus,.is-focus,.markdown-source-editor,.cm-editor,.cm-scroller')].map(e=>({class:e.className,height:e.clientHeight,scroll:e.scrollHeight,display:getComputedStyle(e).display,overflow:getComputedStyle(e).overflow,flex:getComputedStyle(e).flex,cssHeight:getComputedStyle(e).height}))")));
+  await click('[data-open-another-view]'); await waitFor(`document.querySelectorAll('[data-tab-entity="${entity.id}"]').length === 2 && Boolean(document.querySelector('.ProseMirror'))`);
+  const second = (await session()).selectedId;
+  assert.notEqual(second, first); assert.equal(await js("document.querySelector('.ProseMirror').textContent.includes('Shared saved.')"), true);
+  assert.equal(await js("document.querySelector('.markdown-surface').scrollTop"), 0);
+  await click(`[data-focus-tab="${first}"]`); await waitFor("Boolean(document.querySelector('[data-markdown-source-editor] .cm-content'))");
+  await waitFor("document.querySelector('[data-markdown-source-editor] .cm-scroller').scrollTop > 300");
+  await click(`[data-focus-tab="${second}"]`); await waitFor("document.querySelector('.markdown-surface')?.dataset.markdownReady === 'true'");
+  console.log('FOCUS_PHASE=rapid-edit-and-cancel-switch');
+  // This edit is followed immediately by a tab switch, before Milkdown's 200 ms serialization listener.
+  assert.equal(await js("(() => { const editor=document.querySelector('.ProseMirror'),block=editor.querySelector('p');editor.focus();const range=document.createRange();range.selectNodeContents(block);range.collapse(false);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);document.execCommand('insertText',false,' rapid draft'); return editor.textContent.includes('rapid draft'); })()"), true);
+  await click(`[data-focus-tab="${first}"]`); await waitFor("Boolean(document.querySelector('[data-markdown-source-editor] .cm-content'))");
+  await click(`[data-focus-tab="${second}"]`); await waitFor("document.querySelector('.ProseMirror')?.textContent.includes('rapid draft')");
+  await click('[data-section="projects"]'); await waitFor("Boolean(document.querySelector('[data-close-project]'))");
+  await click('[data-close-project]'); await waitFor("Boolean(document.querySelector('[data-focus-guard]'))");
+  await click('[data-focus-guard-cancel]'); await waitFor("!document.querySelector('[data-focus-guard]')");
+  assert.equal((await js("window.a3.projects({action:'list'})")).value.active.sessionId, project.sessionId);
+  await click('[data-section="canvas"]'); await waitFor(`Boolean(document.querySelector('[data-focus-tab="${second}"]'))`); await click(`[data-focus-tab="${second}"]`);
+  await waitFor("document.querySelector('.ProseMirror')?.textContent.includes('rapid draft')");
+  await click('[data-markdown-save]'); await waitFor("document.querySelector('#markdown-status')?.textContent === 'Guardado'");
+  await click(`[data-focus-tab="${first}"]`); await waitFor("document.querySelector('[data-markdown-source-editor] .cm-content')?.textContent.includes('rapid draft')");
+  // A parse failure blocks Save and continue; the old session and the unchanged file survive.
+  await js("(() => { const scroller=document.querySelector('[data-markdown-source-editor] .cm-scroller');scroller.scrollTop=0; })()");
+  await waitFor("document.querySelector('[data-markdown-source-editor] .cm-content')?.textContent.includes('Shared saved.')");
+  assert.equal(await editSource('Shared saved.', '[[broken'), true);
+  const bytesBefore = (await js(`window.a3.markdown({action:'open',sessionId:'${project.sessionId}',entityId:'${entity.id}',resourceId:'${entity.contentResourceId}'})`)).value.content;
+  await click('[data-section="projects"]'); await waitFor("Boolean(document.querySelector('[data-close-project]'))"); await click('[data-close-project]'); await waitFor("Boolean(document.querySelector('[data-focus-guard]'))");
+  await click('[data-focus-guard-save]'); await waitFor("!document.querySelector('[data-focus-guard]') && Boolean(document.querySelector('[data-markdown-diagnostic]'))");
+  assert.equal((await js("window.a3.projects({action:'list'})")).value.active.sessionId, project.sessionId);
+  const after = (await js(`window.a3.markdown({action:'open',sessionId:'${project.sessionId}',entityId:'${entity.id}',resourceId:'${entity.contentResourceId}'})`)).value.content;
+  assert.equal(after, bytesBefore);
+  await click(`[data-close-tab="${first}"]`); await waitFor("Boolean(document.querySelector('[data-focus-guard]'))"); await click('[data-focus-guard-discard]');
+  await waitFor(`!document.querySelector('[data-focus-tab="${first}"]')`); assert.equal((await session()).tabs.some((t) => t.id === second), true);
+  await click(`[data-focus-tab="${second}"]`); await waitFor("Boolean(document.querySelector('.ProseMirror'))");
+  await click('[data-markdown-source-mode]'); await waitFor("Boolean(document.querySelector('[data-markdown-source-editor] .cm-content'))");
+  await js('new Promise((resolve)=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  await js("document.querySelector('[data-markdown-source-editor] .cm-scroller').scrollTop=620; undefined"); await flush();
+  const secondView = (await session()).tabs.find((t) => t.id === second).view; assert.ok(secondView.scrollTop > 400);
+  // Keyboard tab navigation has a visible focus target and manual activation.
+  await js(`(() => { const button=document.querySelector('[data-focus-tab="${second}"]');button.focus();button.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true,cancelable:true})); })()`);
+  assert.equal(await js("document.activeElement.getAttribute('role')"), 'tab');
+  await js("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})); undefined");
+  await waitFor(`document.querySelector('[data-focus-tab="${workspace}"]')?.getAttribute('aria-selected')==='true'`);
+  console.log('FOCUS_PHASE=prepare-restart');
+  // Local viewport state is persisted alongside the page views, including for readonly navigation.
+  await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady==='true'");
+  await click('[data-canvas-zoom-in]'); await flush();
+  const missingEntity = await js(`(async()=>{const workspaceId='${project.workspaces[0].id}',canvas=(await window.a3.canvas({action:'load',sessionId:'${project.sessionId}',workspaceId})).value;
+    const added=await window.a3.canvas({action:'create-content-node',sessionId:'${project.sessionId}',workspaceId,expectedWorkspaceRevision:canvas.revision,node:{kind:'page',title:'Missing after restart',value:'# Missing after restart\\n\\nOriginal source.\\n',position:{x:(80-canvas.viewport.x)/canvas.viewport.zoom,y:(80-canvas.viewport.y)/canvas.viewport.zoom}}});if(!added.ok)throw new Error(added.error.message);return added.value.entities.find((e)=>e.title==='Missing after restart');})()`);
+  await click('[data-section="files"]'); await click('[data-section="canvas"]');
+  await waitFor(`Boolean(document.querySelector('[data-open-markdown="${missingEntity.id}"]'))`); await click(`[data-open-markdown="${missingEntity.id}"]`);
+  await waitFor("document.querySelector('#markdown-title')?.textContent === 'Missing after restart'");
+  await waitFor("document.querySelector('.markdown-surface')?.dataset.markdownReady === 'true'");
+  await js('new Promise((resolve)=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  await flush(); const current = await session();
+  const selected = current.tabs.find((tab) => tab.id === current.selectedId);
+  const ref = (await js(`window.a3.workspaceSession({action:'reference',sessionId:'${project.sessionId}',tabId:'${selected.id}'})`)).value;
+  const state = (await js("(async()=>{const p=(await window.a3.projects({action:'list'})).value.active;return (await window.a3.workspaceSession({action:'load',sessionId:p.sessionId})).value;})()")).tabs;
+  await writeFile(join(profile, 'focus-expected.json'), JSON.stringify({ root, tabs: state, selectedId: selected.id, entityId: entity.id, second, secondView, missing: ref,
+    missingPath: join(root, ref.relativePath), locatedPath: join(root, 'pages', 'relocated-focus.md'), originalBytes: (await readFile(join(root, ref.relativePath))).toString('base64') }));
+};
+
+exports.restore = async ({ js, click, waitFor, profile, folders }) => {
+  const expected = JSON.parse(await readFile(join(profile, 'focus-expected.json'), 'utf8'));
+  await waitFor("Boolean(document.querySelector('[data-focus-diagnostic]'))");
+  const project = (await js("window.a3.projects({action:'list'})")).value.active;
+  assert.equal(project.root, expected.root);
+  const state = (await js(`window.a3.workspaceSession({action:'load',sessionId:'${project.sessionId}'})`)).value;
+  assert.deepEqual(state.tabs, expected.tabs); assert.equal(state.selectedId, expected.selectedId);
+  assert.equal(await js("document.querySelector('.ProseMirror')"), null, 'missing resource is never a blank editable document');
+  await click('[data-focus-reference]'); await waitFor("Boolean(document.querySelector('[data-focus-reference-details]'))");
+  assert.match(await js("document.querySelector('[data-focus-reference-details]').textContent"), new RegExp(expected.missing.resourceId));
+  await js("document.querySelector('[data-focus-reference-details] button').click(); undefined");
+  folders.push(expected.locatedPath); await click('[data-focus-locate]');
+  await waitFor("!document.querySelector('[data-focus-diagnostic]') && document.querySelector('.ProseMirror')?.textContent.includes('Original source.')");
+  assert.deepEqual(await readFile(expected.locatedPath), Buffer.from(expected.originalBytes, 'base64'));
+  await click(`[data-focus-tab="${expected.second}"]`); await waitFor("Boolean(document.querySelector('[data-markdown-source-editor] .cm-content'))");
+  await waitFor("document.querySelector('[data-markdown-source-editor] .cm-scroller').scrollTop>400");
+  assert.ok(Math.abs(await js("document.querySelector('[data-markdown-source-editor] .cm-scroller').scrollTop") - expected.secondView.scrollTop) < 5);
+};

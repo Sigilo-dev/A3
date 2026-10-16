@@ -293,5 +293,24 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .code-source-editor .cm-panels { background: #1d2922; color: #e2eedc; }
 .code-source-editor .cm-panels input { background: #101a15; color: #e2eedc; }
 .code-source-editor .cm-panels button { color: #101a15; }
+.content:has(.focus-workspace:not([hidden])) { display: flex; flex-direction: column; padding: 18px; overflow: hidden; }
+.content:has(.focus-workspace:not([hidden])) .breadcrumb { margin-bottom: 8px; }
+.focus-workspace, .focus-panel, .markdown-focus { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.focus-workspace[hidden], .focus-panel[hidden] { display: none; }
+.focus-tab-bar { display: flex; flex-shrink: 0; border-bottom: 1px solid #405047; }
+.focus-tab-list { display: flex; overflow: auto; gap: 5px; padding: 4px; }
+.focus-tab-item { display: flex; flex-shrink: 0; border: 1px solid #33433b; border-radius: 5px 5px 0 0; }
+.focus-tab-item button { background: #17211c; border: 0; color: #bac8bd; margin: 0; padding: 9px 11px; font-size: 12px; }
+.focus-tab-item [role="tab"][aria-selected="true"] { background: #2c4030; color: #e1f6d3; }
+.focus-tab-item [role="tab"] { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.focus-tab-tools { display: flex; gap: 8px; min-height: 30px; flex-shrink: 0; padding: 3px 6px; }
+.focus-tab-tools button { margin: 0; padding: 4px 7px; font-size: 11px; }
+.markdown-dialog.is-focus { flex: 1; min-height: 0; width: 100%; height: 100%; box-shadow: none; }
+.is-focus .markdown-header { flex-shrink: 0; }
+.is-focus .markdown-source-editor { display: flex; flex-direction: column; overflow: hidden; }
+.is-focus .markdown-source-editor .cm-editor { flex: 1; min-height: 0; height: 0; }
+.is-focus .markdown-source-editor .cm-scroller { min-height: 0; flex: 1; overflow: auto; }
+.focus-guard { position: fixed; inset: 0; z-index: 80; background: #05080be8; }
+.focus-workspace button:focus-visible { outline: 2px solid #c3ed82; outline-offset: 2px; }
 @media (max-width: 1100px) { .shell { grid-template-columns: 194px minmax(360px, 1fr) 220px; } .inspector { padding: 28px 18px; } .breadcrumb { margin-bottom: 40px; } }
 @media (max-width: 1000px) { .file-layout { grid-template-columns: 1fr; } .file-toolbar form { flex: 1; } .file-toolbar input { flex: 1; } }

@@ -8,6 +8,10 @@ export const PROJECTS_CHANNEL = 'a3.projects:command';
 export const FILES_CHANNEL = 'a3.files:command';
 export const CANVAS_CHANNEL = 'a3.canvas:command';
 export const MARKDOWN_CHANNEL = 'a3.markdown:document';
+export const WORKSPACE_SESSION_CHANNEL = 'a3.workspace:session';
+export type { WorkspaceSession, WorkspaceSessionAction, PageViewState, CanvasViewState, FocusTab, PageReference } from '@a3/project-store';
+export type WorkspaceSessionRequest = ({ action: 'load' } | { action: 'reference'; tabId: string } | { action: 'locate'; tabId: string } | (Exclude<import('@a3/project-store').WorkspaceSessionAction, { action: 'load' }> & { expectedRevision: number })) & { sessionId: string };
+export type WorkspaceSessionResult = { ok: true; value: import('@a3/project-store').WorkspaceSession | import('@a3/project-store').PageReference | { located: boolean } } | { ok: false; error: { code: string; message: string; recovery: string } };
 export const CODE_CHANNEL = 'a3.code:document';
 export type { CodeDocument, CodeOpenTarget } from '@a3/project-store';
 export type CodeRequest =
@@ -53,7 +57,7 @@ export type CanvasContentResult = { ok: true; value: import('@a3/project-store')
 export type FileDropNotice = { token: string; kind?: 'file' | 'folder'; files?: readonly { name: string; size: number; copyDestination: string; referenceDestination: string }[]; clientX: number; clientY: number; error?: string };
 export type FileDropStageResult = { ok: true; value: { token: string; kind: 'file' | 'folder'; files: readonly { name: string; size: number; copyDestination: string; referenceDestination: string }[] } } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type ProjectsRequest =
-  | { action: 'list' | 'open' }
+  | { action: 'list' | 'open' | 'restore' }
   | { action: 'create'; name: string }
   | { action: 'recent' | 'relocate'; id: string }
   | { action: 'confirm' | 'cancel'; token: string }
@@ -90,6 +94,7 @@ export type ShellResult<T> =
 export interface DesktopAPI {
   getAppInfo(): Promise<ShellResult<AppInfo>>;
   projects(request: ProjectsRequest): Promise<ProjectsResult>;
+  workspaceSession(request: WorkspaceSessionRequest): Promise<WorkspaceSessionResult>;
   files(request: FilesRequest): Promise<FilesResult>;
   canvas(request: CanvasContentRequest): Promise<CanvasContentResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;

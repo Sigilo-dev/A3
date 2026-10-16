@@ -1159,6 +1159,37 @@ export class ProjectService {
       } catch (error) { return failure([this.#operationError('operation', error)]); }
     });
   }
+  /** Rebind a missing local source after an explicit native file selection. Never moves or replaces source bytes. */
+  prepareResourceRelocation(input: { operationId: string; resourceId: string; expectedRevision: number; path: string }): Promise<StoreResult<PreparedWrite>> {
+    return this.#queue(async () => {
+      try {
+        const current = await this.#currentForMaintenance(); if (!current.ok) return current;
+        const scan = current.value, records = scan.project.snapshot.records;
+        const resource = records.find((r) => r.kind === 'resource' && r.value.id === input.resourceId);
+        if (!uuid.test(input.operationId) || resource?.kind !== 'resource' || resource.value.kind !== 'project-file') return failure([issue('resource', 'schema', 'local-resource-required', 'Localizar requiere un recurso interno existente.')]);
+        if (resource.value.revision !== input.expectedRevision) return failure([conflict('resource', 'resource-revision-changed')]);
+        this.#sourcePath(input.path);
+        if (await this.#isHiddenExplorerPath(input.path, false, await this.#ignoreRulesFor(input.path.split('/').slice(0, -1).join('/')))) throw new PathError('hidden-path', 'La selección está oculta o excluida.');
+        if (!this.#authorized('read-resource', [input.path], [refOf(resource)], [resource.value])) return failure([this.#denied(input.path)]);
+        const previous = await this.#observe(resource.value.path, true);
+        if (previous.hash !== null || previous.problem) return failure([conflict(resource.value.path, 'source-not-missing')]);
+        const selected = await this.#observe(input.path, true);
+        if (!selected.hash || selected.problem || !input.path.toLowerCase().endsWith('.md')) throw new PathError('markdown-required', 'Selecciona un archivo Markdown UTF-8 disponible dentro de este proyecto.');
+        new TextDecoder('utf-8', { fatal: true }).decode(await fileBytes(this.root, input.path, 2 * 1024 * 1024));
+        if (records.some((r) => r.kind === 'resource' && r.value.kind === 'project-file' && r.value.path.toLowerCase() === input.path.toLowerCase() && r.value.id !== input.resourceId)) return failure([conflict(input.path, 'resource-path-in-use')]);
+        const next = structuredClone(records) as DomainRecord[], replacement = next.find((r) => r.kind === 'resource' && r.value.id === input.resourceId)!;
+        if (replacement.kind !== 'resource' || replacement.value.kind !== 'project-file') throw new Error('resource');
+        replacement.value.path = input.path; replacement.value.revision++;
+        const invalid = validateSnapshot({ records: next }, this.#registry).filter((d) => d.severity === 'error');
+        if (invalid.length) return failure(domainIssues(invalid));
+        const encoded = this.#resourceDocumentImages(records, next, scan.project.documents);
+        if ('detail' in encoded) return failure([encoded]);
+        const guarded = { ...scan, files: new Map(scan.files) }; guarded.files.set(input.path, selected);
+        return this.#makePlan(guarded, input.operationId, encoded.images, next, [resource.value, replacement.value],
+          sha256(jsonBytes({ action: 'relocate-missing-resource', ...input, selectedHash: selected.hash })), { maintenance: true, requiredCapabilities: ['document.edit'], externalPaths: [input.path] });
+      } catch (error) { return failure([this.#operationError(input.path, error)]); }
+    });
+  }
   prepareResourceWrite(input: ResourceWriteRequest): Promise<StoreResult<PreparedWrite>> {
     // Capture caller bytes immediately, before an asynchronous queue boundary.
     const request = { ...input, bytes: Uint8Array.from(input.bytes) };

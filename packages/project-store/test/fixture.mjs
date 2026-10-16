@@ -20,7 +20,7 @@ export async function scratch(t) {
     const target = resolve(tempRoot);
     const rel = relative(resolve(tmpdir()), target);
     if (isAbsolute(rel) || rel === '' || rel === '..' || rel.startsWith('..' + sep) || !basename(target).startsWith('a3-store-test-')) throw new Error('Unsafe cleanup target');
-    await rm(target, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   return { root, tempRoot };
 }

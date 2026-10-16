@@ -2,10 +2,13 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session } fro
 import { access } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { randomBytes } from 'node:crypto';
 import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
 import { createProjectController } from './project-controller';
+import { WORKSPACE_SESSION_CHANNEL } from '../shared/desktop-api';
 
 const APP_URL = 'a3://desktop/index.html';
+const editorStyleNonce = randomBytes(24).toString('base64');
 const rendererRoot = join(__dirname, '../renderer');
 const preloadPath = join(__dirname, '../preload/index.cjs');
 let mainWindow: BrowserWindow | null = null;
@@ -22,10 +25,10 @@ async function finishQuit(): Promise<void> {
     // Ask the local renderer's unload guards before releasing the writer/session.
     // A cancelled exit must leave the open project usable for saving the draft.
     if (mainWindow && !mainWindow.webContents.isLoadingMainFrame()) {
-      const hasDraft = await mainWindow.webContents.executeJavaScript("!window.dispatchEvent(new Event('beforeunload', { cancelable: true }))");
+      const hasDraft = await mainWindow.webContents.executeJavaScript("(async () => { const pending = []; window.dispatchEvent(new CustomEvent('a3:flush-session', { detail: pending })); await Promise.all(pending); return !window.dispatchEvent(new Event('beforeunload', { cancelable: true })); })()");
       if (hasDraft) {
         const choice = await dialog.showMessageBox(mainWindow, { type: 'warning', title: 'A3 · Cambios sin guardar',
-          message: 'Hay un borrador de código sin guardar.', detail: 'Vuelve al editor para guardarlo o descártalo explícitamente antes de salir.',
+          message: 'Hay páginas o archivos con cambios sin guardar.', detail: 'Vuelve al editor para guardarlos o descártalos explícitamente antes de salir.',
           buttons: ['Volver al editor', 'Descartar y salir'], defaultId: 0, cancelId: 0, noLink: true });
         if (choice.response !== 1) return;
       }
@@ -81,7 +84,7 @@ function isShellDocument(candidate: string, expected: string): boolean {
 function csp(development: boolean): string {
   return "default-src 'self'; " +
     `script-src 'self'${development ? " 'unsafe-inline'" : ''}; ` +
-    `style-src 'self'${development ? " 'unsafe-inline'" : ''}; ` +
+    `style-src 'self'${development ? " 'unsafe-inline'" : ` 'nonce-${editorStyleNonce}'`}; ` +
     `connect-src ${development ? "'self' ws://127.0.0.1:* ws://localhost:*" : "'none'"}; ` +
     "img-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'";
 }
@@ -114,7 +117,9 @@ async function startDesktop(): Promise<void> {
       const asset = join(rendererRoot, pathname);
       const withinRoot = relative(rendererRoot, asset);
       if (withinRoot.startsWith('..') || isAbsolute(withinRoot)) return new Response(null, { status: 403 });
-      return await net.fetch(pathToFileURL(asset).href);
+      const response = await net.fetch(pathToFileURL(asset).href);
+      if (asset === join(rendererRoot, 'index.html')) return new Response((await response.text()).replace('<head>', `<head><meta name="a3-editor-style-nonce" content="${editorStyleNonce}">`), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      return response;
     } catch { return new Response('Recurso de interfaz no disponible', { status: 404 }); }
   });
 
@@ -129,6 +134,13 @@ async function startDesktop(): Promise<void> {
       name: app.getName(), version: app.getVersion(), platform: process.platform,
       electron: process.versions.electron, chromium: process.versions.chrome, node: process.versions.node
     } };
+  });
+  ipcMain.handle(WORKSPACE_SESSION_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || quitting || closing && (args[0] as { action?: string })?.action !== 'view') {
+      return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Solicitud de sesión no autorizada.', recovery: 'Reabre el proyecto.' } };
+    }
+    return projects.handleWorkspaceSession(args[0]);
   });
   ipcMain.handle(PROJECTS_CHANNEL, (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
@@ -219,7 +231,7 @@ async function startDesktop(): Promise<void> {
 
 app.on('before-quit', (event) => { if (!quitting) { event.preventDefault(); void finishQuit(); } });
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => { ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); });
+app.on('will-quit', () => { ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); });
 process.on('uncaughtException', fatalStartup);
 process.on('unhandledRejection', fatalStartup);
 void app.whenReady().then(() => { if (primaryInstance) return startDesktop(); }).catch(fatalStartup);

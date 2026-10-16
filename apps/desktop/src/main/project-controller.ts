@@ -6,6 +6,24 @@ import { CONTENT_NODE_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
+import { validCanvasView, validPageView } from '@a3/project-store';
+import type { WorkspaceSessionRequest, WorkspaceSessionResult } from '../shared/desktop-api';
+
+function validSessionRequest(value: unknown): value is WorkspaceSessionRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>, uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const id = (n: unknown): boolean => typeof n === 'string' && uuid.test(n);
+  if (!id(v.sessionId)) return false;
+  const shapes: Record<string, string[]> = { load: [], reference: ['tabId'], locate: ['tabId'], 'open-page': ['entityId'], 'open-workspace': ['workspaceId'], activate: ['tabId'], close: ['tabId'], reorder: ['tabIds'], view: ['tabId', 'view'] };
+  const keys = typeof v.action === 'string' && Object.hasOwn(shapes, v.action) ? shapes[v.action] : undefined;
+  if (!keys) return false;
+  const mutation = !['load', 'reference', 'locate'].includes(String(v.action)), allowed = ['action', 'sessionId', ...keys, ...(mutation ? ['expectedRevision'] : []), ...(v.action === 'open-page' ? ['anotherView'] : [])];
+  if (Object.keys(v).some((k) => !allowed.includes(k)) || keys.some((k) => !Object.hasOwn(v, k)) || mutation && (!Number.isSafeInteger(v.expectedRevision) || Number(v.expectedRevision) < 0)) return false;
+  if (v.action === 'view' && !validCanvasView(v.view) && !validPageView(v.view)) return false;
+  if (v.action === 'reorder' && (!Array.isArray(v.tabIds) || v.tabIds.length > 100 || !v.tabIds.every(id))) return false;
+  if ('anotherView' in v && typeof v.anotherView !== 'boolean') return false;
+  return keys.filter((k) => k.endsWith('Id')).every((k) => id(v[k]));
+}
 
 interface StagedDropFile { path: string; root: string; relativePath: string; mountId: string; resourceId: string; name: string; size: number; mediaType: string; }
 interface StagedDrop { files: StagedDropFile[]; kind: 'file' | 'folder'; createdAt: number; }
@@ -197,7 +215,7 @@ function validPoint(value: unknown): boolean {
 function validRequest(value: unknown): value is ProjectsRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const input = value as Record<string, unknown>;
-  const fields: Record<string, string[]> = { list: [], open: [], create: ['name'], recent: ['id'], relocate: ['id'], confirm: ['token'], cancel: ['token'], close: ['sessionId'], rename: ['sessionId', 'name'], 'draft-name': ['sessionId', 'name'] };
+  const fields: Record<string, string[]> = { list: [], restore: [], open: [], create: ['name'], recent: ['id'], relocate: ['id'], confirm: ['token'], cancel: ['token'], close: ['sessionId'], rename: ['sessionId', 'name'], 'draft-name': ['sessionId', 'name'] };
   const required = typeof input.action === 'string' && Object.hasOwn(fields, input.action) ? fields[input.action] : undefined;
   return !!required && Object.keys(input).length === required.length + 1 && required.every((key) =>
     typeof input[key] === 'string' && (input[key].length > 0 || input.action === 'draft-name' && key === 'name') && input[key].length <= (key === 'name' ? 120 : 64));
@@ -435,6 +453,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       try {
         switch (value.action) {
           case 'list': return { ok: true, value: await manager.getState() };
+          case 'restore': return { ok: true, value: await manager.restoreLastProject() };
           case 'create': {
             const folder = await chooseFolder('Elige dónde crear la carpeta del proyecto');
             return { ok: true, value: folder ? await manager.previewCreate(folder, value.name) : await manager.getState() };
@@ -469,6 +488,32 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       }
     },
     stageDrop,
+    async handleWorkspaceSession(value: unknown): Promise<WorkspaceSessionResult> {
+      if (!validSessionRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de pestañas inválida.', recovery: 'Recarga la sesión local.' } };
+      try {
+        if (value.action === 'reference' || value.action === 'locate') {
+          const reference = await manager.pageReference(value.sessionId, value.tabId!);
+          if (value.action === 'reference') return { ok: true, value: reference };
+          const parent = getWindow(); if (!parent) throw new LocalProjectError('WINDOW_MISSING', 'No hay una ventana para localizar el archivo.');
+          if (reference.kind === 'mounted-file' && reference.mountId) {
+            const folder = await chooseFolder('Localiza la raíz del montaje de esta página');
+            if (!folder) return { ok: true, value: { located: false } };
+            const state = await manager.getState();
+            if (state.active?.sessionId !== value.sessionId) throw new LocalProjectError('STALE_SESSION', 'La sesión cambió.');
+            const granted = await capabilities.approveLocalMount({ root: state.active.root, projectId: state.active.projectId, mountId: reference.mountId, selectedRoot: folder, permission: 'read-only' });
+            if (!granted) throw new LocalProjectError('PERMISSION_DENIED', 'El montaje no recibió aprobación local.');
+            return { ok: true, value: { located: true } };
+          }
+          if (reference.kind !== 'project-file') throw new LocalProjectError('RESOURCE_DESCRIPTOR_MISSING', 'Se conserva el ID original. Recupera su descriptor desde el historial antes de localizar su archivo.');
+          const chosen = await dialog.showOpenDialog(parent, { title: 'Localiza el Markdown dentro de este proyecto', properties: ['openFile', 'dontAddToRecent'], filters: [{ name: 'Markdown', extensions: ['md'] }] });
+          if (chosen.canceled || !chosen.filePaths[0]) return { ok: true, value: { located: false } };
+          if (!await confirm('Restablecer referencia de la página', `Recurso: ${reference.resourceId}\nArchivo seleccionado: ${chosen.filePaths[0]}\nSe actualizará la referencia en una transacción, sin mover ni reemplazar el texto.`)) return { ok: true, value: { located: false } };
+          await manager.locatePageResource(value.sessionId, value.tabId!, chosen.filePaths[0]);
+          return { ok: true, value: { located: true } };
+        }
+        return { ok: true, value: await manager.workspaceSession(value.sessionId, value, value.action === 'load' ? undefined : value.expectedRevision) };
+      } catch (error) { return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED', message: error instanceof Error ? error.message : 'No se pudo guardar la sesión.', recovery: 'Los documentos y la sesión anterior se conservan. Revisa la referencia o reintenta.' } }; }
+    },
     async handleFiles(value: unknown): Promise<FilesResult> {
       if (!validFileRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud del explorador inválida.', recovery: 'Actualiza la vista y vuelve a seleccionar el elemento.' } };
       try {

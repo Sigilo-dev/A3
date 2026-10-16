@@ -1,16 +1,19 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { Editor, defaultValueCtx, editorViewCtx, rootCtx } from '@milkdown/core';
+import { lazy, Suspense, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
+import { Plugin, TextSelection } from '@milkdown/prose/state';
+import type { Node as ProseNode } from '@milkdown/prose/model';
+import { Editor, defaultValueCtx, editorViewCtx, editorViewOptionsCtx, rootCtx } from '@milkdown/core';
 import { listener, listenerCtx } from '@milkdown/plugin-listener';
 import { commonmark } from '@milkdown/preset-commonmark';
 import { extendListItemSchemaForTask, gfm } from '@milkdown/preset-gfm';
-import { $nodeSchema, $remark, $view } from '@milkdown/utils';
-import type { MarkdownDocument } from '../../shared/desktop-api';
+import { $nodeSchema, $prose, $remark, $view, getMarkdown } from '@milkdown/utils';
+import type { MarkdownDocument, PageViewState } from '../../shared/desktop-api';
 import { findA3Wikilinks, inspectMarkdownSource } from '@a3/domain/markdown';
 import type { MarkdownParseDiagnostic, MarkdownSourceController } from './MarkdownSourceEditor';
 
 const MarkdownSourceEditor = lazy(() => import('./MarkdownSourceEditor').then((module) => ({ default: module.MarkdownSourceEditor })));
 
 export interface MarkdownEditorTarget { sessionId: string; entityId: string; resourceId: string; title: string; }
+export interface MarkdownViewHandle { save(): Promise<boolean>; discard(): void; isDirty(): boolean; captureView(): PageViewState; }
 
 interface MdastNode {
   type: string; value?: string; target?: string; label?: string | null; children?: MdastNode[];
@@ -98,14 +101,21 @@ const a3TaskListItemView = $view(extendListItemSchemaForTask.node, () => (initia
 
 const editorPlugins = [...commonmark, ...gfm, a3WikilinkSchema[0], a3WikilinkSchema[1], a3WikilinkRemark[0], a3WikilinkRemark[1], a3TaskListItemView, listener];
 
-export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, onClose }: {
+export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, onClose, embedded = false, active = true, initialView,
+  onViewChange, controllerRef, onSaved, contentVersion = 0, onLocate, onReference }: {
   target: MarkdownEditorTarget; activeSessionId: string | null; onDirtyChange: (dirty: boolean) => void; onClose: () => void;
-}): React.JSX.Element {
+  embedded?: boolean; active?: boolean; initialView?: PageViewState; onViewChange?: (view: PageViewState) => void;
+  controllerRef?: Ref<MarkdownViewHandle>; onSaved?: () => void; contentVersion?: number;
+  onLocate?: () => Promise<boolean>; onReference?: () => void;
+}): React.JSX.Element | null {
   const root = useRef<HTMLDivElement>(null);
   const editor = useRef<Editor | null>(null);
   const sourceEditor = useRef<MarkdownSourceController | null>(null);
   const armed = useRef(false);
+  const visualChanged = useRef(false);
+  const observedVisualDoc = useRef<ProseNode | null>(null);
   const [document, setDocument] = useState<MarkdownDocument | null>(null);
+  const documentRef = useRef(document); documentRef.current = document;
   const [draft, setDraft] = useState('');
   const draftRef = useRef('');
   const [mode, setMode] = useState<'visual' | 'source' | 'preview'>('visual');
@@ -118,25 +128,63 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
   const [conflictDocument, setConflictDocument] = useState<MarkdownDocument | null>(null);
   const [showConflict, setShowConflict] = useState(false);
   const [visualGeneration, setVisualGeneration] = useState(0);
+  const [reloadVersion, setReloadVersion] = useState(0);
+  const viewState = useRef<PageViewState>(initialView ?? { mode: 'visual', scrollTop: 0, scrollLeft: 0, selection: null });
+  const editorMode = useRef(mode); editorMode.current = mode;
+  const onView = useRef(onViewChange); onView.current = onViewChange;
+  const recordView = (view: PageViewState): void => { viewState.current = view; onView.current?.(view); };
+  function captureView(): PageViewState {
+    readBuffer();
+    if (active && mode === 'source' && sourceEditor.current) recordView(sourceEditor.current.view());
+    else if (active && root.current && editor.current) editor.current.action((ctx) => {
+      const selection = ctx.get(editorViewCtx).state.selection;
+      recordView({ mode, scrollTop: root.current!.scrollTop, scrollLeft: root.current!.scrollLeft, selection: { anchor: selection.anchor, head: selection.head } });
+    });
+    return viewState.current;
+  }
   const updateDraft = (value: string): void => { draftRef.current = value; setDraft(value); };
   const inspection = useMemo(() => inspectMarkdownSource(draft), [draft]);
-  const dirty = !!document && draft !== document.content;
+  const dirty = visualChanged.current || !!document && draft !== document.content;
   const sessionCurrent = activeSessionId === target.sessionId;
+  function readBuffer(): string {
+    if (editor.current) {
+      const view = editor.current.action((ctx) => ctx.get(editorViewCtx));
+      // Flush native DOM input before suspending the pinned ProseMirror view. Its listener serializes after 200 ms.
+      (view as typeof view & { domObserver: { flush(): void } }).domObserver.flush();
+      if (visualChanged.current || observedVisualDoc.current && !observedVisualDoc.current.eq(view.state.doc)) {
+        updateDraft(editor.current.action(getMarkdown())); visualChanged.current = false;
+      }
+      observedVisualDoc.current = view.state.doc;
+    }
+    else if (sourceEditor.current) updateDraft(sourceEditor.current.read().content);
+    return draftRef.current;
+  }
+  useImperativeHandle(controllerRef, () => ({ save, isDirty: () => visualChanged.current || !!document && draftRef.current !== document.content, captureView,
+    discard: () => { if (document) { updateDraft(document.content); setVisualGeneration((v) => v + 1); setError(null); setParseError(null); } } }));
 
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => {
+    const guard = (event: BeforeUnloadEvent): void => { if (dirty || visualChanged.current) { event.preventDefault(); event.returnValue = ''; } };
+    window.addEventListener('beforeunload', guard); return () => window.removeEventListener('beforeunload', guard);
+  }, [dirty]);
+  useEffect(() => {
+    if (!active || dirty) return;
     let live = true;
-    setLoading(true); setDocument(null); updateDraft(''); setError(null); setParseError(null); setStatus('Abriendo documento…');
+    if (!document) { setLoading(true); setStatus('Abriendo documento…'); }
+    setError(null); setParseError(null);
     void window.a3?.markdown({ action: 'open', sessionId: target.sessionId, entityId: target.entityId, resourceId: target.resourceId })
       .then((result) => {
         if (!live) return;
+        if (visualChanged.current || documentRef.current && draftRef.current !== documentRef.current.content) return;
         if (!result.ok || !('content' in result.value)) throw new Error(result.ok ? 'El host devolvió un recurso inesperado.' : `${result.error.code}: ${result.error.message}`);
-        setDocument(result.value); updateDraft(result.value.content); setMode(inspectMarkdownSource(result.value.content).editable ? 'visual' : 'source');
+        setDocument(result.value); updateDraft(result.value.content); setMode(inspectMarkdownSource(result.value.content).editable ? viewState.current.mode : 'source');
         setStatus(result.value.canWrite ? 'Guardado' : 'Solo lectura');
-      }).catch((cause: unknown) => { if (live) { setError(cause instanceof Error ? cause.message : 'No se pudo abrir el documento.'); setStatus('Error al abrir'); } })
+      }).catch((cause: unknown) => { if (live && !visualChanged.current && !(documentRef.current && draftRef.current !== documentRef.current.content)) { setDocument(null); setError(cause instanceof Error ? cause.message : 'No se pudo abrir el documento.'); setStatus('Error al abrir'); } })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [target.sessionId, target.entityId, target.resourceId]);
+  // Reload clean views on activation or another view's confirmed save. Dirty drafts keep their observed revision.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target.sessionId, target.entityId, target.resourceId, active, contentVersion, reloadVersion]);
 
   useEffect(() => {
     if (document && !inspection.editable && mode !== 'source') setMode('source');
@@ -144,29 +192,43 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
 
   useEffect(() => {
     const element = root.current;
-    if (!element || !document || !inspection.editable || loading || mode === 'source') return;
+    if (!active || !element || !document || !inspection.editable || loading || mode === 'source') return;
     let disposed = false;
     let imageObserver: MutationObserver | undefined;
     const imageUrls = new Map<string, Promise<string | null>>();
     const createdImageUrls: string[] = [];
     let previewBytes = 0;
     armed.current = false;
+    const trackChanges = $prose(() => new Plugin({ view: () => ({ update: (view, previous) => {
+      if (armed.current && !view.state.doc.eq(previous.doc)) { visualChanged.current = true; setStatus('Cambios sin guardar'); onDirtyChange(true); }
+    } }) }));
     const instance = Editor.make().config((ctx) => {
       ctx.set(rootCtx, element);
+      ctx.update(editorViewOptionsCtx, (options) => ({ ...options, editable: () => false }));
       ctx.set(defaultValueCtx, draftRef.current);
       ctx.get(listenerCtx).markdownUpdated((_context, markdown) => {
-        if (armed.current) { updateDraft(markdown); setStatus('Cambios sin guardar'); setError(null); setParseError(null); }
+        if (armed.current) { visualChanged.current = false; updateDraft(markdown); setStatus('Cambios sin guardar'); setError(null); setParseError(null); }
       });
-    }).use(editorPlugins);
+      ctx.get(listenerCtx).selectionUpdated((_context, selection) => {
+        if (armed.current && root.current) recordView({ mode: editorMode.current, scrollTop: root.current.scrollTop, scrollLeft: root.current.scrollLeft, selection: { anchor: selection.anchor, head: selection.head } });
+      });
+    }).use(editorPlugins).use(trackChanges);
     void instance.create().then(() => {
       if (disposed) { void instance.destroy(); return; }
       editor.current = instance;
-      armed.current = true;
+      element.dataset.markdownReady = 'true';
       instance.action((ctx) => ctx.get(editorViewCtx).setProps({ editable: () => mode === 'visual' && document.canWrite && sessionCurrent }));
+      if (viewState.current.selection && viewState.current.mode !== 'source') instance.action((ctx) => {
+        const view = ctx.get(editorViewCtx), selection = viewState.current.selection!;
+        view.dispatch(view.state.tr.setSelection(TextSelection.between(view.state.doc.resolve(Math.min(view.state.doc.content.size, selection.anchor)), view.state.doc.resolve(Math.min(view.state.doc.content.size, selection.head)))));
+      });
+      armed.current = true;
+      observedVisualDoc.current = instance.action((ctx) => ctx.get(editorViewCtx).state.doc);
       element.querySelectorAll<HTMLInputElement>('.markdown-task-checkbox').forEach((input) => {
         input.disabled = mode !== 'visual' || !document.canWrite || !sessionCurrent;
       });
       if (mode === 'visual' && document.canWrite && sessionCurrent) instance.action((ctx) => ctx.get(editorViewCtx).focus());
+      element.scrollTop = viewState.current.scrollTop; element.scrollLeft = viewState.current.scrollLeft;
       const resolveImage = async (image: HTMLImageElement): Promise<void> => {
         const reference = image.getAttribute('src') ?? '';
         if (!reference || reference.startsWith('blob:') || image.dataset.a3Reference === reference) return;
@@ -209,33 +271,41 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
       if (!disposed) { setError(cause instanceof Error ? `Milkdown no pudo interpretar el documento; la fuente original sigue intacta. ${cause.message}` : 'Milkdown no pudo interpretar el documento; la fuente original sigue intacta.'); setStatus('Editor visual no disponible'); }
     });
     return () => {
+      if (editor.current && element.getClientRects().length && editorMode.current !== 'source') editor.current.action((ctx) => {
+        const selection = ctx.get(editorViewCtx).state.selection;
+        recordView({ mode: editorMode.current, scrollTop: element.scrollTop, scrollLeft: element.scrollLeft, selection: { anchor: selection.anchor, head: selection.head } });
+      });
       disposed = true; armed.current = false; editor.current = null;
+      delete element.dataset.markdownReady;
       imageObserver?.disconnect(); createdImageUrls.forEach((url) => URL.revokeObjectURL(url));
       void instance.destroy();
     };
   // Initial content defines this editor instance; subsequent keystrokes update only the draft state.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [document?.content, document?.canWrite, inspection.editable, loading, mode === 'source', visualGeneration, target.entityId, target.resourceId, sessionCurrent]);
+  }, [document?.content, document?.canWrite, inspection.editable, loading, mode === 'source', visualGeneration, target.entityId, target.resourceId, sessionCurrent, active]);
 
   useEffect(() => {
-    editor.current?.action((ctx) => ctx.get(editorViewCtx).setProps({ editable: () => mode === 'visual' && !!document?.canWrite && sessionCurrent }));
+    editor.current?.action((ctx) => ctx.get(editorViewCtx).setProps({ editable: () => mode === 'visual' && !!document?.canWrite && sessionCurrent && !saving }));
     root.current?.querySelectorAll<HTMLInputElement>('.markdown-task-checkbox').forEach((input) => { input.disabled = mode !== 'visual' || !document?.canWrite || !sessionCurrent; });
-  }, [mode, document?.canWrite, sessionCurrent]);
+  }, [mode, document?.canWrite, sessionCurrent, saving]);
 
   async function save(): Promise<boolean> {
+    readBuffer();
     const source = mode === 'source' ? sourceEditor.current?.read() : undefined;
     const content = source?.content ?? draftRef.current;
     updateDraft(content);
     const diagnostic = mode === 'source' && source ? source.diagnostic : parseError;
     setParseError(diagnostic);
     if (diagnostic) { setError(`Error de sintaxis Markdown en línea ${diagnostic.line}, columna ${diagnostic.column}: ${diagnostic.message} Se conserva el original hasta corregirlo.`); return false; }
-    if (!document || content === document.content || !document.canWrite || !sessionCurrent || saving || !window.a3) return false;
+    if (document && content === document.content) return true;
+    if (!document || !document.canWrite || !sessionCurrent || saving || !window.a3) return false;
     setSaving(true); setError(null); setStatus('Guardando…');
     try {
       const result = await window.a3.markdown({ action: 'save', sessionId: target.sessionId, entityId: document.entityId, resourceId: document.resourceId,
         entityRevision: document.entityRevision, expectedRevision: document.revision, expectedHash: document.hash, content });
       if (!result.ok || !('content' in result.value)) throw Object.assign(new Error(result.ok ? 'El host devolvió un recurso inesperado.' : result.error.message), { code: result.ok ? 'INVALID_RESPONSE' : result.error.code });
       setDocument(result.value); updateDraft(result.value.content); setStatus('Guardado'); setConflictDocument(null); setShowConflict(false);
+      onSaved?.();
       return true;
     } catch (cause) {
       const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
@@ -250,6 +320,7 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
   }
 
   function changeMode(next: 'visual' | 'source' | 'preview'): void {
+    captureView();
     const source = mode === 'source' ? sourceEditor.current?.read() : undefined;
     const content = source?.content ?? draftRef.current;
     updateDraft(content);
@@ -270,11 +341,14 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
       setVisualGeneration((value) => value + 1);
       setParseError(null);
     }
+    recordView({ mode: next, scrollTop: 0, scrollLeft: 0, selection: null });
     setError(null); setMode(next);
   }
 
   function close(): void {
-    if (dirty) { setConfirmClose(true); return; }
+    captureView();
+    if (embedded) { onClose(); return; }
+    if (document && draftRef.current !== document.content) { setConfirmClose(true); return; }
     onClose();
   }
   function useSavedConflict(): void {
@@ -299,6 +373,7 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
         expectedHash: conflictDocument.hash, content });
       if (!result.ok || !('content' in result.value)) throw Object.assign(new Error(result.ok ? 'Respuesta del host inválida.' : result.error.message), { code: result.ok ? 'INVALID_RESPONSE' : result.error.code });
       setDocument(result.value); updateDraft(result.value.content); setConflictDocument(null); setShowConflict(false); setError(null); setStatus('Conflicto resuelto · borrador guardado');
+      onSaved?.();
     } catch (cause) {
       const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
       setError(`${code ? `${code}: ` : ''}${cause instanceof Error ? cause.message : 'No se pudo resolver el conflicto.'}`);
@@ -306,11 +381,12 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
     } finally { setSaving(false); }
   }
 
-  return <div className="markdown-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-    <section className="markdown-dialog" role="dialog" aria-modal="true" aria-labelledby="markdown-title" aria-describedby="markdown-status"
+  if (!active) return null;
+  return <div className={embedded ? 'markdown-focus' : 'markdown-backdrop'} onMouseDown={(event) => { if (!embedded && event.target === event.currentTarget) close(); }}>
+    <section className={`markdown-dialog${embedded ? ' is-focus' : ''}`} role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-labelledby="markdown-title" aria-describedby="markdown-status"
       onKeyDown={(event) => {
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save(); }
-        if (event.key === 'Escape') { event.preventDefault(); close(); }
+        if (event.key === 'Escape' && !embedded) { event.preventDefault(); close(); }
       }}>
       <header className="markdown-header"><div><p className="eyebrow">Página · Markdown</p><h2 id="markdown-title">{target.title}</h2>
         <small>Entidad {target.entityId} · recurso y revisión compartidos entre workspaces</small></div>
@@ -327,12 +403,15 @@ export function MarkdownEditorDialog({ target, activeSessionId, onDirtyChange, o
       {!inspection.editable && <p className="markdown-warning" role="status">Solo modo fuente: la vista visual no representa sin pérdida {inspection.reasons.join(', ')}. El contenido permanece editable aquí y no se interpreta como HTML.</p>}
       {parseError && <p className="markdown-error" role="alert" data-markdown-diagnostic>Error Markdown en línea {parseError.line}, columna {parseError.column}: {parseError.message} El archivo guardado permanece intacto hasta corregirlo.</p>}
       {error && <p className="markdown-error" role="alert">{error}</p>}
-      {loading ? <p role="status">Leyendo Markdown UTF-8…</p> : !document ? <div className="markdown-source-fallback"><p>El recurso no se abrió; no se modificó.</p><button onClick={() => onClose()}>Cerrar</button></div> :
+      {loading ? <p role="status">Leyendo Markdown UTF-8…</p> : !document ? <div className="markdown-source-fallback" data-focus-diagnostic><p>El recurso no se abrió. Se conserva su referencia y no se creó un documento vacío.</p>
+        {onLocate && <button data-focus-locate onClick={() => void onLocate().then((located) => { if (located) setReloadVersion((v) => v + 1); })}>Localizar</button>}
+        {onReference && <button data-focus-reference onClick={onReference}>Ver referencia</button>}
+        <button data-focus-retry onClick={() => setReloadVersion((v) => v + 1)}>Reintentar lectura</button></div> :
         <>
-        {mode === 'source' && <Suspense fallback={<p role="status">Cargando editor de fuente…</p>}><MarkdownSourceEditor value={draft}
-          editable={document.canWrite && sessionCurrent} controllerRef={sourceEditor}
+        {mode === 'source' && <Suspense fallback={<p role="status">Cargando editor de fuente…</p>}><MarkdownSourceEditor key={`${document.resourceId}:${document.hash}:${visualGeneration}`} value={draft}
+          editable={document.canWrite && sessionCurrent && !saving} controllerRef={sourceEditor} initialView={viewState.current} onViewChange={(view) => { if (editorMode.current === 'source') recordView(view); }}
           onChange={(value) => { updateDraft(value); setStatus('Cambios sin guardar'); setError(null); }} onDiagnostic={setParseError} /></Suspense>}
-        {inspection.editable && <div hidden={mode === 'source'} className={`markdown-surface${mode === 'preview' ? ' is-preview' : ''}`} ref={root} data-markdown-editor={mode} onClickCapture={(event) => {
+        {inspection.editable && <div hidden={mode === 'source'} className={`markdown-surface${mode === 'preview' ? ' is-preview' : ''}`} ref={root} tabIndex={0} aria-label="Contenido Markdown de la página" data-markdown-editor={mode} onScroll={() => { if (root.current && mode !== 'source') captureView(); }} onClickCapture={(event) => {
           if ((event.target as HTMLElement).closest('a')) event.preventDefault();
         }} onPasteCapture={(event) => {
           const pasted = event.clipboardData.getData('text/plain');

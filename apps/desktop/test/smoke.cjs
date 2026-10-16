@@ -41,7 +41,7 @@ async function healthy() {
   assert.equal(probe.process, 'undefined');
   assert.equal(probe.require, 'undefined');
   assert.equal(probe.ipcRenderer, 'undefined');
-  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'files', 'canvas', 'markdown', 'code', 'onFileDrop']);
+  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'workspaceSession', 'files', 'canvas', 'markdown', 'code', 'onFileDrop']);
   assert.equal(probe.url, expectedURL);
   const preferences = win.webContents.getLastWebPreferences();
   for (const [name, value] of Object.entries({ nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, webSecurity: true })) {
@@ -368,6 +368,7 @@ async function healthy() {
   assert.doesNotMatch(savedSourceMode.value.content, /\r\n/, 'source editing retains the imported LF representation');
   await click('[data-markdown-close]');
 
+  await waitFor(`Boolean(document.querySelector('[data-open-markdown="${markdownTargets.unsupportedEntityId}"]'))`);
   await click(`[data-open-markdown="${markdownTargets.unsupportedEntityId}"]`);
   await waitFor("Boolean(document.querySelector('[data-markdown-source-editor] .cm-editor'))");
   assert.equal(await js("document.querySelector('[data-markdown-source-editor] .cm-content').textContent.includes('payload:')"), true);
@@ -415,6 +416,8 @@ async function healthy() {
   assert.equal(deniedCanvas.error.code, 'PERMISSION_DENIED');
   const deniedMarkdown = await extra.webContents.executeJavaScript(`window.a3.markdown({ action: 'open', sessionId: '${fixtureSession.sessionId}', entityId: '${markdownTargets.safeEntityId}', resourceId: '${markdownTargets.safeResourceId}' })`);
   assert.equal(deniedMarkdown.error.code, 'PERMISSION_DENIED');
+  const deniedSession = await extra.webContents.executeJavaScript(`window.a3.workspaceSession({ action: 'load', sessionId: '${fixtureSession.sessionId}' })`);
+  assert.equal(deniedSession.error.code, 'PERMISSION_DENIED');
   const deniedCode = await extra.webContents.executeJavaScript(`window.a3.code({ action: 'reload', sessionId: '${fixtureSession.sessionId}', documentId: '${codeDocumentId}' })`);
   assert.equal(deniedCode.error.code, 'PERMISSION_DENIED');
   extra.destroy();

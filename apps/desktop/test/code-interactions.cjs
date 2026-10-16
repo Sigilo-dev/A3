@@ -8,7 +8,9 @@ module.exports = async ({ win, js, click, input, waitFor, root }) => {
   const original = await readFile(join(root, 'editor.ts'));
   await click('[data-section="files"]'); await waitFor("Boolean(document.querySelector('[data-file-entry]'))");
   const selectFile = async (name) => {
+    await waitFor("document.querySelector('.files-panel')?.getAttribute('aria-busy') === 'false'");
     await js(`(() => { const row = [...document.querySelectorAll('[data-file-entry]')].find((e) => e.querySelector('.file-name').textContent === ${JSON.stringify(name)}); if (!row) throw new Error('Missing file'); row.click(); })()`);
+    await waitFor("Boolean(document.querySelector('[data-file-edit]')) && !document.querySelector('[data-file-edit]').disabled");
     await click('[data-file-edit]');
   };
   const replaceWord = async (old, next) => {

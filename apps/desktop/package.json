@@ -17,7 +17,8 @@
     "pack:win": "npm run build && electron-builder --win --x64 --dir --publish never",
     "test:smoke": "node test/run-smoke.mjs",
     "test:canvas": "node --test test/viewport.test.mjs",
-    "test:code": "node --test test/code-languages.test.mjs"
+    "test:code": "node --test test/code-languages.test.mjs",
+    "test:focus": "node test/run-focus.mjs"
   },
   "devDependencies": {
     "@a3/project-store": "0.1.0-dev.0",
@@ -53,6 +54,7 @@
     "@milkdown/plugin-listener": "7.22.3",
     "@milkdown/preset-commonmark": "7.22.3",
     "@milkdown/preset-gfm": "7.22.3",
+    "@milkdown/prose": "7.22.3",
     "@milkdown/utils": "7.22.3",
     "codemirror": "6.0.2",
     "perfect-freehand": "1.2.3",

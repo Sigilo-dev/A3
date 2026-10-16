@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { WORKSPACE_SESSION_CHANNEL, type WorkspaceSessionRequest } from '../shared/desktop-api';
 import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type DesktopAPI, type CanvasContentRequest, type CanvasRequest, type CodeRequest, type FileDropNotice, type FileDropStageResult, type FilesRequest, type MarkdownRequest, type ProjectsRequest } from '../shared/desktop-api';
 
 const dropListeners = new Set<(notice: FileDropNotice) => void>();
@@ -24,6 +25,7 @@ window.addEventListener('drop', (event) => {
 const api: DesktopAPI = Object.freeze({
   getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL),
   projects: (request: ProjectsRequest) => ipcRenderer.invoke(PROJECTS_CHANNEL, request),
+  workspaceSession: (request: WorkspaceSessionRequest) => ipcRenderer.invoke(WORKSPACE_SESSION_CHANNEL, request),
   files: (request: FilesRequest) => ipcRenderer.invoke(FILES_CHANNEL, request),
   canvas: ((request: CanvasRequest | CanvasContentRequest) => ipcRenderer.invoke(CANVAS_CHANNEL, request)) as DesktopAPI['canvas'],
   markdown: (request: MarkdownRequest) => ipcRenderer.invoke(MARKDOWN_CHANNEL, request),

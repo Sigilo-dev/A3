@@ -252,15 +252,17 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
   });
   return [...groupNodes, ...placementNodes];
 }
-export function CanvasPanel({ active, onOpenMarkdown, onOpenCode, contentVersion }: { active: LocalProjectSession | null | undefined; onOpenMarkdown: (target: MarkdownEditorTarget) => void; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number }): React.JSX.Element {
+export function CanvasPanel({ active, onOpenMarkdown, onOpenCode, contentVersion, workspaceId: controlledWorkspaceId, onWorkspaceSelect, initialViewport, onViewportChange }: { active: LocalProjectSession | null | undefined; onOpenMarkdown: (target: MarkdownEditorTarget) => void; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number;
+  workspaceId?: string; onWorkspaceSelect?: (id: string) => void; initialViewport?: WorldViewport | null; onViewportChange?: (view: WorldViewport) => void;
+}): React.JSX.Element {
   const [selected, setSelected] = useState('');
-  const workspaceId = active?.workspaces.some((workspace) => workspace.id === selected) ? selected : active?.workspaces[0]?.id;
+  const workspaceId = controlledWorkspaceId ?? (active?.workspaces.some((workspace) => workspace.id === selected) ? selected : active?.workspaces[0]?.id);
   if (!active || !workspaceId) return <section className="canvas-panel"><h1>Lienzo</h1><p>Abre un proyecto con un workspace disponible para empezar.</p></section>;
   return <CodeOpenContext.Provider value={onOpenCode}><ContentVersionContext.Provider value={contentVersion}><section className="canvas-panel">
-    <div className="canvas-heading"><h1>Lienzo</h1><label>Workspace <select aria-label="Workspace del lienzo" value={workspaceId} onChange={(event) => setSelected(event.target.value)}>
+    <div className="canvas-heading"><h1>Lienzo</h1><label>Workspace <select aria-label="Workspace del lienzo" value={workspaceId} onChange={(event) => { if (onWorkspaceSelect) onWorkspaceSelect(event.target.value); else setSelected(event.target.value); }}>
       {active.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
     </select></label></div>
-    <CanvasWorkspace key={`${active.sessionId}:${workspaceId}`} sessionId={active.sessionId} workspaceId={workspaceId} onOpenMarkdown={onOpenMarkdown} />
+    <CanvasWorkspace key={`${active.sessionId}:${workspaceId}`} sessionId={active.sessionId} workspaceId={workspaceId} onOpenMarkdown={onOpenMarkdown} initialViewport={initialViewport} onViewportChange={onViewportChange} />
   </section></ContentVersionContext.Provider></CodeOpenContext.Provider>;
 }
 
@@ -272,7 +274,8 @@ function initialContentValue(kind: ContentNodeKind): string {
   return '';
 }
 
-function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown }: { sessionId: string; workspaceId: string; onOpenMarkdown: (target: MarkdownEditorTarget) => void }): React.JSX.Element {
+function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewport, onViewportChange }: { sessionId: string; workspaceId: string; onOpenMarkdown: (target: MarkdownEditorTarget) => void; initialViewport?: WorldViewport | null; onViewportChange?: (view: WorldViewport) => void }): React.JSX.Element {
+  const onViewChange = useRef(onViewportChange); onViewChange.current = onViewportChange;
   const [workspace, setWorkspace] = useState<LocalCanvasWorkspace | null>(null);
   const [nodes, setNodes] = useState<CanvasFlowNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
@@ -422,6 +425,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown }: { sessionId
       const prior = current.current;
       if (prior.x === next.x && prior.y === next.y && prior.zoom === next.zoom) return;
       current.current = next; setViewport(next); changed.current = true;
+      onViewChange.current?.(next);
       if (rebaseNow) rebase(next);
       if (!writable.current) { setStatus('Vista temporal · solo lectura'); return; }
       setStatus('Vista pendiente');
@@ -434,7 +438,9 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown }: { sessionId
     void window.a3?.canvas({ action: 'load', sessionId, workspaceId }).then((result) => {
       if (!live.current) return;
       if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
-      const loaded = result.value; renderOrigin(loaded.viewport);
+      const loaded = result.value;
+      if (initialViewport) loaded.viewport = initialViewport;
+      renderOrigin(loaded.viewport);
       current.current = loaded.viewport; revision.current = loaded.revision; writable.current = loaded.canWrite;
       changed.current = loaded.pending;
       installWorkspace(loaded); setViewport(loaded.viewport); rebase(loaded.viewport); setStatus(!loaded.canWrite ? 'Vista temporal · solo lectura' : loaded.pending ? 'Vista pendiente' : 'Vista guardada');
@@ -1042,6 +1048,11 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown }: { sessionId
         elementsSelectable nodesFocusable edgesFocusable edgesReconnectable={workspace.canWrite && tool === 'connect'} deleteKeyCode={null}
         onlyRenderVisibleElements colorMode="dark" onMove={(event, next) => { if (event) update(fromVisualViewport(next, originRef.current)); }}
         onNodesChange={handleNodeChanges} onEdgesChange={(changes) => setEdges((previous) => applyEdgeChanges(changes.filter((change) => change.type !== 'remove'), previous))}
+        onNodeDoubleClick={(_event, node) => {
+          if (node.type !== 'a3Entity') return;
+          const entity = (node as CanvasNode).data.entity;
+          if (['a3.core.page', 'a3.content.markdown', 'a3.content.short-text'].includes(entity.type) && entity.contentResourceId) onOpenMarkdown({ sessionId, entityId: entity.id, resourceId: entity.contentResourceId, title: entity.title });
+        }}
         onSelectionChange={handleSelectionChange} onNodeDragStop={(_, _node, moved) => moveNodes(moved)}
         onConnect={(connection) => createVisualEdge(connection.source, connection.target)}
         onReconnect={(edge, connection) => updateVisualEdge(edge.id, { sourcePlacementId: connection.source, targetPlacementId: connection.target })}

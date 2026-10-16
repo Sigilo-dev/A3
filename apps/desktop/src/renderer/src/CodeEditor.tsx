@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { Compartment, EditorState } from '@codemirror/state';
 import { indentUnit } from '@codemirror/language';
 import { openSearchPanel } from '@codemirror/search';
 import { basicSetup, EditorView } from 'codemirror';
 import type { CodeDocument, CodeOpenTarget } from '../../shared/desktop-api';
 import { CODE_LANGUAGES, codeLanguageFor, loadCodeLanguage, type CodeLanguage } from './code-languages';
+import { editorStyleNonce } from './editor-style';
 
 export interface CodeEditorTarget { sessionId: string; target: CodeOpenTarget; title: string; }
+export interface CodeEditorHandle { save(): Promise<boolean>; }
 interface CodeBuffer { read(): string; find(): void; }
 
 function CodeSurface({ initial, lineEnding, editable, language, controller, onChange, onError }: {
@@ -21,7 +23,7 @@ function CodeSurface({ initial, lineEnding, editable, language, controller, onCh
     const separator = lineEnding === 'crlf' ? '\r\n' : '\n';
     const read = (state: EditorState): string => state.doc.toString().replace(/\n/g, separator);
     const editor = new EditorView({ parent: host.current, state: EditorState.create({ doc: initial,
-      extensions: [basicSetup, indentUnit.of('  '), EditorState.lineSeparator.of(separator), syntax.current.of([]),
+      extensions: [basicSetup, EditorView.cspNonce.of(editorStyleNonce()), indentUnit.of('  '), EditorState.lineSeparator.of(separator), syntax.current.of([]),
         permissions.current.of([EditorState.readOnly.of(!editable), EditorView.editable.of(editable)]),
         EditorView.contentAttributes.of({ 'aria-label': 'Código fuente del archivo', spellcheck: 'false', tabindex: '0' }),
         EditorView.updateListener.of((update) => { if (update.docChanged) callbacks.current.onChange(read(update.state)); })]
@@ -44,8 +46,9 @@ function CodeSurface({ initial, lineEnding, editable, language, controller, onCh
   return <div ref={host} className="markdown-source-editor code-source-editor" data-code-editor data-code-language={language} />;
 }
 
-export function CodeEditorDialog({ target, activeSessionId, onDirtyChange, onSaved, onClose }: {
+export function CodeEditorDialog({ target, activeSessionId, onDirtyChange, onSaved, onClose, controllerRef }: {
   target: CodeEditorTarget; activeSessionId: string | null; onDirtyChange: (dirty: boolean) => void; onSaved: () => void; onClose: () => void;
+  controllerRef?: Ref<CodeEditorHandle>;
 }): React.JSX.Element {
   const [document, setDocument] = useState<CodeDocument | null>(null), [draft, setDraft] = useState('');
   const draftRef = useRef(''), controller = useRef<CodeBuffer | null>(null);
@@ -53,6 +56,7 @@ export function CodeEditorDialog({ target, activeSessionId, onDirtyChange, onSav
   const [error, setError] = useState<string | null>(null), [status, setStatus] = useState('Leyendo archivo…');
   const [confirmClose, setConfirmClose] = useState(false), [latest, setLatest] = useState<CodeDocument | null>(null), [compare, setCompare] = useState(false), [epoch, setEpoch] = useState(0);
   const sessionCurrent = activeSessionId === target.sessionId, dirty = document?.content !== null && !!document && draft !== document.content;
+  useImperativeHandle(controllerRef, () => ({ save }));
   const updateDraft = (value: string): void => { draftRef.current = value; setDraft(value); };
   const accept = (value: CodeDocument): void => { setDocument(value); updateDraft(value.content ?? ''); setStatus(value.canWrite ? 'Guardado' : 'Solo lectura'); };
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);

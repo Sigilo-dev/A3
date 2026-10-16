@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { LocalProjectsState, ProjectsRequest } from '../../shared/desktop-api';
 
-export function ProjectsPanel({ state, onChange }: { state: LocalProjectsState | null; onChange: (value: LocalProjectsState) => void }): React.JSX.Element {
+export function ProjectsPanel({ state, onChange, beforeSwitch }: { state: LocalProjectsState | null; onChange: (value: LocalProjectsState) => void; beforeSwitch?: () => Promise<boolean> }): React.JSX.Element {
   const [name, setName] = useState('');
   const [rename, setRename] = useState(state?.active?.draftName ?? state?.active?.name ?? '');
   const [busy, setBusy] = useState(false);
@@ -13,6 +13,7 @@ export function ProjectsPanel({ state, onChange }: { state: LocalProjectsState |
     if (busy) return;
     setBusy(true); setError(null);
     try {
+      if (['open', 'recent', 'relocate', 'confirm', 'close'].includes(request.action) && beforeSwitch && !await beforeSwitch()) return;
       if (!window.a3) throw new Error('El puente de escritorio no está disponible. Reabre A3.');
       const result = await window.a3.projects(request);
       if (result.ok) onChange(result.value);
