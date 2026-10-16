@@ -329,3 +329,18 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .shortcut-preferences input { width: 100%; }
 [data-link-choices] button { display: block; width: 100%; text-align: left; margin-top: 8px; }
 [data-link-choices] small { display: block; overflow-wrap: anywhere; }
+.conceptual-inspector { display: grid; gap: 10px; max-height: 340px; overflow: auto; padding: 10px 12px; margin-top: 8px; border: 1px solid #55473b; border-radius: 6px; background: #1c1a19; color: #eee5dd; }
+.conceptual-inspector h3, .conceptual-inspector h4 { margin: 5px 0 8px; font-size: 12px; }
+.conceptual-inspector form { display: flex; flex-wrap: wrap; align-items: end; gap: 7px 12px; }
+.conceptual-inspector label { display: grid; gap: 4px; margin: 0; font-size: 10px; }
+.conceptual-inspector input, .conceptual-inspector select { max-width: 220px; min-width: 130px; margin: 0; padding: 6px; border: 1px solid #5a554c; border-radius: 4px; background: #151515; color: #f1e8df; font-size: 11px; }
+.conceptual-inspector button { margin: 0; padding: 7px 10px; font-size: 11px; }
+.conceptual-inspector details > summary { cursor: pointer; font-size: 12px; }
+.conceptual-node { border-color: #735640; background: #27211c; }
+.conceptual-node small { color: #ebbd8c; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.conceptual-node .canvas-content-state { font-size: 10px; }
+.conceptual-relation-create, .conceptual-relations { border-top: 1px solid #4d4137; padding-top: 8px; }
+.conceptual-relations > form { padding: 8px; margin-top: 7px; border: 1px solid #51463e; border-radius: 5px; background: #201e1d; }
+.conceptual-relations > form > small { width: 100%; }
+.conceptual-relation-actions { display: flex; gap: 8px; }
+.conceptual-inspector button:focus-visible, .conceptual-inspector select:focus-visible, .conceptual-inspector input:focus-visible { outline: 2px solid #eabf91; outline-offset: 2px; }

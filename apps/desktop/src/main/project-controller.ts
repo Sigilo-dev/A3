@@ -2,7 +2,7 @@ import { clipboard, dialog, type BrowserWindow } from 'electron';
 import { lstat, realpath, readdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, parse, relative, resolve } from 'node:path';
-import { CONTENT_NODE_CATALOG, resolveSmartPastePayload } from '@a3/domain';
+import { CONTENT_NODE_CATALOG, CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_RELATION_KINDS, resolveSmartPastePayload } from '@a3/domain';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
@@ -94,6 +94,31 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
     if (node.kind === 'image' && typeof node.url === 'string') return node.url.length <= 2048 && !('value' in node) && !('resourceId' in node);
     return typeof node.resourceId === 'string' && uuid.test(node.resourceId) && !('value' in node) && !('url' in node);
   }
+  if (input.action === 'create-conceptual-node') return Object.keys(input).length === 7 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 &&
+    CONCEPTUAL_NODE_CATALOG.some((entry) => entry.kind === input.kind) && typeof input.title === 'string' && !!input.title.trim() && input.title.length <= 200 && validPoint(input.position);
+  if (input.action === 'update-conceptual-node') {
+    if (Object.keys(input).length !== 6 || !uuid.test(String(input.entityId)) || !Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 1 ||
+        !input.patch || typeof input.patch !== 'object' || Array.isArray(input.patch)) return false;
+    const patch = input.patch as Record<string, unknown>;
+    return Object.keys(patch).length > 0 && Object.keys(patch).every((key) => ['title', 'kind'].includes(key)) &&
+      (!('title' in patch) || typeof patch.title === 'string' && !!patch.title.trim() && patch.title.length <= 200) &&
+      (!('kind' in patch) || CONCEPTUAL_NODE_CATALOG.some((entry) => entry.kind === patch.kind));
+  }
+  if (input.action === 'create-conceptual-relation') return (Object.keys(input).length === 7 || Object.keys(input).length === 8) &&
+    Object.keys(input).every((key) => ['action', 'sessionId', 'workspaceId', 'expectedWorkspaceRevision', 'sourcePlacementId', 'targetPlacementId', 'label', 'kind'].includes(key)) &&
+    Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 && uuid.test(String(input.sourcePlacementId)) &&
+    uuid.test(String(input.targetPlacementId)) && typeof input.label === 'string' && !!input.label.trim() && input.label.length <= 300 &&
+    (!('kind' in input) || CONCEPTUAL_RELATION_KINDS.includes(input.kind as typeof CONCEPTUAL_RELATION_KINDS[number]));
+  if (input.action === 'update-conceptual-relation') {
+    if (Object.keys(input).length !== 6 || !uuid.test(String(input.relationId)) || !Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 1 ||
+        !input.patch || typeof input.patch !== 'object' || Array.isArray(input.patch)) return false;
+    const patch = input.patch as Record<string, unknown>;
+    return Object.keys(patch).length > 0 && Object.keys(patch).every((key) => ['label', 'kind'].includes(key)) &&
+      (!('label' in patch) || typeof patch.label === 'string' && !!patch.label.trim() && patch.label.length <= 300) &&
+      (!('kind' in patch) || patch.kind === null || CONCEPTUAL_RELATION_KINDS.includes(patch.kind as typeof CONCEPTUAL_RELATION_KINDS[number]));
+  }
+  if (input.action === 'delete-conceptual-relation') return Object.keys(input).length === 5 && uuid.test(String(input.relationId)) &&
+    Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) >= 1;
   if (input.action === 'update-placement') {
     if (Object.keys(input).length !== 6 || !uuid.test(String(input.placementId)) || !Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 1 ||
         !input.patch || typeof input.patch !== 'object' || Array.isArray(input.patch)) return false;
@@ -381,6 +406,12 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'discard': return { ok: true, value: await manager.discardCanvasViewport(value.sessionId, value.workspaceId) };
           case 'create-placement': return { ok: true, value: await manager.createCanvasPlacement(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.entityId, value.position) };
           case 'create-content-node': return { ok: true, value: await manager.createCanvasContentNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.node) };
+          case 'create-conceptual-node': return { ok: true, value: await manager.createCanvasConceptualNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.kind, value.title, value.position) };
+          case 'update-conceptual-node': return { ok: true, value: await manager.updateCanvasConceptualNode(value.sessionId, value.workspaceId, value.entityId, value.expectedRevision, value.patch) };
+          case 'create-conceptual-relation': return { ok: true, value: await manager.createCanvasConceptualRelation(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision,
+            value.sourcePlacementId, value.targetPlacementId, value.label, value.kind) };
+          case 'update-conceptual-relation': return { ok: true, value: await manager.updateCanvasConceptualRelation(value.sessionId, value.workspaceId, value.relationId, value.expectedRevision, value.patch) };
+          case 'delete-conceptual-relation': return { ok: true, value: await manager.deleteCanvasConceptualRelation(value.sessionId, value.workspaceId, value.relationId, value.expectedRevision) };
           case 'smart-paste': return smartPaste(value);
           case 'cancel-drop': dropDrafts.delete(value.token); return { ok: true, value: await manager.loadCanvasWorkspace(value.sessionId, value.workspaceId) };
           case 'drop-file': {

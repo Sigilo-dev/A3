@@ -1,4 +1,5 @@
 import type { ContentNodeKind } from './content-nodes.js';
+import type { ConceptualNodeKind, ConceptualRelationKind } from './conceptual-diagrams.js';
 export type UUID = string;
 export type Namespace = string;
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -122,11 +123,29 @@ export interface CreateContentNode {
   workspaceId: UUID; entityId: UUID; placementId: UUID; kind: ContentNodeKind; title: string;
   position: Point; properties: ExtensionMap; source: CreateContentNodeSource;
 }
+export interface CreateConceptualNode {
+  workspaceId: UUID; entityId: UUID; placementId: UUID; kind: ConceptualNodeKind; title: string; position: Point;
+}
+export interface UpdateConceptualNode {
+  workspaceId: UUID; entityId: UUID; title?: string; kind?: ConceptualNodeKind;
+}
+export interface CreateConceptualRelation {
+  workspaceId: UUID; relationId: UUID; relationViewId: UUID; sourcePlacementId: UUID; targetPlacementId: UUID;
+  label: string; kind?: ConceptualRelationKind;
+}
+export interface UpdateConceptualRelation {
+  workspaceId: UUID; relationId: UUID; label?: string; kind?: ConceptualRelationKind | null;
+}
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
 export type Payloads = {
   'a3.core.create-project': { project: Project; workspace: Workspace };
   'a3.core.create-document': { record: DomainRecord };
   'a3.core.create-content-node': CreateContentNode;
+  'a3.conceptual.create-node': CreateConceptualNode;
+  'a3.conceptual.update-node': UpdateConceptualNode;
+  'a3.conceptual.create-relation': CreateConceptualRelation;
+  'a3.conceptual.update-relation': UpdateConceptualRelation;
+  'a3.conceptual.delete-relation': { workspaceId: UUID; relationId: UUID };
   'a3.core.rename': { ref: DocumentRef; name: string };
   'a3.core.set-workspace-viewport': { workspaceId: UUID; viewport: { x: number; y: number; zoom: number } };
   'a3.core.update-entity': EntityPatch;

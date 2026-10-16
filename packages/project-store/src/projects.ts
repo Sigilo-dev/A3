@@ -2,7 +2,7 @@ import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } 
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
-import { CONTENT_NODE_CATALOG, contentNodeDefinition, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
+import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
 import { initialPageView, insertFocusTab, readWorkspaceSession, writeWorkspaceSession, validCanvasView, validPageView, type WorkspaceSession, type WorkspaceSessionAction, type PageReference } from './workspace-session.js';
@@ -74,6 +74,10 @@ export interface CanvasPlacementView {
 }
 export type CanvasVisualEdgeView = Pick<VisualEdge, 'id' | 'revision' | 'sourcePlacementId' | 'targetPlacementId' | 'label' | 'waypoints' | 'style'>;
 export type CanvasVisualEdgePatch = Partial<Pick<VisualEdge, 'sourcePlacementId' | 'targetPlacementId' | 'label' | 'waypoints' | 'style'>>;
+export interface CanvasConceptualRelationView {
+  id: string; relationId: string; relationRevision: number; revision: number; sourcePlacementId: string; targetPlacementId: string;
+  sourceEntityId: string; targetEntityId: string; label: string; kind?: ConceptualRelationKind;
+}
 export type CanvasDrawingView = Pick<Drawing, 'id' | 'revision' | 'points' | 'parameters' | 'style'>;
 export type CanvasDrawingPatch = Omit<Partial<Pick<Drawing, 'points' | 'parameters' | 'style'>>, 'parameters'> & { parameters?: Partial<DrawingParameters> };
 export type CanvasGroupView = Pick<Group, 'id' | 'revision' | 'name' | 'members'> & { collapsed: boolean };
@@ -91,9 +95,10 @@ export type MenuPermissions = Record<'read' | 'document' | 'diagram' | 'delete',
 export interface LocalCanvasWorkspace {
   sessionId: string; workspaceId: string; name: string; revision: number;
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
-  resourceChoices: readonly CanvasResourceChoice[]; placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[]; drawings: readonly CanvasDrawingView[]; groups: readonly CanvasGroupView[];
+  resourceChoices: readonly CanvasResourceChoice[]; placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[];
+  conceptualRelations: readonly CanvasConceptualRelationView[]; drawings: readonly CanvasDrawingView[]; groups: readonly CanvasGroupView[];
   history: { canUndo: boolean; canRedo: boolean; undoRequiresDelete: boolean; redoRequiresDelete: boolean; deleteAvailable: boolean };
-  canDeleteEdges: boolean; canDeleteDrawings: boolean; canConvertDrawings: boolean;
+  canDeleteEdges: boolean; canDeleteRelations: boolean; canDeleteDrawings: boolean; canConvertDrawings: boolean;
 }
 export interface LocalExplorerEntry extends Omit<ExplorerDirectoryPage['entries'][number], 'path' | 'identity'> { id: string; path: string; }
 export interface LocalExplorerMount extends Omit<ExplorerMountEntry, 'resourceId'> { id: string; }
@@ -674,7 +679,7 @@ export class LocalProjectManager {
       .map(({ value }) => ({ id: value.id, revision: value.revision, type: value.type, typeVersion: value.typeVersion,
         title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
           ...(resources.get(value.contentResourceId.toLowerCase()) ? { contentResource: resourceDescriptor(resources.get(value.contentResourceId.toLowerCase())!) } : {}) } : {}),
-        typeAvailable: isBuiltinContentNodeType(value.type) }));
+        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined }));
     const entityChoices = choices.map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
     const resourceChoices = resourceRecords.map((record) => resourceDescriptor(record));
     const placementIds = new Map(placements.map((placement) => [placement.id.toLowerCase(), placement.id]));
@@ -682,6 +687,21 @@ export class LocalProjectManager {
       .map(({ value }) => ({ id: value.id, revision: value.revision, sourcePlacementId: placementIds.get(value.sourcePlacementId.toLowerCase()) ?? value.sourcePlacementId,
         targetPlacementId: placementIds.get(value.targetPlacementId.toLowerCase()) ?? value.targetPlacementId,
         label: value.label, waypoints: value.waypoints, style: value.style }));
+    const relations = new Map(snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'relation' }> => record.kind === 'relation')
+      .map((record) => [record.value.id.toLowerCase(), record]));
+    const conceptualRelations: CanvasConceptualRelationView[] = snapshot.records
+      .filter((record): record is Extract<DomainRecord, { kind: 'relation-view' }> => record.kind === 'relation-view' && record.workspaceId === workspaceId)
+      .flatMap(({ value }) => {
+        const relation = relations.get(value.relationId.toLowerCase());
+        if (!relation || !isConceptualRelation(relation.value)) return [];
+        const data = conceptualRelationData(relation.value.properties);
+        const source = snapshot.records.find((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === value.sourcePlacementId.toLowerCase());
+        const target = snapshot.records.find((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === value.targetPlacementId.toLowerCase());
+        if (!data || source?.kind !== 'placement' || target?.kind !== 'placement') return [];
+        return [{ id: value.id, relationId: relation.value.id, relationRevision: relation.value.revision, revision: value.revision,
+          sourcePlacementId: source.value.id, targetPlacementId: target.value.id, sourceEntityId: relation.value.source.entityId,
+          targetEntityId: relation.value.target.entityId, ...data }];
+      });
     const deletion = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
       projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: ['delete', 'diagram.edit'], stage: 'prepare' });
     const drawingDeletion = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
@@ -700,11 +720,12 @@ export class LocalProjectManager {
     const undoEvent = history?.entries[history.cursor - 1], redoEvent = history?.entries[history.cursor];
     const historyDelete = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
       projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: ['delete'], stage: 'prepare' });
-    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, resourceChoices, placements, visualEdges, drawings, groups,
+    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, resourceChoices, placements, visualEdges, conceptualRelations, drawings, groups,
       history: { canUndo: !!undoEvent && !history?.blocked, canRedo: !!redoEvent && !history?.blocked,
         undoRequiresDelete: !!undoEvent && historyRequiresDelete(undoEvent, 'undo'), redoRequiresDelete: !!redoEvent && historyRequiresDelete(redoEvent, 'redo'),
         deleteAvailable: historyDelete.allowed },
       canDeleteEdges: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && deletion.allowed,
+      canDeleteRelations: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && deletion.allowed,
       canDeleteDrawings: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && drawingDeletion.allowed,
       canConvertDrawings: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && drawingConversion.allowed,
       canWrite: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && edit.allowed };
@@ -1459,6 +1480,75 @@ export class LocalProjectManager {
       const record: DomainRecord = { kind: 'visual-edge', workspaceId, value: { schemaVersion: '1.0.0', id: randomUUID(), revision: 1,
         sourcePlacementId, targetPlacementId, label: '', waypoints: [], style: {}, extensions: {} } };
       await this.#commitCanvasCommand(active, { command: 'a3.core.create-document', payload: { record } }, entityIds, { kind: 'visual-edge', workspaceId, id: record.value.id });
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  createCanvasConceptualNode(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, kind: ConceptualNodeKind, title: string, position: { x: number; y: number }): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision, 'REVISION_CONFLICT', 'El workspace cambió; recarga antes de añadir el nodo conceptual.');
+      const entityId = randomUUID(), placementId = randomUUID();
+      await this.#commitCanvasCommand(active, { command: 'a3.conceptual.create-node', payload: { workspaceId, entityId, placementId, kind, title, position } },
+        [entityId], [{ kind: 'entity', id: entityId }, { kind: 'placement', id: placementId, workspaceId }]);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  updateCanvasConceptualNode(sessionId: string, workspaceId: string, entityId: string, expectedRevision: number, patch: { title?: string; kind?: ConceptualNodeKind }): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const entity = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === entityId.toLowerCase());
+      demand(entity?.kind === 'entity' && conceptualNodeKind(entity.value.type, entity.value.typeVersion) !== undefined, 'CONCEPTUAL_NODE_MISSING', 'El nodo conceptual ya no está disponible.');
+      demand(Number.isSafeInteger(expectedRevision) && entity.value.revision === expectedRevision, 'REVISION_CONFLICT', 'El nodo cambió; recarga el inspector antes de editar.');
+      demand(active.lease.service.state.project.snapshot.records.some((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.entityId.toLowerCase() === entityId.toLowerCase()),
+        'CONCEPTUAL_NODE_MISSING', 'El nodo ya no está representado en este workspace.');
+      await this.#commitCanvasCommand(active, { command: 'a3.conceptual.update-node', payload: { workspaceId, entityId: entity.value.id, ...patch } }, [entity.value.id]);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  createCanvasConceptualRelation(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number,
+    sourcePlacementId: string, targetPlacementId: string, label: string, kind?: ConceptualRelationKind): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision, 'REVISION_CONFLICT', 'El workspace cambió; recarga antes de crear la relación.');
+      const snapshot = active.lease.service.state.project.snapshot;
+      const source = snapshot.records.find((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === sourcePlacementId.toLowerCase());
+      const target = snapshot.records.find((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === targetPlacementId.toLowerCase());
+      demand(source?.kind === 'placement' && target?.kind === 'placement', 'CONCEPTUAL_PLACEMENT_MISSING', 'Selecciona dos representaciones del workspace.');
+      const entities = new Map(snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'entity' }> => record.kind === 'entity').map((record) => [record.value.id.toLowerCase(), record]));
+      demand(entities.has(source.value.entityId.toLowerCase()) && entities.has(target.value.entityId.toLowerCase()) &&
+        conceptualNodeKind(entities.get(source.value.entityId.toLowerCase())!.value.type, entities.get(source.value.entityId.toLowerCase())!.value.typeVersion) !== undefined &&
+        conceptualNodeKind(entities.get(target.value.entityId.toLowerCase())!.value.type, entities.get(target.value.entityId.toLowerCase())!.value.typeVersion) !== undefined,
+      'CONCEPTUAL_ENDPOINT_REQUIRED', 'Las relaciones conceptuales solo conectan nodos de esta familia.');
+      const relationId = randomUUID(), relationViewId = randomUUID();
+      await this.#commitCanvasCommand(active, { command: 'a3.conceptual.create-relation', payload: { workspaceId, relationId, relationViewId,
+        sourcePlacementId: source.value.id, targetPlacementId: target.value.id, label, ...(kind ? { kind } : {}) } },
+      [entities.get(source.value.entityId.toLowerCase())!.value.id, entities.get(target.value.entityId.toLowerCase())!.value.id],
+      [{ kind: 'relation', id: relationId }, { kind: 'relation-view', id: relationViewId, workspaceId }]);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  updateCanvasConceptualRelation(sessionId: string, workspaceId: string, relationId: string, expectedRevision: number,
+    patch: { label?: string; kind?: ConceptualRelationKind | null }): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const relation = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'relation' && record.value.id.toLowerCase() === relationId.toLowerCase());
+      demand(relation?.kind === 'relation' && isConceptualRelation(relation.value) && active.lease.service.state.project.snapshot.records.some((record) => record.kind === 'relation-view' &&
+        record.workspaceId === workspaceId && record.value.relationId.toLowerCase() === relationId.toLowerCase()), 'CONCEPTUAL_RELATION_MISSING', 'La relación conceptual ya no está disponible en este workspace.');
+      demand(Number.isSafeInteger(expectedRevision) && relation.value.revision === expectedRevision, 'REVISION_CONFLICT', 'La relación cambió; recarga el inspector antes de editar.');
+      await this.#commitCanvasCommand(active, { command: 'a3.conceptual.update-relation', payload: { workspaceId, relationId: relation.value.id, ...patch } },
+        [relation.value.source.entityId, relation.value.target.entityId]);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  deleteCanvasConceptualRelation(sessionId: string, workspaceId: string, relationId: string, expectedRevision: number): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const relation = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'relation' && record.value.id.toLowerCase() === relationId.toLowerCase());
+      demand(relation?.kind === 'relation' && isConceptualRelation(relation.value) && active.lease.service.state.project.snapshot.records.some((record) => record.kind === 'relation-view' &&
+        record.workspaceId === workspaceId && record.value.relationId.toLowerCase() === relationId.toLowerCase()), 'CONCEPTUAL_RELATION_MISSING', 'La relación conceptual ya no está disponible en este workspace.');
+      demand(Number.isSafeInteger(expectedRevision) && relation.value.revision === expectedRevision, 'REVISION_CONFLICT', 'La relación cambió; recarga el inspector antes de borrarla.');
+      await this.#commitCanvasCommand(active, { command: 'a3.conceptual.delete-relation', payload: { workspaceId, relationId: relation.value.id } },
+        [relation.value.source.entityId, relation.value.target.entityId]);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }

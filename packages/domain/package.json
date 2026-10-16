@@ -8,6 +8,7 @@
   "files": ["dist"],
   "exports": {
     "./shortcuts": { "types": "./dist/src/shortcuts.d.ts", "import": "./dist/src/shortcuts.js" },
+    "./conceptual-diagrams": { "types": "./dist/src/conceptual-diagrams.d.ts", "import": "./dist/src/conceptual-diagrams.js" },
     ".": {
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js"

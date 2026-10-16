@@ -1,10 +1,11 @@
 import { memo } from 'react';
 import { BaseEdge, MarkerType, getBezierPath, getSmoothStepPath, getStraightPath, type Edge, type EdgeProps } from '@xyflow/react';
-import type { CanvasVisualEdgePatch, CanvasVisualEdgeView, LocalCanvasWorkspace } from '../../shared/desktop-api';
+import type { CanvasConceptualRelationView, CanvasVisualEdgePatch, CanvasVisualEdgeView, LocalCanvasWorkspace } from '../../shared/desktop-api';
 
 export type CanvasTool = 'select' | 'connect' | 'text' | 'draw';
 type EdgeData = { view: CanvasVisualEdgeView; origin: { x: number; y: number } };
-export type CanvasEdge = Edge<EdgeData, 'a3Visual'>;
+type SemanticEdgeData = { view: CanvasConceptualRelationView; origin: { x: number; y: number } };
+export type CanvasEdge = Edge<EdgeData | SemanticEdgeData, 'a3Visual' | 'a3Semantic'>;
 export function edgeAppearance(style: CanvasVisualEdgeView['style']) {
   return {
     color: typeof style['a3.ui.line.color'] === 'string' && /^#[\da-f]{6}$/i.test(style['a3.ui.line.color']) ? style['a3.ui.line.color'] : '#9bc279',
@@ -16,7 +17,7 @@ export function edgeAppearance(style: CanvasVisualEdgeView['style']) {
 }
 export function toFlowEdges(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, tool: CanvasTool, previous: CanvasEdge[] = [], endpointMap: ReadonlyMap<string, string> = new Map()): CanvasEdge[] {
   const old = new Map(previous.map((edge) => [edge.id, edge]));
-  return workspace.visualEdges.map((view) => {
+  const visualEdges = workspace.visualEdges.map((view) => {
     const existing = old.get(view.id);
     const reconnectable = workspace.canWrite && tool === 'connect';
     const source = endpointMap.get(view.sourcePlacementId.toLowerCase()) ?? view.sourcePlacementId;
@@ -27,15 +28,28 @@ export function toFlowEdges(workspace: LocalCanvasWorkspace, origin: { x: number
     const style = edgeAppearance(view.style);
     const marker = { type: MarkerType.ArrowClosed, color: style.color };
     return { id: view.id, source, target, sourceHandle, targetHandle,
-      type: 'a3Visual', data: { view, origin }, reconnectable, selectable: true, focusable: true, selected: existing?.selected,
+      type: 'a3Visual' as const, data: { view, origin }, reconnectable, selectable: true, focusable: true, selected: existing?.selected,
       ariaLabel: `Línea visual: ${view.label || 'sin etiqueta'}. Solo organización.`,
       markerStart: ['backward', 'both'].includes(style.direction) ? marker : undefined,
       markerEnd: ['forward', 'both'].includes(style.direction) ? marker : undefined };
   });
+  const semanticEdges = workspace.conceptualRelations.map((view) => {
+    const existing = old.get(view.id);
+    const source = endpointMap.get(view.sourcePlacementId.toLowerCase()) ?? view.sourcePlacementId;
+    const target = endpointMap.get(view.targetPlacementId.toLowerCase()) ?? view.targetPlacementId;
+    if (existing?.type === 'a3Semantic' && existing.data?.view.revision === view.revision && existing.source === source &&
+        existing.target === target && existing.data.origin.x === origin.x && existing.data.origin.y === origin.y) return existing;
+    return { id: view.id, source, target, sourceHandle: endpointMap.has(view.sourcePlacementId.toLowerCase()) ? 'group-visual-source' : 'visual-source',
+      targetHandle: endpointMap.has(view.targetPlacementId.toLowerCase()) ? 'group-visual-target' : 'visual-target',
+      type: 'a3Semantic' as const, data: { view, origin }, reconnectable: false, selectable: true, focusable: true, selected: existing?.selected,
+      ariaLabel: `Relación semántica conceptual: ${view.kind ?? 'sin tipo'}, ${view.label}.` };
+  });
+  return [...visualEdges, ...semanticEdges];
 }
-export const edgeTypes = { a3Visual: memo(function VisualEdgeRenderer(props: EdgeProps<CanvasEdge>) {
+const VisualEdgeRenderer = memo(function VisualEdgeRenderer(props: EdgeProps<CanvasEdge>) {
   if (!props.data) return null;
   const { view, origin } = props.data;
+  if (!('waypoints' in view)) return null;
   const style = edgeAppearance(view.style);
   let [path, labelX, labelY] = style.route === 'straight' ? getStraightPath(props) : style.route === 'orthogonal' ? getSmoothStepPath(props) : getBezierPath(props);
   if (view.waypoints.length) {
@@ -48,7 +62,25 @@ export const edgeTypes = { a3Visual: memo(function VisualEdgeRenderer(props: Edg
       interactionWidth={24} style={{ stroke: style.color, strokeWidth: style.width, strokeDasharray: style.pattern === 'dashed' ? '7 5' : undefined }}
       labelStyle={{ fill: '#e5eedc' }} labelBgStyle={{ fill: '#18231f' }} labelBgPadding={[6, 4]} />
   </g>;
-}) };
+});
+const SemanticEdgeRenderer = memo(function SemanticEdgeRenderer(props: EdgeProps<CanvasEdge>) {
+  if (!props.data || 'waypoints' in props.data.view) return null;
+  const { view } = props.data;
+  const [path, labelX, labelY] = getBezierPath(props);
+  const palette: Record<string, string> = { composition: '#e8b47a', dependency: '#82b8dc', cause: '#ed8d83', association: '#a9d395' };
+  const color = palette[view.kind ?? 'association'] ?? '#c4d6f2';
+  const markerId = `a3-semantic-arrow-${props.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  return <g data-semantic-relation-id={view.relationId} data-semantic-kind={view.kind ?? 'untyped'}>
+    <defs><marker id={markerId} markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill={color} />
+    </marker></defs>
+    <BaseEdge id={props.id} path={path} label={view.kind ? `${view.kind} · ${view.label}` : view.label} labelX={labelX} labelY={labelY}
+      markerEnd={`url(#${markerId})`} interactionWidth={22}
+      style={{ stroke: color, strokeWidth: 2.5, strokeDasharray: view.kind === 'dependency' ? '8 5' : undefined }}
+      labelStyle={{ fill: '#f4eadf' }} labelBgStyle={{ fill: '#201d22' }} labelBgPadding={[6, 4]} />
+  </g>;
+});
+export const edgeTypes = { a3Visual: VisualEdgeRenderer, a3Semantic: SemanticEdgeRenderer };
 
 export function CanvasEdgeEditor({ workspace, edge, tool, onCreate, onUpdate, onDelete, onRequestDeletePermission }: {
   workspace: LocalCanvasWorkspace; edge?: CanvasVisualEdgeView; tool: CanvasTool;

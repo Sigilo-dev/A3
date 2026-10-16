@@ -1,6 +1,6 @@
 import type { CanvasContentNodeInput, CanvasDrawingPatch, CanvasPlacementMove, CanvasPlacementViewPatch, CanvasSelection, CanvasVisualEdgePatch, LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
-import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
-export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace } from '@a3/project-store';
+import type { ConceptualNodeKind, ConceptualRelationKind, Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
+export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasConceptualRelationView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
@@ -37,6 +37,11 @@ export type CanvasRequest =
   | { action: 'stage'; sessionId: string; workspaceId: string; expectedRevision: number; viewport: WorkspaceViewport }
   | { action: 'create-placement'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; entityId: string; position: { x: number; y: number } }
   | { action: 'create-content-node'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; node: CanvasContentNodeInput }
+  | { action: 'create-conceptual-node'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; kind: ConceptualNodeKind; title: string; position: { x: number; y: number } }
+  | { action: 'update-conceptual-node'; sessionId: string; workspaceId: string; entityId: string; expectedRevision: number; patch: { title?: string; kind?: ConceptualNodeKind } }
+  | { action: 'create-conceptual-relation'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; sourcePlacementId: string; targetPlacementId: string; label: string; kind?: ConceptualRelationKind }
+  | { action: 'update-conceptual-relation'; sessionId: string; workspaceId: string; relationId: string; expectedRevision: number; patch: { label?: string; kind?: ConceptualRelationKind | null } }
+  | { action: 'delete-conceptual-relation'; sessionId: string; workspaceId: string; relationId: string; expectedRevision: number }
   | { action: 'smart-paste'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; position: { x: number; y: number }; mode: 'smart' | 'text' }
   | { action: 'drop-file'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; position: { x: number; y: number }; token: string; mode: 'copy' | 'reference' | 'move' }
   | { action: 'cancel-drop'; token: string; sessionId: string; workspaceId: string }

@@ -1,4 +1,5 @@
 import type { CanvasEntitySummary, CanvasResourcePreview } from '../../shared/desktop-api';
+import { CONCEPTUAL_NODE_CATALOG, conceptualNodeKind } from '@a3/domain/conceptual-diagrams';
 
 function textProperty(entity: CanvasEntitySummary, key: string): string {
   const value = entity.properties[key];
@@ -47,6 +48,14 @@ export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback,
   const shortText = entity.type === 'a3.content.short-text';
   const code = entity.type === 'a3.content.code';
   const drawing = entity.type === 'a3.core.drawing';
+  const conceptualKind = conceptualNodeKind(entity.type, entity.typeVersion);
+
+  if (conceptualKind) return <section className={`canvas-content-card conceptual-node conceptual-node-${conceptualKind}`} data-content-renderer="conceptual" data-conceptual-kind={conceptualKind}
+    aria-label={`${CONCEPTUAL_NODE_CATALOG.find((item) => item.kind === conceptualKind)?.label}: ${title}`}>
+    <small>{CONCEPTUAL_NODE_CATALOG.find((item) => item.kind === conceptualKind)?.label}</small>
+    <strong>{title}</strong>
+    <p className="canvas-content-state">Nodo semántico conceptual · las relaciones etiquetadas se editan en el inspector.</p>
+  </section>;
 
   if (image) return <section className="canvas-content-card" data-content-renderer="image" aria-label={`Imagen ${title}`}>
     {mediaUrl ? <img className="canvas-image-preview" src={mediaUrl} alt={altText || title} /> : <div className="canvas-media-placeholder" aria-hidden="true">▧</div>}

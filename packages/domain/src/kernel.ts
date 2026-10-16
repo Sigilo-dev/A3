@@ -1,6 +1,8 @@
 import { canonical, copy, diagnostic, freeze, getRecord, isJson, isObject, refKey, refOf, revisionsOf, sameId, UUID_PATTERN } from './data.js';
 import { findRelationType, validateDefinition, validateRecord, validateRegistry, validateSnapshot } from './validation.js';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition } from './content-nodes.js';
+import { CONCEPTUAL_KIND_KEY, CONCEPTUAL_LABEL_KEY, CONCEPTUAL_RELATION_TYPE, CONCEPTUAL_RELATION_VERSION,
+  conceptualNodeDefinition, isConceptualEntity, isConceptualNodeKind, isConceptualRelation, isConceptualRelationKind } from './conceptual-diagrams.js';
 import type { CommandContext, ContentEffect, Diagnostic, DocumentKinds, DocumentRef, DomainCommand, DomainRecord, DomainSnapshot, DuplicateSelection, ExpectedRevision, NodeTypeChange, Outcome, Payloads, PreparedPlan, RecordChange, RecordKind, ReversibleCanvasCommand, Resource, ResourceLocation, TypeRegistry } from './models.js';
 
 class DomainFault extends Error {
@@ -11,6 +13,7 @@ function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnost
 }
 const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity',
   'a3.core.create-content-node',
+  'a3.conceptual.create-node', 'a3.conceptual.update-node', 'a3.conceptual.create-relation', 'a3.conceptual.update-relation', 'a3.conceptual.delete-relation',
   'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-placement-views', 'a3.core.update-visual-edge', 'a3.core.update-drawing', 'a3.core.convert-drawings-to-node', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-group-collapsed', 'a3.core.set-collection-members',
   'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.apply-canvas-history', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
 const kinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
@@ -288,6 +291,96 @@ function createContentNode(draft: Draft, payload: Payloads['a3.core.create-conte
   draft.add(entity); draft.add(placement);
 }
 
+function createConceptualNode(draft: Draft, payload: Payloads['a3.conceptual.create-node']): void {
+  if (!payload || Object.keys(payload).some((key) => !['workspaceId', 'entityId', 'placementId', 'kind', 'title', 'position'].includes(key)) ||
+      !UUID_PATTERN.test(payload.workspaceId) || !UUID_PATTERN.test(payload.entityId) || !UUID_PATTERN.test(payload.placementId) ||
+      !isConceptualNodeKind(payload.kind) || typeof payload.title !== 'string' || !payload.title.trim() || payload.title.trim().length > 200 ||
+      !payload.position || !Number.isFinite(payload.position.x) || !Number.isFinite(payload.position.y)) {
+    fail('invalid-conceptual-node', 'El nodo conceptual requiere tipo, título, posición e identidades válidas.');
+  }
+  draft.require({ kind: 'workspace', id: payload.workspaceId });
+  const definition = conceptualNodeDefinition(payload.kind);
+  draft.add({ kind: 'entity', value: { schemaVersion: '1.0.0', id: payload.entityId, revision: 1, type: definition.type, typeVersion: '1.0.0',
+    title: payload.title.trim(), tags: [], properties: {}, ports: [], bindings: {}, extensions: {} } });
+  draft.add({ kind: 'placement', workspaceId: payload.workspaceId, value: { schemaVersion: '1.0.0', id: payload.placementId, revision: 1,
+    entityId: payload.entityId, position: copy(payload.position), size: { width: 300, height: 180 }, style: {}, extensions: {} } });
+}
+
+function updateConceptualNode(draft: Draft, payload: Payloads['a3.conceptual.update-node']): void {
+  if (!payload || Object.keys(payload).some((key) => !['workspaceId', 'entityId', 'title', 'kind'].includes(key)) ||
+      !UUID_PATTERN.test(payload.workspaceId) || !UUID_PATTERN.test(payload.entityId) ||
+      payload.title === undefined && payload.kind === undefined ||
+      payload.title !== undefined && (typeof payload.title !== 'string' || !payload.title.trim() || payload.title.trim().length > 200) ||
+      payload.kind !== undefined && !isConceptualNodeKind(payload.kind)) fail('invalid-conceptual-node-patch', 'El inspector solo admite título y tipo conceptual válidos.');
+  draft.require({ kind: 'workspace', id: payload.workspaceId });
+  const ref: DocumentRef = { kind: 'entity', id: payload.entityId };
+  const record = draft.require(ref);
+  if (record.kind !== 'entity' || !isConceptualEntity(record.value) ||
+      !draft.snapshot.records.some((item) => item.kind === 'placement' && item.workspaceId === payload.workspaceId && item.value.entityId === payload.entityId)) {
+    fail('conceptual-node-missing', 'El nodo conceptual ya no está en este workspace.', ref, 'RESOURCE_MISSING');
+  }
+  draft.edit(ref, 'entity', (value) => {
+    if (payload.title !== undefined) value.title = payload.title.trim();
+    if (payload.kind !== undefined) value.type = conceptualNodeDefinition(payload.kind).type;
+  });
+}
+
+function createConceptualRelation(draft: Draft, payload: Payloads['a3.conceptual.create-relation']): void {
+  if (!payload || Object.keys(payload).some((key) => !['workspaceId', 'relationId', 'relationViewId', 'sourcePlacementId', 'targetPlacementId', 'label', 'kind'].includes(key)) ||
+      ![payload.workspaceId, payload.relationId, payload.relationViewId, payload.sourcePlacementId, payload.targetPlacementId].every((value) => UUID_PATTERN.test(value)) ||
+      typeof payload.label !== 'string' || !payload.label.trim() || payload.label.trim().length > 300 ||
+      payload.kind !== undefined && !isConceptualRelationKind(payload.kind)) fail('invalid-conceptual-relation', 'La relación requiere extremos, etiqueta y categoría opcional válidos.');
+  draft.require({ kind: 'workspace', id: payload.workspaceId });
+  const source = draft.require({ kind: 'placement', id: payload.sourcePlacementId, workspaceId: payload.workspaceId });
+  const target = draft.require({ kind: 'placement', id: payload.targetPlacementId, workspaceId: payload.workspaceId });
+  if (source.kind !== 'placement' || target.kind !== 'placement') fail('conceptual-placement-missing', 'Ambos extremos deben estar representados en el workspace.', undefined, 'RESOURCE_MISSING');
+  const sourceEntity = draft.require({ kind: 'entity', id: source.value.entityId });
+  const targetEntity = draft.require({ kind: 'entity', id: target.value.entityId });
+  if (sourceEntity.kind !== 'entity' || !isConceptualEntity(sourceEntity.value) || targetEntity.kind !== 'entity' || !isConceptualEntity(targetEntity.value)) {
+    fail('conceptual-endpoint-required', 'Las relaciones de este diagrama solo conectan nodos conceptuales.');
+  }
+  const properties = { [CONCEPTUAL_LABEL_KEY]: payload.label.trim(), ...(payload.kind ? { [CONCEPTUAL_KIND_KEY]: payload.kind } : {}) };
+  draft.add({ kind: 'relation', value: { schemaVersion: '1.0.0', id: payload.relationId, revision: 1, extensions: {}, type: CONCEPTUAL_RELATION_TYPE,
+    typeVersion: CONCEPTUAL_RELATION_VERSION, source: { entityId: source.value.entityId }, target: { entityId: target.value.entityId }, properties } });
+  draft.add({ kind: 'relation-view', workspaceId: payload.workspaceId, value: { schemaVersion: '1.0.0', id: payload.relationViewId, revision: 1,
+    extensions: {}, relationId: payload.relationId, sourcePlacementId: source.value.id, targetPlacementId: target.value.id, waypoints: [], style: {} } });
+}
+
+function updateConceptualRelation(draft: Draft, payload: Payloads['a3.conceptual.update-relation']): void {
+  if (!payload || Object.keys(payload).some((key) => !['workspaceId', 'relationId', 'label', 'kind'].includes(key)) ||
+      !UUID_PATTERN.test(payload.workspaceId) || !UUID_PATTERN.test(payload.relationId) ||
+      payload.label === undefined && payload.kind === undefined ||
+      payload.label !== undefined && (typeof payload.label !== 'string' || !payload.label.trim() || payload.label.trim().length > 300) ||
+      payload.kind !== undefined && payload.kind !== null && !isConceptualRelationKind(payload.kind)) {
+    fail('invalid-conceptual-relation-patch', 'El inspector solo admite una etiqueta y una categoría conceptual válidas.');
+  }
+  draft.require({ kind: 'workspace', id: payload.workspaceId });
+  const ref: DocumentRef = { kind: 'relation', id: payload.relationId };
+  const record = draft.require(ref);
+  if (record.kind !== 'relation' || !isConceptualRelation(record.value) || !draft.snapshot.records.some((item) => item.kind === 'relation-view' &&
+      item.workspaceId === payload.workspaceId && item.value.relationId === payload.relationId)) {
+    fail('conceptual-relation-missing', 'La relación conceptual ya no está visible en este workspace.', ref, 'RESOURCE_MISSING');
+  }
+  draft.edit(ref, 'relation', (value) => {
+    if (payload.label !== undefined) value.properties[CONCEPTUAL_LABEL_KEY] = payload.label.trim();
+    if (payload.kind === null) delete value.properties[CONCEPTUAL_KIND_KEY];
+    else if (payload.kind !== undefined) value.properties[CONCEPTUAL_KIND_KEY] = payload.kind;
+  });
+}
+
+function deleteConceptualRelation(draft: Draft, payload: Payloads['a3.conceptual.delete-relation']): void {
+  if (!payload || Object.keys(payload).some((key) => !['workspaceId', 'relationId'].includes(key)) ||
+      !UUID_PATTERN.test(payload.workspaceId) || !UUID_PATTERN.test(payload.relationId)) fail('invalid-conceptual-relation-delete', 'La selección de relación no es válida.');
+  draft.require({ kind: 'workspace', id: payload.workspaceId });
+  const ref: DocumentRef = { kind: 'relation', id: payload.relationId };
+  const record = draft.require(ref);
+  if (record.kind !== 'relation' || !isConceptualRelation(record.value) || !draft.snapshot.records.some((item) => item.kind === 'relation-view' &&
+      item.workspaceId.toLowerCase() === payload.workspaceId.toLowerCase() && item.value.relationId.toLowerCase() === payload.relationId.toLowerCase())) {
+    fail('conceptual-relation-missing', 'La relación conceptual ya no está disponible en este workspace.', ref, 'RESOURCE_MISSING');
+  }
+  deleteRecord(draft, { ref });
+}
+
 function moveGroup(draft: Draft, ref: DocumentRef, offset: { x: number; y: number }): void {
   if (!Number.isFinite(offset.x) || !Number.isFinite(offset.y)) fail('invalid-group-offset', 'El desplazamiento del grupo debe ser finito.', ref);
   const visited = new Set<string>();
@@ -530,6 +623,11 @@ function apply(draft: Draft): void {
       draft.add(request.payload.record);
       break;
     case 'a3.core.create-content-node': createContentNode(draft, request.payload); break;
+    case 'a3.conceptual.create-node': createConceptualNode(draft, request.payload); break;
+    case 'a3.conceptual.update-node': updateConceptualNode(draft, request.payload); break;
+    case 'a3.conceptual.create-relation': createConceptualRelation(draft, request.payload); break;
+    case 'a3.conceptual.update-relation': updateConceptualRelation(draft, request.payload); break;
+    case 'a3.conceptual.delete-relation': deleteConceptualRelation(draft, request.payload); break;
     case 'a3.core.set-workspace-viewport': {
       const { viewport, workspaceId } = request.payload;
       if (!isObject(viewport) || Object.keys(viewport).some((key) => !['x', 'y', 'zoom'].includes(key)) ||

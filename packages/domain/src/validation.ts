@@ -3,6 +3,7 @@ import { schemas } from '../.generated/schemas.js';
 import { canonical, diagnostic, indexSnapshot, isJson, isObject, refKey, refOf, sameId } from './data.js';
 import type { Diagnostic, DomainRecord, DomainSnapshot, Entity, Endpoint, EndpointRule, JsonValue, NodeType, Relation, RelationType, TypeRegistry, ValueType } from './models.js';
 import { resolveValidatedVariable } from './variables.js';
+import { conceptualNodeTypeDefinition, conceptualRelationType } from './conceptual-diagrams.js';
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, coerceTypes: false, useDefaults: false, removeAdditional: false });
 ajv.addFormat('utc-date-time', (value: string) => {
@@ -91,8 +92,11 @@ export function validateRecord(record: unknown): Diagnostic[] {
 
 export const matchesValueType = (value: JsonValue, type: ValueType): boolean => type === 'json' || typeof value === type;
 const typeKey = (value: { name: string; version: string }): string => `${value.name}@${value.version}`;
-export const findNodeType = (registry: TypeRegistry, entity: Entity): NodeType | undefined => registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
-export const findRelationType = (registry: TypeRegistry, relation: Relation): RelationType | undefined => registry.relationTypes.find((d) => typeKey(d) === `${relation.type}@${relation.typeVersion}`);
+export const findNodeType = (registry: TypeRegistry, entity: Entity): NodeType | undefined =>
+  (entity.typeVersion === '1.0.0' ? conceptualNodeTypeDefinition(entity.type) : undefined) ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
+export const findRelationType = (registry: TypeRegistry, relation: Relation): RelationType | undefined =>
+  (relation.type === 'a3.conceptual.relationship' && relation.typeVersion === '1.0.0' ? conceptualRelationType() : undefined) ??
+  registry.relationTypes.find((d) => typeKey(d) === `${relation.type}@${relation.typeVersion}`);
 const matchesEntity = (entity: Entity, rule: EndpointRule): boolean => rule.entityTypes === '*' || rule.entityTypes.includes(entity.type);
 const endpointKey = (endpoint: Endpoint): string => endpoint.entityId.toLowerCase() + ':' + (endpoint.portId ?? '');
 

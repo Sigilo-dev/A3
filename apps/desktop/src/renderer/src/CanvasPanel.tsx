@@ -10,11 +10,13 @@ import type { CodeEditorTarget } from './CodeEditor';
 import { ContextMenu, menuAt, useMenuPermissions, type MenuState, type ContextAction } from './ContextMenu';
 import { matchesShortcut, useShortcuts } from './shortcuts';
 import { useTextPrompt } from './TextInputDialog';
+import { ConceptualInspector } from './ConceptualInspector';
 const CodeOpenContext = createContext<((target: CodeEditorTarget) => void) | undefined>(undefined);
 const ContentVersionContext = createContext(0);
 import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffset, panViewport, renderOrigin, screenToWorld, toVisualViewport, wheelViewport, worldToScreen, zoomAt, type WorldViewport } from '../../shared/world-viewport';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, type ContentNodeKind } from '@a3/domain/content-nodes';
-import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
+import { conceptualNodeKind } from '@a3/domain/conceptual-diagrams';
+import type { ConceptualNodeKind, ConceptualRelationKind, Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
 
 // Navigation reference only: no Entity, Placement, drawing or React Flow node is created.
 const reference = { x: 120, y: 110, width: 550, height: 220 };
@@ -731,6 +733,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
   }
   const activeGroup = selection.groupIds.length === 1 ? workspace?.groups.find((group) => group.id === selection.groupIds[0]) : workspace?.groups.find((group) => group.id === selectedGroupId);
   const selectedPlacement = selection.nodeIds.length === 1 ? workspace?.placements.find((item) => item.id === selection.nodeIds[0]) : undefined;
+  const selectedConceptualEntity = selectedPlacement ? workspace?.entities.find((item) => item.id === selectedPlacement.entityId && conceptualNodeKind(item.type, item.typeVersion) !== undefined) : undefined;
   const selectedEdge = selection.edgeIds.length === 1 && selection.nodeIds.length === 0 && selection.drawingIds.length === 0 ? workspace?.visualEdges.find((item) => item.id === selection.edgeIds[0]) : undefined;
   const selectedDrawing = selection.drawingIds.length === 1 && selection.nodeIds.length === 0 && selection.edgeIds.length === 0
     ? workspace?.drawings.find((item) => item.id === selection.drawingIds[0]) : undefined;
@@ -899,6 +902,33 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
       if (context === 'stroke') add('delete', 'Borrar trazos seleccionados', () => { for (const id of selection.drawingIds) void deleteDrawing(id); }, 'delete', !workspace?.canDeleteDrawings ? 'delete: el broker no permite borrar trazos.' : '');
     }
     return actions;
+  }
+  function addConceptualNode(kind: ConceptualNodeKind, title: string): void {
+    const rect = hostRef.current?.getBoundingClientRect(), latest = workspaceRef.current;
+    if (!rect || !latest) return;
+    const center = screenToWorld({ x: rect.width / 2, y: rect.height / 2 }, current.current), ordinal = latest.placements.length;
+    const position = { x: center.x + ordinal % 5 * 36, y: center.y + Math.floor(ordinal / 5) * 36 };
+    const before = new Set(latest.placements.map((item) => item.id));
+    void mutateCanvas((state) => ({ action: 'create-conceptual-node', sessionId, workspaceId, expectedWorkspaceRevision: state.revision, kind, title, position }), 'Nodo conceptual creado')
+      .then((ok) => {
+        const next = workspaceRef.current; if (!ok || !next) return;
+        const created = next.placements.find((item) => !before.has(item.id)); if (!created) return;
+        setSelection({ nodeIds: [created.id], groupIds: [], edgeIds: [], drawingIds: [] });
+        setNodes((previous) => previous.map((node) => ({ ...node, selected: node.id === created.id })));
+      });
+  }
+  function updateConceptualNode(entityId: string, expectedRevision: number, patch: { title?: string; kind?: ConceptualNodeKind }): void {
+    void mutateCanvas(() => ({ action: 'update-conceptual-node', sessionId, workspaceId, entityId, expectedRevision, patch }), 'Nodo conceptual guardado');
+  }
+  function createConceptualRelation(sourcePlacementId: string, targetPlacementId: string, label: string, kind?: ConceptualRelationKind): void {
+    void mutateCanvas((state) => ({ action: 'create-conceptual-relation', sessionId, workspaceId, expectedWorkspaceRevision: state.revision,
+      sourcePlacementId, targetPlacementId, label, ...(kind ? { kind } : {}) }), 'Relación semántica creada');
+  }
+  function updateConceptualRelation(relationId: string, expectedRevision: number, patch: { label?: string; kind?: ConceptualRelationKind | null }): void {
+    void mutateCanvas(() => ({ action: 'update-conceptual-relation', sessionId, workspaceId, relationId, expectedRevision, patch }), 'Relación semántica guardada');
+  }
+  function deleteConceptualRelation(relationId: string, expectedRevision: number): void {
+    void mutateCanvas(() => ({ action: 'delete-conceptual-relation', sessionId, workspaceId, relationId, expectedRevision }), 'Relación semántica eliminada');
   }
   const visual = toVisualViewport(viewport, origin);
   const topLeft = screenToWorld({ x: 0, y: 0 }, viewport);
@@ -1123,7 +1153,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
         }}
         onSelectionChange={handleSelectionChange} onNodeDragStop={(_, _node, moved) => moveNodes(moved)}
         onConnect={(connection) => createVisualEdge(connection.source, connection.target)}
-        onReconnect={(edge, connection) => updateVisualEdge(edge.id, { sourcePlacementId: connection.source, targetPlacementId: connection.target })}
+        onReconnect={(edge, connection) => { if (edge.type === 'a3Visual') updateVisualEdge(edge.id, { sourcePlacementId: connection.source, targetPlacementId: connection.target }); }}
         ariaLabelConfig={{ 'node.a11yDescription.default': 'Pulsa Enter para seleccionar. Usa Tab para navegar y flechas para mover la selección.',
           'edge.a11yDescription.default': 'Línea visual. Pulsa Enter para seleccionar y Supr para eliminar si tienes permiso.' }}
         onMoveEnd={(event) => { if (event) rebase(current.current); }}>
@@ -1145,6 +1175,9 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     <div className="canvas-status"><span data-canvas-status role="status">{status}</span><span data-canvas-node-count>{visiblePlacementCount} representaciones · Origen visible: {topLeft.x.toLocaleString('es', { maximumFractionDigits: 2 })}, {topLeft.y.toLocaleString('es', { maximumFractionDigits: 2 })}</span></div>
     {workspace && <CanvasEdgeEditor workspace={workspace} edge={selectedEdge} tool={tool} onCreate={createVisualEdge} onUpdate={updateVisualEdge} onDelete={(id) => void deleteVisualEdge(id)}
       onRequestDeletePermission={() => void mutateCanvas(() => ({ action: 'approve-edge-delete', sessionId, workspaceId }))} />}
+    {workspace && <ConceptualInspector workspace={workspace} entity={selectedConceptualEntity} placementId={selectedPlacement?.id}
+      onCreateNode={addConceptualNode} onUpdateNode={updateConceptualNode} onCreateRelation={createConceptualRelation}
+      onUpdateRelation={updateConceptualRelation} onDeleteRelation={deleteConceptualRelation} />}
     {showReference && <p className="canvas-help">La referencia es un fixture aislado y no se añade al proyecto.</p>}
     {menu && <ContextMenu menu={{ ...menu, actions: canvasActions() }} permissions={permissions} onClose={() => setMenu(null)} />}{promptDialog}
   </>;
