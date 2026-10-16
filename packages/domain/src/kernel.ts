@@ -8,12 +8,13 @@ import { applyErChange } from './er-commands.js';
 import { erData, erTable, remapErReferences } from './er.js';
 import { MERMAID_SOURCE_TYPE } from './mermaid-source.js';
 import { PLANTUML_SOURCE_TYPE } from './plantuml-source.js';
+import { STRUCTURIZR_DSL_SOURCE_TYPE, STRUCTURIZR_JSON_SOURCE_TYPE } from './structurizr-source.js';
 import { createIotEntity, iotCatalogEntry, validCreateIotComponent } from './iot.js';
 import { createIotCircuitEntity, validIotCircuitOperation, IOT_CIRCUIT_KEY, IOT_CIRCUIT_TYPE, IOT_CIRCUIT_VERSION } from './iot-circuit.js';
 import { c4Category, c4Data } from './c4.js';
 import { CONCEPTUAL_KIND_KEY, CONCEPTUAL_LABEL_KEY, CONCEPTUAL_RELATION_TYPE, CONCEPTUAL_RELATION_VERSION,
   conceptualNodeDefinition, isConceptualEntity, isConceptualNodeKind, isConceptualRelation, isConceptualRelationKind } from './conceptual-diagrams.js';
-import type { CommandContext, ContentEffect, Diagnostic, DocumentKinds, DocumentRef, DomainCommand, DomainRecord, DomainSnapshot, DuplicateSelection, ExpectedRevision, NodeTypeChange, Outcome, Payloads, PreparedPlan, RecordChange, RecordKind, ReversibleCanvasCommand, Resource, ResourceLocation, TypeRegistry } from './models.js';
+import type { CommandContext, ContentEffect, Diagnostic, DocumentKinds, DocumentRef, DomainCommand, DomainRecord, DomainSnapshot, DuplicateSelection, ExpectedRevision, JsonValue, NodeTypeChange, Outcome, Payloads, PreparedPlan, RecordChange, RecordKind, ReversibleCanvasCommand, Resource, ResourceLocation, TypeRegistry } from './models.js';
 
 class DomainFault extends Error {
   constructor(readonly diagnostic: Diagnostic) { super(diagnostic.message); }
@@ -27,6 +28,7 @@ const commands = new Set(['a3.core.create-project', 'a3.core.create-document', '
   'a3.er.change',
   'a3.mermaid.import',
   'a3.plantuml.import',
+  'a3.structurizr.import',
   'a3.iot.create-component',
   'a3.iot.create-circuit', 'a3.iot.change-circuit',
   'a3.core.create-content-node',
@@ -248,7 +250,7 @@ function createContentNode(draft: Draft, payload: Payloads['a3.core.create-conte
   const resourceId = payload.source?.resourceId;
   if (typeof resourceId !== 'string' || !UUID_PATTERN.test(resourceId)) fail('invalid-content-resource', 'El nodo requiere un Resource ID válido.');
   let newResource: DomainRecord | undefined;
-  if (payload.source.kind === 'existing-resource' && (definition.source !== 'inline' || payload.kind === 'mermaid')) {
+  if (payload.source.kind === 'existing-resource' && (definition.source !== 'inline' || ['mermaid', 'plantuml', 'structurizr-dsl', 'structurizr-json'].includes(payload.kind))) {
     const sourceResource = draft.require({ kind: 'resource', id: resourceId });
     if (sourceResource.kind !== 'resource') fail('invalid-content-resource', 'El recurso elegido no está disponible.');
   } else if (definition.source === 'inline') {
@@ -735,12 +737,105 @@ function applyDiagramImport(draft: Draft, payload: Payloads['a3.mermaid.import']
   });
 }
 
+function applyStructurizrImport(draft: Draft, payload: Payloads['a3.structurizr.import']): void {
+  const code = 'structurizr-import';
+  if (!isObject(payload) || Object.keys(payload).some((key) => !['workspaceId', 'sourceWorkspaceId', 'sourceEntityId', 'expectedSourceRevision', 'sourceResourceId', 'sourceHash', 'format', 'authority', 'mode', 'mapping', 'records'].includes(key)) ||
+      !UUID_PATTERN.test(payload.workspaceId) || !UUID_PATTERN.test(payload.sourceWorkspaceId) || !UUID_PATTERN.test(payload.sourceEntityId) || !UUID_PATTERN.test(payload.sourceResourceId) ||
+      !Number.isSafeInteger(payload.expectedSourceRevision) || !/^[a-f0-9]{64}$/.test(payload.sourceHash) ||
+      !['structurizr-dsl', 'structurizr-json'].includes(payload.format) || !['source', 'a3-model'].includes(payload.authority) || !['new', 'update'].includes(payload.mode) ||
+      !isObject(payload.mapping) || !Object.keys(payload.mapping).length || Object.keys(payload.mapping).length > 4096 ||
+      Object.entries(payload.mapping).some(([key, id]) => !key || key.length > 400 || typeof id !== 'string' || !UUID_PATTERN.test(id)) ||
+      !Array.isArray(payload.records) || !payload.records.length || payload.records.length > 1024) {
+    fail(`${code}-invalid`, 'La propuesta Structurizr contiene identidades, formato o registros no válidos.');
+  }
+  const sourceRef: DocumentRef = { kind: 'entity', id: payload.sourceEntityId };
+  const source = draft.require(sourceRef);
+  const sourceType = payload.format === 'structurizr-dsl' ? STRUCTURIZR_DSL_SOURCE_TYPE : STRUCTURIZR_JSON_SOURCE_TYPE;
+  if (source.kind !== 'entity' || source.value.type !== sourceType || source.value.typeVersion !== '1.0.0' ||
+      !sameId(source.value.contentResourceId ?? '', payload.sourceResourceId) || source.value.revision !== payload.expectedSourceRevision ||
+      source.value.properties['a3.diagram.format'] !== payload.format || !['source', 'a3-model'].includes(String(source.value.properties['a3.diagram.authority']))) {
+    fail(`${code}-source-conflict`, 'La fuente cambió o ya no es un workspace Structurizr compatible.', sourceRef, 'REVISION_CONFLICT');
+  }
+  draft.require({ kind: 'workspace', id: payload.sourceWorkspaceId });
+  draft.requireHash(payload.sourceResourceId);
+  if (draft.context.contentHashes[payload.sourceResourceId] !== payload.sourceHash) fail(`${code}-source-hash-conflict`, 'El workspace Structurizr cambió después de preparar la conversión.', { kind: 'resource', id: payload.sourceResourceId }, 'REVISION_CONFLICT');
+  const previous = source.value.properties['a3.diagram.import'];
+  const previousCompatible = isObject(previous) && previous.format === payload.format && previous.schemaVersion === '1.0.0' && isObject(previous.mapping);
+  if (previous !== undefined && !previousCompatible) fail(`${code}-format-conflict`, 'La importación existente usa otro formato o versión; conserva ambas y revisa el origen.', sourceRef, 'REVISION_CONFLICT');
+  if (payload.mode === 'new' && previous !== undefined) fail(`${code}-exists`, 'Esta fuente ya se importó; prepara una actualización con su mapa y diferencias.', sourceRef, 'REVISION_CONFLICT');
+  if (payload.mode === 'update' && !previousCompatible) fail(`${code}-mapping-required`, 'No existe un mapa verificable para actualizar esta importación.', sourceRef);
+  const previousMapping = previousCompatible ? previous.mapping as Record<string, unknown> : {};
+  if (payload.mode === 'update' && Object.entries(previousMapping).some(([key, id]) => payload.mapping[key] !== id)) {
+    fail(`${code}-mapping-conflict`, 'El mapa Structurizr cambió desde la vista previa; vuelve a preparar el diff.', sourceRef, 'REVISION_CONFLICT');
+  }
+  const mappingIds = new Set(Object.values(payload.mapping).map((id) => id.toLowerCase()));
+  if (mappingIds.size !== Object.keys(payload.mapping).length) fail(`${code}-id-collision`, 'El mapa asigna un ID a más de un elemento de Structurizr.');
+  const importedElements = new Set<string>(), importedRelations = new Set<string>(), importedPlacements = new Set<string>(), importedWorkspaces = new Set<string>(), importedDiagrams = new Set<string>();
+  const seen = new Set<string>(), seenMappingKeys = new Set<string>();
+  for (const candidate of payload.records as unknown[]) {
+    if (!isObject(candidate) || !['workspace', 'entity', 'relation', 'placement', 'relation-view'].includes(String(candidate.kind)) || validateRecord(candidate).length) {
+      fail(`${code}-record-invalid`, 'La conversión solo acepta workspaces, vistas C4, elementos, relaciones y representaciones válidos.');
+    }
+    const record = candidate as unknown as DomainRecord;
+    const marker = record.value.extensions['a3.structurizr.import'];
+    const markerObject = isObject(marker) ? marker : undefined;
+    const sourceKey = markerObject && typeof markerObject.sourceKey === 'string' ? markerObject.sourceKey : '';
+    const prefix = record.kind === 'workspace' ? 'workspace' : record.kind === 'relation' ? 'relation' : record.kind === 'placement' ? 'placement' :
+      record.kind === 'relation-view' ? 'relationView' : record.value.type === 'a3.c4.diagram' ? 'diagram' : 'entity';
+    const mappingKey = `${prefix}:${sourceKey}`;
+    const ref = refOf(record), key = refKey(ref), id = String(record.value.id), mapped = payload.mapping[mappingKey];
+    if (seen.has(key) || seenMappingKeys.has(mappingKey) || !mappingIds.has(id.toLowerCase()) || typeof mapped !== 'string' || !sameId(mapped, id) ||
+        !markerObject || markerObject.sourceEntityId !== payload.sourceEntityId || !sourceKey) {
+      fail(`${code}-record-invalid`, 'Un registro no coincide con el mapa estable y la procedencia Structurizr.', ref);
+    }
+    seen.add(key); seenMappingKeys.add(mappingKey);
+    if (record.kind === 'entity' && record.value.type !== 'a3.c4.diagram') {
+      if (!c4Category(record.value, draft.registry)) fail(`${code}-element-category`, 'El elemento importado no tiene una categoría C4 nativa reconocida.', ref);
+      importedElements.add(id.toLowerCase());
+    } else if (record.kind === 'entity') {
+      if (record.value.typeVersion !== '1.0.0' || record.value.properties['a3.diagram.authority'] !== 'a3-model' || !isObject(record.value.properties['a3.c4.view'])) fail(`${code}-diagram-invalid`, 'La vista importada requiere un modelo C4 A3 compatible.', ref);
+      importedDiagrams.add(id.toLowerCase());
+    } else if (record.kind === 'relation') {
+      if (record.value.type !== 'a3.c4.relationship' || record.value.typeVersion !== '1.0.0') fail(`${code}-relation-invalid`, 'La relación debe usar el tipo C4 A3.', ref);
+      importedRelations.add(id.toLowerCase());
+    } else if (record.kind === 'workspace') importedWorkspaces.add(id.toLowerCase());
+    else if (record.kind === 'placement') importedPlacements.add(id.toLowerCase());
+    const current = draft.currentIndex.get(key);
+    const collision = draft.snapshot.records.find((item) => String(item.value.id).toLowerCase() === id.toLowerCase() && refKey(refOf(item)) !== key);
+    if (collision) fail(`${code}-id-conflict`, 'El ID propuesto ya pertenece a otro documento del proyecto.', ref, 'REVISION_CONFLICT');
+    if (current) {
+      const oldMarker = current.value.extensions['a3.structurizr.import'];
+      if (payload.mode !== 'update' || !isObject(oldMarker) || oldMarker.sourceEntityId !== payload.sourceEntityId || oldMarker.sourceKey !== sourceKey) {
+        fail(`${code}-id-conflict`, 'El ID pertenece a un documento que no coincide con este mapa Structurizr.', ref, 'REVISION_CONFLICT');
+      }
+      const merged = copy(record) as DomainRecord;
+      merged.value = { ...copy(current.value), ...merged.value, revision: Number(current.value.revision) + 1,
+        extensions: { ...copy(current.value.extensions), ...copy(record.value.extensions) } } as never;
+      draft.restore(merged, Number(current.value.revision) + 1);
+    } else draft.add(record);
+  }
+  if (!importedElements.size || !importedPlacements.size ||
+      ![...importedWorkspaces].every((id) => payload.records.some((record) => record.kind === 'entity' && record.value.type === 'a3.c4.diagram' &&
+        isObject(record.value.properties['a3.c4.view']) && String(record.value.properties['a3.c4.view'].workspaceId).toLowerCase() === id)) ||
+      ![...importedDiagrams].every((id) => payload.records.some((record) => record.kind === 'workspace' && String(record.value.properties['a3.c4.diagram-id']).toLowerCase() === id)) ||
+      payload.records.some((record) => record.kind === 'placement' && !importedElements.has(record.value.entityId.toLowerCase()) ||
+        record.kind === 'relation' && (!importedElements.has(record.value.source.entityId.toLowerCase()) || !importedElements.has(record.value.target.entityId.toLowerCase())) ||
+        record.kind === 'relation-view' && (!importedRelations.has(record.value.relationId.toLowerCase()) || !importedPlacements.has(record.value.sourcePlacementId.toLowerCase()) || !importedPlacements.has(record.value.targetPlacementId.toLowerCase())))) {
+    fail(`${code}-references-invalid`, 'La importación contiene una vista, relación o representación con referencias no resueltas.', sourceRef);
+  }
+  draft.edit(sourceRef, 'entity', (value) => {
+    value.properties['a3.diagram.authority'] = payload.authority;
+    value.properties['a3.diagram.import'] = { schemaVersion: '1.0.0', format: payload.format, mapping: copy(payload.mapping) } as unknown as JsonValue;
+  });
+}
+
 function apply(draft: Draft): void {
   const request = draft.request;
   switch (request.command) {
     case 'a3.er.change': applyErChange(draft, request.payload, fail); break;
     case 'a3.mermaid.import': applyDiagramImport(draft, request.payload, 'mermaid'); break;
     case 'a3.plantuml.import': applyDiagramImport(draft, request.payload, 'plantuml'); break;
+    case 'a3.structurizr.import': applyStructurizrImport(draft, request.payload); break;
     case 'a3.iot.create-component': {
       const payload = request.payload;
       if (!validCreateIotComponent(payload)) fail('iot-component-command-invalid', 'La inserción IoT requiere una pieza identificada, posición finita e IDs válidos.');

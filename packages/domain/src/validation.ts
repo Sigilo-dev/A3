@@ -10,6 +10,7 @@ import { erNodeDefinition, erRelationDefinition, validateErSnapshot } from './er
 import { iotNodeDefinition, validateIotSnapshot } from './iot.js';
 import { IOT_CIRCUIT_TYPE, IOT_CIRCUIT_VERSION, validateIotCircuitSnapshot } from './iot-circuit.js';
 import { MERMAID_SOURCE_TYPE } from './mermaid-source.js';
+import { isStructurizrSource } from './structurizr-source.js';
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, coerceTypes: false, useDefaults: false, removeAdditional: false });
 ajv.addFormat('utc-date-time', (value: string) => {
@@ -111,7 +112,10 @@ export const findNodeType = (registry: TypeRegistry, entity: Entity): NodeType |
   const mermaid = entity.type === MERMAID_SOURCE_TYPE && entity.typeVersion === '1.0.0'
     ? { name: MERMAID_SOURCE_TYPE, version: '1.0.0', packageId: 'a3.builtin.mermaid', fields: [], ports: [], bindingFields: [], extensions: {} }
     : undefined;
-  return builtin ?? circuit ?? mermaid ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
+  const structurizr = isStructurizrSource(entity.type) && entity.typeVersion === '1.0.0'
+    ? { name: entity.type, version: '1.0.0', packageId: 'a3.builtin.structurizr', fields: [], ports: [], bindingFields: [], extensions: {} }
+    : undefined;
+  return builtin ?? circuit ?? mermaid ?? structurizr ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
 };
 export const findRelationType = (registry: TypeRegistry, relation: Relation): RelationType | undefined =>
   (relation.type === 'a3.conceptual.relationship' && relation.typeVersion === '1.0.0' ? conceptualRelationType() : undefined) ??

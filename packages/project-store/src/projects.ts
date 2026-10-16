@@ -10,10 +10,12 @@ import { MERMAID_SOURCE_TYPE, mermaidSourceProperties } from '@a3/domain/mermaid
 import { PLANTUML_SOURCE_LIMIT, PLANTUML_SOURCE_TYPE, plantUmlSourceProperties, supportsPlantUmlSourceRenderer } from '@a3/domain/plantuml-source';
 import { buildMermaidImportRecords, parseMermaidImport, requiredMermaidMapping, type MermaidImportGraph, type MermaidImportIdentityMap, type MermaidImportIssue } from '@a3/domain/mermaid-import';
 import { parsePlantUmlClassImport } from '@a3/domain/plantuml-import';
+import { parseStructurizrDslImport, parseStructurizrJsonImport, type StructurizrImportGraph, type StructurizrImportIssue } from '@a3/domain/structurizr-import';
+import { STRUCTURIZR_DSL_SOURCE_TYPE, STRUCTURIZR_JSON_SOURCE_TYPE, STRUCTURIZR_SOURCE_LIMIT, structurizrSourceProperties, type StructurizrSourceFormat } from '@a3/domain/structurizr-source';
 import { projectErCanvas, type CanvasErState } from './er-canvas.js';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
-import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, isIotComponent, iotCatalogEntry, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
+import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, isIotComponent, iotCatalogEntry, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type JsonValue, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
 import { initialPageView, insertFocusTab, readWorkspaceSession, writeWorkspaceSession, validCanvasView, validPageView, type WorkspaceSession, type WorkspaceSessionAction, type PageReference } from './workspace-session.js';
@@ -108,6 +110,13 @@ export interface CanvasMermaidImportPreview {
   mapping: Readonly<MermaidImportIdentityMap>; canApply: boolean; message: string;
 }
 export type CanvasPlantUmlImportPreview = Omit<CanvasMermaidImportPreview, 'family'> & { family: 'class' | null };
+export interface CanvasStructurizrImportView { key: string; kind: string; title: string; workspaceId: string; elements: number; relations: number; action: 'create' | 'update' | 'unchanged'; }
+export interface CanvasStructurizrImportPreview {
+  token: string; sourceEntityId: string; sourceRevision: number; resourceId: string; format: StructurizrSourceFormat; mode: 'new' | 'update';
+  sourceHash: string; authority: 'source' | 'a3-model'; converted: readonly CanvasMermaidImportItem[]; views: readonly CanvasStructurizrImportView[];
+  unconverted: readonly StructurizrImportIssue[]; missingResources: readonly StructurizrImportIssue[]; idConflicts: readonly StructurizrImportIssue[];
+  staleSourceKeys: readonly string[]; mapping: Readonly<Record<string, string>>; canApply: boolean; message: string;
+}
 export interface MarkdownDocument {
   entityId: string; entityRevision: number; resourceId: string; revision: number; hash: string; content: string;
   canWrite: boolean; readOnlyReason: string | null; unsupported: readonly string[];
@@ -152,6 +161,74 @@ interface MermaidImportPreviewBinding {
 interface PlantUmlImportPreviewBinding {
   sessionId: string; workspaceId: string; sourceEntityId: string; sourceRevision: number; resourceId: string; sourceHash: string;
   family: 'class'; mode: 'new' | 'update'; graph: MermaidImportGraph; mapping: MermaidImportIdentityMap; records: DomainRecord[]; expiresAt: number;
+}
+interface StructurizrImportPreviewBinding {
+  sessionId: string; workspaceId: string; sourceEntityId: string; sourceRevision: number; resourceId: string; sourceHash: string;
+  format: StructurizrSourceFormat; mode: 'new' | 'update'; graph: StructurizrImportGraph; mapping: Record<string, string>;
+  records: DomainRecord[]; views: CanvasStructurizrImportView[]; expiresAt: number;
+}
+function structurizrMappingKeys(graph: StructurizrImportGraph): string[] {
+  const keys = graph.elements.map((item) => `entity:${item.key}`);
+  const relations = new Set(graph.views.flatMap((view) => view.relations));
+  keys.push(...graph.relations.filter((item) => relations.has(item.key)).map((item) => `relation:${item.key}`));
+  for (const view of graph.views) {
+    keys.push(`workspace:${view.key}`, `diagram:${view.key}`);
+    keys.push(...view.elements.map((element) => `placement:${view.key}|${element}`));
+    keys.push(...view.relations.map((relation) => `relationView:${view.key}|${relation}`));
+  }
+  return [...new Set(keys)];
+}
+function buildStructurizrImportRecords(graph: StructurizrImportGraph, sourceEntityId: string, mapping: Record<string, string>): DomainRecord[] {
+  const marker = (sourceKey: string): ExtensionMap => ({ 'a3.structurizr.import': { sourceEntityId, sourceKey } });
+  const entityId = (key: string): string => {
+    const value = mapping[`entity:${key}`]; if (!value) throw new Error(`No hay ID A3 para ${key}.`); return value;
+  };
+  const relationKeys = new Set(graph.views.flatMap((view) => view.relations));
+  const records: DomainRecord[] = graph.elements.map((item) => {
+    const data: Record<string, unknown> = { description: item.description, technology: item.technology, url: item.url, external: item.external };
+    if (item.parentKey && mapping[`entity:${item.parentKey}`]) data.parentId = mapping[`entity:${item.parentKey}`];
+    if (item.instanceOfKey && mapping[`entity:${item.instanceOfKey}`]) data.instanceOfId = mapping[`entity:${item.instanceOfKey}`];
+    if (item.environment) data.environment = item.environment;
+    return { kind: 'entity', value: { schemaVersion: '1.0.0', id: entityId(item.key), revision: 1, type: `a3.c4.${item.category}`,
+      typeVersion: '1.0.0', title: item.title, tags: [], properties: { 'a3.c4': data as JsonValue }, ports: [], bindings: {}, extensions: marker(item.key) } };
+  });
+  for (const item of graph.relations.filter((relation) => relationKeys.has(relation.key))) {
+    const id = mapping[`relation:${item.key}`]; if (!id) throw new Error(`No hay ID A3 para ${item.key}.`);
+    records.push({ kind: 'relation', value: { schemaVersion: '1.0.0', id, revision: 1, type: 'a3.c4.relationship', typeVersion: '1.0.0',
+      source: { entityId: entityId(item.sourceKey) }, target: { entityId: entityId(item.targetKey) },
+      properties: { 'a3.c4': { description: item.description || 'relates to', protocol: item.technology } }, extensions: marker(item.key) } });
+  }
+  for (const view of graph.views) {
+    const workspaceId = mapping[`workspace:${view.key}`], diagramId = mapping[`diagram:${view.key}`];
+    if (!workspaceId || !diagramId) throw new Error(`No hay ID A3 para la vista ${view.key}.`);
+    const viewData: Record<string, unknown> = { version: '1.0.0', kind: view.kind, workspaceId, steps: [] };
+    if (view.scopeKey && mapping[`entity:${view.scopeKey}`]) viewData.scopeEntityId = mapping[`entity:${view.scopeKey}`];
+    if (view.environment) viewData.environment = view.environment;
+    records.push({ kind: 'workspace', value: { schemaVersion: '1.0.0', id: workspaceId, revision: 1,
+      name: `${graph.name || 'Structurizr'} · ${view.title}`.slice(0, 120), viewport: { x: 0, y: 0, zoom: 1 },
+      properties: { 'a3.c4.diagram-id': diagramId }, extensions: marker(view.key) } });
+    records.push({ kind: 'entity', value: { schemaVersion: '1.0.0', id: diagramId, revision: 1, type: 'a3.c4.diagram', typeVersion: '1.0.0',
+      title: view.title, tags: [], properties: { 'a3.diagram.authority': 'a3-model', 'a3.c4.view': viewData as JsonValue }, ports: [], bindings: {}, extensions: marker(view.key) } });
+    const placementIds = new Map<string, string>();
+    view.elements.forEach((key, index) => {
+      const placementId = mapping[`placement:${view.key}|${key}`]; if (!placementId) throw new Error(`No hay placement A3 para ${key} en ${view.key}.`);
+      placementIds.set(key, placementId);
+      const sourcePosition = view.positions[key];
+      const position = sourcePosition ?? { x: (index % 4) * 360, y: Math.floor(index / 4) * 260 };
+      records.push({ kind: 'placement', workspaceId, value: { schemaVersion: '1.0.0', id: placementId, revision: 1, entityId: entityId(key),
+        position: { x: Math.max(-999_999, Math.min(999_999, position.x)), y: Math.max(-999_999, Math.min(999_999, position.y)) },
+        size: { width: 300, height: 210 }, style: {}, extensions: marker(`${view.key}|${key}`) } });
+    });
+    for (const relationKey of view.relations) {
+      const relation = graph.relations.find((item) => item.key === relationKey); if (!relation) continue;
+      const relationId = mapping[`relation:${relationKey}`], relationViewId = mapping[`relationView:${view.key}|${relationKey}`];
+      const sourcePlacementId = placementIds.get(relation.sourceKey), targetPlacementId = placementIds.get(relation.targetKey);
+      if (!relationId || !relationViewId || !sourcePlacementId || !targetPlacementId) throw new Error(`No se pudieron resolver los extremos de ${relationKey} en ${view.key}.`);
+      records.push({ kind: 'relation-view', workspaceId, value: { schemaVersion: '1.0.0', id: relationViewId, revision: 1, relationId,
+        sourcePlacementId, targetPlacementId, waypoints: [], style: {}, extensions: marker(`${view.key}|${relationKey}`) } });
+    }
+  }
+  return records;
 }
 function historyRequiresDelete(event: ReversibleCanvasCommand, direction: 'undo' | 'redo'): boolean {
   const removesRecord = event.changes.some((change) => {
@@ -267,6 +344,7 @@ export class LocalProjectManager {
   #canvasHistories = new Map<string, CanvasHistoryState>();
   #mermaidImportPreviews = new Map<string, MermaidImportPreviewBinding>();
   #plantUmlImportPreviews = new Map<string, PlantUmlImportPreviewBinding>();
+  #structurizrImportPreviews = new Map<string, StructurizrImportPreviewBinding>();
   #resetExplorerBindings = (): void => {
     this.#explorerSessionId = ''; this.#explorerItems.clear(); this.#explorerPaths.clear(); this.#explorerPages.clear(); this.#explorerDeletes.clear(); this.#codeDocuments.clear();
   };
@@ -722,7 +800,7 @@ export class LocalProjectManager {
     const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
       ...operation, expectedRevisions: [...revisionsOf(active.lease.service.state.project.snapshot), ...absentRefs.map((ref) => ({ ...ref, revision: null }))],
       expectedContentHashes, scope: { entityIds: [...new Set(entityIds)] } });
-    demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
+    demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', prepared.diagnostics.map((item) => `${item.path} · ${item.detail}: ${item.message}`).join('\n'));
     const event = prepared.value.canvasCommand;
     let history: CanvasHistoryState | undefined;
     if (event?.changes.length) {
@@ -903,24 +981,28 @@ export class LocalProjectManager {
       if (input.kind === 'plantuml') {
         Object.assign(properties, plantUmlSourceProperties());
       }
+      if (input.kind === 'structurizr-dsl') Object.assign(properties, structurizrSourceProperties('structurizr-dsl'));
+      if (input.kind === 'structurizr-json') Object.assign(properties, structurizrSourceProperties('structurizr-json'));
       let source: CreateContentNodeSource;
-      if (definition.source === 'inline' && !(['mermaid', 'plantuml'].includes(input.kind) && input.resourceId)) {
-        demand(typeof input.value === 'string' && (input.kind === 'plantuml'
-          ? Buffer.byteLength(input.value, 'utf8') <= PLANTUML_SOURCE_LIMIT : input.value.length <= 1_000_000),
-        'INVALID_CONTENT_SOURCE', input.kind === 'plantuml' ? `La fuente PlantUML debe ocupar como máximo ${PLANTUML_SOURCE_LIMIT} bytes.` : 'Escribe contenido de hasta 1 MB para el nodo.');
+      const sourceFromResource = ['mermaid', 'plantuml', 'structurizr-dsl', 'structurizr-json'].includes(input.kind) && !!input.resourceId;
+      if (definition.source === 'inline' && !sourceFromResource) {
+        const limitedBytes = input.kind === 'plantuml' ? PLANTUML_SOURCE_LIMIT : input.kind.startsWith('structurizr-') ? STRUCTURIZR_SOURCE_LIMIT : undefined;
+        demand(typeof input.value === 'string' && (limitedBytes ? Buffer.byteLength(input.value, 'utf8') <= limitedBytes : input.value.length <= 1_000_000),
+        'INVALID_CONTENT_SOURCE', limitedBytes ? `La fuente debe ocupar como máximo ${limitedBytes} bytes.` : 'Escribe contenido de hasta 1 MB para el nodo.');
         source = { kind: 'inline', resourceId, path: `content/${resourceId}${definition.extension}`, mediaType: definition.mediaType, content: input.value };
         absent.push({ kind: 'resource', id: resourceId });
       } else if (definition.source === 'url' || input.kind === 'image' && input.url !== undefined) {
         demand(typeof input.url === 'string' && input.url.length <= 2048, 'INVALID_CONTENT_URL', 'Escribe una URL absoluta válida.');
         source = { kind: 'url', resourceId, url: input.url };
         absent.push({ kind: 'resource', id: resourceId });
-      } else if (['mermaid', 'plantuml'].includes(input.kind) && input.resourceId) {
-        demand(uuid.test(input.resourceId), 'INVALID_DIAGRAM_RESOURCE', 'El recurso fuente seleccionado no tiene una identidad válida.');
-        const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === input.resourceId!.toLowerCase());
+      } else if (sourceFromResource) {
+        const selectedResourceId = input.resourceId ?? '';
+        demand(uuid.test(selectedResourceId), 'INVALID_DIAGRAM_RESOURCE', 'El recurso fuente seleccionado no tiene una identidad válida.');
+        const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === selectedResourceId.toLowerCase());
         const sourcePath = resource && resource.value.kind !== 'remote-url' ? resource.value.path : '';
-        const allowedExtension = input.kind === 'mermaid' ? /\.(?:mmd|mermaid)$/i : /\.(?:puml|plantuml)$/i;
-        demand(resource && resource.value.kind !== 'remote-url' && allowedExtension.test(sourcePath), 'INVALID_DIAGRAM_RESOURCE',
-          input.kind === 'mermaid' ? 'Selecciona un archivo Mermaid local o montado con extensión .mmd o .mermaid.' : 'Selecciona un archivo PlantUML local o montado con extensión .puml o .plantuml.');
+        const allowedExtension = input.kind === 'mermaid' ? /\.(?:mmd|mermaid)$/i : input.kind === 'plantuml' ? /\.(?:puml|plantuml)$/i : input.kind === 'structurizr-dsl' ? /\.dsl$/i : /\.json$/i;
+        demand(resource && resource.value.kind === 'project-file' && allowedExtension.test(sourcePath), 'INVALID_DIAGRAM_RESOURCE',
+          input.kind.startsWith('structurizr-') ? 'Selecciona un archivo interno del proyecto con la extensión Structurizr correspondiente.' : 'Selecciona un archivo interno Mermaid o PlantUML con extensión reconocida.');
         source = { kind: 'existing-resource', resourceId: resource.value.id };
       } else if (captured.dropMode || captured.dropMountId || captured.dropPath) {
         demand(['image', 'video', 'audio', 'file'].includes(input.kind) && ['copy', 'reference'].includes(captured.dropMode ?? '') &&
@@ -1121,7 +1203,8 @@ export class LocalProjectManager {
       // A3 never writes a preview copy beside the original resource.
       const isMermaidSource = entity.value.type === MERMAID_SOURCE_TYPE && entity.value.properties['a3.diagram.authority'] === 'source';
       const isPlantUmlSource = entity.value.type === PLANTUML_SOURCE_TYPE && entity.value.properties['a3.diagram.authority'] === 'source';
-      const limit = purpose === 'playback' ? 32 * 1024 * 1024 : mediaType.startsWith('image/') ? 4 * 1024 * 1024 : isMermaidSource ? 1024 * 1024 : isPlantUmlSource ? PLANTUML_SOURCE_LIMIT : 64 * 1024;
+      const isStructurizrSource = [STRUCTURIZR_DSL_SOURCE_TYPE, STRUCTURIZR_JSON_SOURCE_TYPE].includes(entity.value.type) && entity.value.properties['a3.diagram.authority'] === 'source';
+      const limit = purpose === 'playback' ? 32 * 1024 * 1024 : mediaType.startsWith('image/') ? 4 * 1024 * 1024 : isMermaidSource ? 1024 * 1024 : isPlantUmlSource ? PLANTUML_SOURCE_LIMIT : isStructurizrSource ? STRUCTURIZR_SOURCE_LIMIT : 64 * 1024;
       const opened = await active.lease.service.openResource(resourceId, limit);
       if (!opened.ok) {
         const tooLarge = opened.diagnostics.some((item) => item.detail.includes('read-limit') || item.detail.includes('size-limit') || item.detail.includes('resource-too-large'));
@@ -1387,6 +1470,128 @@ export class LocalProjectManager {
         family: 'class', authority, mode: binding.mode, mapping: binding.mapping, records: binding.records } }, entityIds, missingRefs,
       [{ resourceId: binding.resourceId, hash: binding.sourceHash }]);
       this.#plantUmlImportPreviews.delete(token);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  previewCanvasStructurizrImport(sessionId: string, workspaceId: string, sourceEntityId: string): Promise<CanvasStructurizrImportPreview> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId), snapshot = active.lease.service.state.project.snapshot;
+      const source = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === sourceEntityId.toLowerCase());
+      const format: StructurizrSourceFormat | undefined = source?.kind === 'entity' && source.value.type === STRUCTURIZR_DSL_SOURCE_TYPE ? 'structurizr-dsl' :
+        source?.kind === 'entity' && source.value.type === STRUCTURIZR_JSON_SOURCE_TYPE ? 'structurizr-json' : undefined;
+      demand(source?.kind === 'entity' && source.value.typeVersion === '1.0.0' && format && source.value.properties['a3.diagram.format'] === format &&
+        ['source', 'a3-model'].includes(String(source.value.properties['a3.diagram.authority'])) && typeof source.value.contentResourceId === 'string' &&
+        snapshot.records.some((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.entityId.toLowerCase() === sourceEntityId.toLowerCase()),
+      'STRUCTURIZR_SOURCE_MISSING', 'La fuente Structurizr no está en este workspace o su autoridad/version no es compatible; el documento se conserva.');
+      const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === source.value.contentResourceId!.toLowerCase());
+      const extension = format === 'structurizr-dsl' ? /\.dsl$/i : /\.json$/i;
+      demand(resource?.value.kind === 'project-file' && extension.test(resource.value.path), 'STRUCTURIZR_IMPORT_SOURCE_UNAVAILABLE',
+        'La importación lee un archivo interno .dsl o .json del proyecto; montajes y URLs no se recorren.');
+      const opened = await active.lease.service.openResource(resource.value.id, STRUCTURIZR_SOURCE_LIMIT);
+      demand(opened.ok, opened.diagnostics[0]?.code ?? 'STRUCTURIZR_IMPORT_SOURCE_UNAVAILABLE', opened.diagnostics.map((item) => item.message).join('\n'));
+      let text: string;
+      try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(opened.value.bytes); }
+      catch { throw new LocalProjectError('STRUCTURIZR_IMPORT_SOURCE_ENCODING', 'La fuente Structurizr no es UTF-8 válida; sus bytes originales se conservan.'); }
+      const graph = format === 'structurizr-dsl' ? parseStructurizrDslImport(text) : parseStructurizrJsonImport(text);
+      if (graph.missingResources.some((item) => /^\s*!include(?:url)?\s+(?:https?:\/\/|\\\\)/i.test(item.source))) {
+        const remoteDecision = await this.options.host.capabilities.authorizeCapabilities(active.lease.service.root, this.options.host.authenticatedActor,
+          active.projectId, ['network.access'], 'structurizr.remote-include', 'prepare');
+        if (!remoteDecision.allowed) for (const item of graph.missingResources) if (/^\s*!include(?:url)?\s+(?:https?:\/\/|\\\\)/i.test(item.source)) {
+          item.reason = 'Include remoto bloqueado: falta el permiso de proyecto network.access. A3 no realizó una solicitud de red.';
+        }
+      }
+      const prior = recordObject(source.value.properties['a3.diagram.import']);
+      const priorMapping = recordObject(prior?.mapping);
+      const compatible = prior?.schemaVersion === '1.0.0' && prior.format === format && !!priorMapping;
+      const mode: 'new' | 'update' = compatible ? 'update' : 'new';
+      const mapping: Record<string, string> = {};
+      const idConflicts = [...graph.idConflicts];
+      if (prior && !compatible) idConflicts.push({ line: 1, source: '', reason: 'La importación existente tiene otro formato/version o no tiene un mapa verificable.', code: 'conflict' });
+      if (priorMapping) for (const [key, value] of Object.entries(priorMapping)) {
+        if (typeof value !== 'string' || !uuid.test(value)) idConflicts.push({ line: 1, source: key, reason: 'El mapa guardado contiene un ID inválido.', code: 'conflict' });
+        else mapping[key] = value;
+      }
+      for (const key of structurizrMappingKeys(graph)) if (!mapping[key]) mapping[key] = randomUUID();
+      if (new Set(Object.values(mapping).map((value) => value.toLowerCase())).size !== Object.keys(mapping).length) {
+        idConflicts.push({ line: 1, source: '', reason: 'El mapa de identidades asigna un mismo UUID a dos documentos.', code: 'conflict' });
+      }
+      let records: DomainRecord[] = [];
+      if (!idConflicts.length && graph.views.length) {
+        try { records = buildStructurizrImportRecords(graph, source.value.id, mapping); }
+        catch (error) { idConflicts.push({ line: 1, source: '', reason: error instanceof Error ? error.message : 'No se pudo construir las vistas C4 A3.', code: 'conflict' }); }
+      }
+      const converted: CanvasMermaidImportItem[] = [];
+      for (const record of records) {
+        if (record.kind !== 'entity' && record.kind !== 'relation') continue;
+        const marker = recordObject(record.value.extensions['a3.structurizr.import']);
+        const key = typeof marker?.sourceKey === 'string' ? marker.sourceKey : '';
+        const title = record.kind === 'entity' ? record.value.title : String(record.value.properties['a3.c4'] && recordObject(record.value.properties['a3.c4'])?.description || '');
+        const existing = snapshot.records.find((candidate) => String(candidate.value.id).toLowerCase() === String(record.value.id).toLowerCase());
+        if (!existing) converted.push({ key, kind: record.kind === 'entity' ? record.value.type : 'a3.c4.relationship', title, action: 'create' });
+        else {
+          const existingMarker = recordObject(existing.value.extensions['a3.structurizr.import']);
+          const owned = mode === 'update' && refKey(refOf(existing)) === refKey(refOf(record)) && existingMarker?.sourceEntityId === source.value.id && existingMarker.sourceKey === key;
+          const before = structuredClone(existing), after = structuredClone(record); before.value.revision = 1; after.value.revision = 1;
+          converted.push({ key, kind: record.kind === 'entity' ? record.value.type : 'a3.c4.relationship', title, action: !owned ? 'conflict' : stableJson(before) === stableJson(after) ? 'unchanged' : 'update' });
+          if (!owned) idConflicts.push({ line: 1, source: key, reason: `El UUID ${record.value.id} ya pertenece a otro documento.`, code: 'conflict' });
+        }
+      }
+      const required = new Set(structurizrMappingKeys(graph));
+      const staleSourceKeys = Object.keys(priorMapping ?? {}).filter((key) => !required.has(key));
+      const viewSummaries = graph.views.map((view) => {
+        const viewId = mapping[`workspace:${view.key}`]!;
+        const existing = snapshot.records.some((record) => record.kind === 'workspace' && record.value.id.toLowerCase() === viewId.toLowerCase());
+        return { key: view.key, kind: view.kind, title: view.title, workspaceId: viewId, elements: view.elements.length, relations: view.relations.length, action: existing ? 'update' as const : 'create' as const };
+      });
+      const token = randomUUID();
+      const binding: StructurizrImportPreviewBinding = { sessionId, workspaceId, sourceEntityId: source.value.id, sourceRevision: source.value.revision,
+        resourceId: resource.value.id, sourceHash: opened.value.sha256, format, mode, graph, mapping, records, views: viewSummaries, expiresAt: Date.now() + 10 * 60_000 };
+      for (const [key, item] of this.#structurizrImportPreviews) if (item.expiresAt < Date.now() || item.sessionId !== sessionId) this.#structurizrImportPreviews.delete(key);
+      if (this.#structurizrImportPreviews.size >= 20) this.#structurizrImportPreviews.delete(this.#structurizrImportPreviews.keys().next().value!);
+      this.#structurizrImportPreviews.set(token, binding);
+      const authority = source.value.properties['a3.diagram.authority'] === 'a3-model' ? 'a3-model' : 'source';
+      const writeDecision = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+        projectId: active.projectId, operation: 'write', paths: [resource.value.path], refs: [{ kind: 'workspace', id: workspaceId }, { kind: 'entity', id: source.value.id }], resources: [resource.value],
+        requiredCapabilities: ['diagram.edit', 'document.edit'], stage: 'prepare' });
+      const canApply = records.length > 0 && records.length < 1024 && graph.views.length > 0 && graph.elements.length > 0 && idConflicts.length === 0 &&
+        writeDecision.allowed && active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict;
+      const message = canApply ? graph.unconverted.length || graph.missingResources.length ? 'Conversión parcial lista: revisa el informe, el mapa de IDs y las vistas que se crearán. La fuente completa permanece intacta.' :
+        'Vista previa lista: revisa las vistas C4, IDs y relaciones antes de aplicar.' : !graph.views.length ? 'No hay una vista estática C4 compatible para convertir.' :
+        records.length >= 1024 ? 'La conversión supera el límite de 1024 documentos reversibles.' : idConflicts.length ? 'La vista previa tiene conflictos de identidad que deben resolverse.' :
+        !writeDecision.allowed || active.lease.service.state.mode !== 'writer' || active.lease.service.state.externalConflict ? 'El proyecto no permite escribir en este momento; la vista previa se conserva.' : 'No hay elementos convertibles.';
+      return { token, sourceEntityId: source.value.id, sourceRevision: source.value.revision, resourceId: resource.value.id, format, mode,
+        sourceHash: opened.value.sha256, authority, converted, views: viewSummaries, unconverted: graph.unconverted, missingResources: graph.missingResources,
+        idConflicts, staleSourceKeys, mapping: { ...mapping }, canApply, message };
+    });
+  }
+  applyCanvasStructurizrImport(sessionId: string, workspaceId: string, token: string, authority: 'source' | 'a3-model', viewKey: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const binding = this.#structurizrImportPreviews.get(token);
+      demand(binding?.sessionId === sessionId && binding.workspaceId === workspaceId && binding.expiresAt > Date.now(), 'STRUCTURIZR_IMPORT_PREVIEW_EXPIRED', 'La vista previa venció o pertenece a otra sesión; vuelve a prepararla.');
+      const { active } = this.#canvasContext(sessionId, workspaceId), snapshot = active.lease.service.state.project.snapshot;
+      const source = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === binding.sourceEntityId.toLowerCase());
+      demand(source?.kind === 'entity' && source.value.revision === binding.sourceRevision && source.value.contentResourceId?.toLowerCase() === binding.resourceId.toLowerCase(),
+        'REVISION_CONFLICT', 'La fuente o sus metadatos cambiaron después de la vista previa; prepara otro diff.');
+      const opened = await active.lease.service.openResource(binding.resourceId, STRUCTURIZR_SOURCE_LIMIT);
+      demand(opened.ok && opened.value.sha256 === binding.sourceHash, 'REVISION_CONFLICT', 'La fuente cambió después de la vista previa; sus bytes originales se conservan.');
+      const selectedView = binding.graph.views.find((view) => view.key === viewKey);
+      demand(selectedView, 'STRUCTURIZR_VIEW_MISSING', 'La vista elegida ya no forma parte de la previsualización.');
+      const selectedKeys = new Set(selectedView.elements);
+      const addAncestors = (key: string): void => {
+        const parentKey = binding.graph.elements.find((item) => item.key === key)?.parentKey;
+        if (parentKey && !selectedKeys.has(parentKey)) { selectedKeys.add(parentKey); addAncestors(parentKey); }
+      };
+      for (const key of [...selectedKeys]) addAncestors(key);
+      const selectedGraph: StructurizrImportGraph = { ...binding.graph, elements: binding.graph.elements.filter((item) => selectedKeys.has(item.key)),
+        relations: binding.graph.relations.filter((item) => selectedView.relations.includes(item.key)), views: [selectedView] };
+      const records = buildStructurizrImportRecords(selectedGraph, binding.sourceEntityId, binding.mapping);
+      const targetWorkspaceId = binding.mapping[`workspace:${selectedView.key}`]!;
+      const absent = records.filter((record) => !snapshot.records.some((current) => refKey(refOf(current)) === refKey(refOf(record)))).map(refOf);
+      const entityIds = [binding.sourceEntityId, ...records.flatMap((record) => record.kind === 'entity' ? [record.value.id] : record.kind === 'relation' ? [record.value.source.entityId, record.value.target.entityId] : [])];
+      await this.#commitCanvasCommand(active, { command: 'a3.structurizr.import', payload: { workspaceId: targetWorkspaceId, sourceWorkspaceId: workspaceId, sourceEntityId: binding.sourceEntityId,
+        expectedSourceRevision: binding.sourceRevision, sourceResourceId: binding.resourceId, sourceHash: binding.sourceHash, format: binding.format,
+        authority, mode: binding.mode, mapping: binding.mapping, records } }, entityIds, absent, [{ resourceId: binding.resourceId, hash: binding.sourceHash }]);
+      this.#structurizrImportPreviews.delete(token);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }

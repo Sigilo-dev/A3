@@ -7,7 +7,7 @@ import { basename, dirname, join, parse, relative, resolve } from 'node:path';
 import { CONTENT_NODE_CATALOG, CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_RELATION_KINDS, IOT_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { validIotCircuitOperation } from '@a3/domain/iot-circuit';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { CanvasContentRequest, CanvasContentResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
 import { validCanvasView, validPageView } from '@a3/project-store';
 import type { WorkspaceSessionRequest, WorkspaceSessionResult } from '../shared/desktop-api';
@@ -81,6 +81,8 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
   if (input.action === 'plantuml-render') return Object.keys(input).length === 4 && uuid.test(String(input.sourceEntityId));
   if (input.action === 'plantuml-import-preview') return Object.keys(input).length === 4 && uuid.test(String(input.sourceEntityId));
   if (input.action === 'plantuml-import-apply') return Object.keys(input).length === 5 && uuid.test(String(input.token)) && ['source', 'a3-model'].includes(String(input.authority));
+  if (input.action === 'structurizr-import-preview') return Object.keys(input).length === 4 && uuid.test(String(input.sourceEntityId));
+  if (input.action === 'structurizr-import-apply') return Object.keys(input).length === 6 && uuid.test(String(input.token)) && ['source', 'a3-model'].includes(String(input.authority)) && typeof input.viewKey === 'string' && input.viewKey.length > 0 && input.viewKey.length <= 160;
   if (input.action === 'mermaid-import-preview') return Object.keys(input).length === 4 && uuid.test(String(input.sourceEntityId));
   if (input.action === 'mermaid-import-apply') return Object.keys(input).length === 5 && uuid.test(String(input.token)) && ['source', 'a3-model'].includes(String(input.authority));
   if (input.action === 'uml') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 && validUmlOperation(input.operation);
@@ -419,13 +421,15 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
-    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasMermaidImportResult | CanvasPlantUmlImportResult | CanvasPlantUmlResult> {
+    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasMermaidImportResult | CanvasPlantUmlImportResult | CanvasPlantUmlResult | CanvasStructurizrImportResult> {
       if (!validCanvasRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de lienzo inválida.', recovery: 'Reabre el workspace.' } };
       try {
         switch (value.action) {
           case 'plantuml-render': return { ok: true, value: await plantumlRenderer.render(await manager.preparePlantUmlRender(value.sessionId, value.workspaceId, value.sourceEntityId)) };
           case 'plantuml-import-preview': return { ok: true, value: await manager.previewCanvasPlantUmlImport(value.sessionId, value.workspaceId, value.sourceEntityId) };
           case 'plantuml-import-apply': return { ok: true, value: await manager.applyCanvasPlantUmlImport(value.sessionId, value.workspaceId, value.token, value.authority) };
+          case 'structurizr-import-preview': return { ok: true, value: await manager.previewCanvasStructurizrImport(value.sessionId, value.workspaceId, value.sourceEntityId) };
+          case 'structurizr-import-apply': return { ok: true, value: await manager.applyCanvasStructurizrImport(value.sessionId, value.workspaceId, value.token, value.authority, value.viewKey) };
           case 'mermaid-import-preview': return { ok: true, value: await manager.previewCanvasMermaidImport(value.sessionId, value.workspaceId, value.sourceEntityId) };
           case 'mermaid-import-apply': return { ok: true, value: await manager.applyCanvasMermaidImport(value.sessionId, value.workspaceId, value.token, value.authority) };
           case 'load': return { ok: true, value: await manager.loadCanvasWorkspace(value.sessionId, value.workspaceId) };

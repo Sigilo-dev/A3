@@ -1,0 +1,26 @@
+{
+  "name": "A3 local architecture",
+  "description": "Static JSON conversion fixture",
+  "model": {
+    "people": [{
+      "id": "p1", "name": "Editor", "description": "Maintains the local workspace",
+      "properties": { "structurizr.dsl.identifier": "editor" },
+      "relationships": [{ "id": "r1", "destinationId": "s1", "description": "designs" }]
+    }],
+    "softwareSystems": [{
+      "id": "s1", "name": "A3", "description": "Project design tool",
+      "properties": { "structurizr.dsl.identifier": "a3" }, "tags": "Element,Software System",
+      "containers": [{
+        "id": "c1", "name": "Project files", "description": "Markdown and source files", "technology": "Local filesystem",
+        "properties": { "structurizr.dsl.identifier": "files" },
+        "relationships": [{ "id": "r2", "destinationId": "p1", "description": "edits" }]
+      }]
+    }]
+  },
+  "views": {
+    "systemContextViews": [{ "key": "context", "softwareSystemId": "s1", "elements": [{ "id": "p1", "x": 0, "y": 0 }, { "id": "s1", "x": 320, "y": 0 }], "relationships": [{ "id": "r1" }] }],
+    "containerViews": [{ "key": "containers", "softwareSystemId": "s1", "elements": [{ "id": "p1", "x": 0, "y": 0 }, { "id": "s1", "x": 320, "y": 0 }, { "id": "c1", "x": 640, "y": 0 }], "relationships": [{ "id": "r1" }, { "id": "r2" }] }],
+    "dynamicViews": [{ "key": "runtime" }],
+    "configuration": { "styles": { "elements": [] } }
+  }
+}

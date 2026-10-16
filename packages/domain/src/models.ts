@@ -149,11 +149,17 @@ export interface MermaidImportChange {
   mapping: Record<string, UUID>; records: DomainRecord[];
 }
 export interface PlantUmlImportChange extends Omit<MermaidImportChange, 'family'> { family: 'class'; }
+export interface StructurizrImportChange {
+  workspaceId: UUID; sourceWorkspaceId: UUID; sourceEntityId: UUID; expectedSourceRevision: number; sourceResourceId: UUID; sourceHash: string;
+  format: 'structurizr-dsl' | 'structurizr-json'; authority: 'source' | 'a3-model'; mode: 'new' | 'update';
+  mapping: Record<string, UUID>; records: DomainRecord[];
+}
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
 export type Payloads = {
   'a3.er.change': ErChange;
   'a3.mermaid.import': MermaidImportChange;
   'a3.plantuml.import': PlantUmlImportChange;
+  'a3.structurizr.import': StructurizrImportChange;
   'a3.uml.change': UmlChange;
   'a3.c4.change': C4Change;
   'a3.core.create-project': { project: Project; workspace: Workspace };

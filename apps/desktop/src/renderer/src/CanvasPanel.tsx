@@ -35,6 +35,7 @@ type CanvasNodeData = {
   sessionId: string; workspaceId: string; entity: CanvasEntitySummary; placement: CanvasPlacementView; canWrite: boolean; tool: CanvasTool;
   onOpenMarkdown: (target: MarkdownEditorTarget) => void;
   onDiagramImported: (workspace: LocalCanvasWorkspace) => void;
+  onProjectsChanged: () => void;
   onResizeEnd: (id: string, position: { x: number; y: number }, size: { width: number; height: number }) => void;
 };
 type CanvasNode = Node<CanvasNodeData, 'a3Entity'>;
@@ -120,7 +121,7 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
       {data.entity.contentResourceId && <CanvasContentBody entity={data.entity} sessionId={data.sessionId} workspaceId={data.workspaceId} preview={preview} mediaUrl={mediaUrl} activatePlayback={() => void activatePlayback()}
         playbackBusy={playbackBusy} playbackError={playbackError} onOpenMarkdown={() => {
           if (data.entity.contentResourceId) data.onOpenMarkdown({ sessionId: data.sessionId, entityId: data.entity.id, resourceId: data.entity.contentResourceId, title: data.entity.title });
-        }} onDiagramImported={data.onDiagramImported} canApplyDiagramImport={data.canWrite} onOpenCode={() => {
+        }} onDiagramImported={data.onDiagramImported} canApplyDiagramImport={data.canWrite} onProjectsChanged={data.onProjectsChanged} onOpenCode={() => {
           if (data.entity.contentResourceId) onOpenCode?.({ sessionId: data.sessionId, title: data.entity.title, target: { resourceId: data.entity.contentResourceId, entityId: data.entity.id } });
         }} />}
       {Object.keys(data.placement.style).length > 0 && <details><summary>Estilo de esta vista</summary><pre>{JSON.stringify(data.placement.style, null, 2)}</pre></details>}
@@ -247,7 +248,7 @@ function CanvasCollapsedEdges({ workspace, origin, endpointMap, layouts }: { wor
     </g>)}
   </svg>;
 }
-function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd'], tool: CanvasTool, previous: CanvasFlowNode[] = [], force = false, onToggle: (id: string) => void = () => undefined, onOpenMarkdown: (target: MarkdownEditorTarget) => void = () => undefined, onDiagramImported: CanvasNodeData['onDiagramImported'] = () => undefined): CanvasFlowNode[] {
+function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd'], tool: CanvasTool, previous: CanvasFlowNode[] = [], force = false, onToggle: (id: string) => void = () => undefined, onOpenMarkdown: (target: MarkdownEditorTarget) => void = () => undefined, onDiagramImported: CanvasNodeData['onDiagramImported'] = () => undefined, onProjectsChanged: () => void = () => undefined): CanvasFlowNode[] {
   const entities = new Map(workspace.entities.map((entity) => [entity.id.toLowerCase(), entity]));
   const groups = groupLayouts(workspace);
   const old = new Map(previous.map((node) => [node.id, node]));
@@ -257,13 +258,13 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
     if (!entity) return [];
     const existing = old.get(placement.id) as CanvasNode | undefined;
     if (!force && existing && existing.data.placement.revision === placement.revision && existing.data.entity.revision === entity.revision &&
-        existing.data.canWrite === workspace.canWrite && existing.data.tool === tool && existing.data.onOpenMarkdown === onOpenMarkdown && existing.data.onDiagramImported === onDiagramImported) return [existing];
+        existing.data.canWrite === workspace.canWrite && existing.data.tool === tool && existing.data.onOpenMarkdown === onOpenMarkdown && existing.data.onDiagramImported === onDiagramImported && existing.data.onProjectsChanged === onProjectsChanged) return [existing];
     return [{ id: placement.id, type: 'a3Entity', position: { x: placement.position.x - origin.x, y: placement.position.y - origin.y },
       style: { width: placement.size.width, height: placement.size.height }, draggable: workspace.canWrite && tool === 'select' && placement.style['a3.ui.locked'] !== true,
       zIndex: typeof placement.style['a3.ui.z-index'] === 'number' ? placement.style['a3.ui.z-index'] : 1,
       dragHandle: '.canvas-entity-header', selectable: true, focusable: true, selected: existing?.selected,
       ariaLabel: `${entity.title || entity.type}${placement.style['a3.ui.locked'] === true ? ', bloqueado' : ''}`,
-      data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, tool, onResizeEnd, onOpenMarkdown, onDiagramImported } }];
+      data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, tool, onResizeEnd, onOpenMarkdown, onDiagramImported, onProjectsChanged } }];
   });
   const groupNodes: CanvasGroupNode[] = workspace.groups.filter((group) => !groups.hiddenGroups.has(group.id.toLowerCase())).map((group) => {
     const key = group.id.toLowerCase(), layout = groups.layouts.get(key)!, collapsed = group.collapsed;
@@ -299,6 +300,8 @@ function initialContentValue(kind: ContentNodeKind): string {
   if (kind === 'code') return '// Nuevo fragmento\n';
   if (kind === 'mermaid') return 'flowchart TD\n  A[Idea] --> B[Proyecto]\n';
   if (kind === 'plantuml') return '@startuml\nclass Idea\nclass Proyecto\nIdea --> Proyecto\n@enduml\n';
+  if (kind === 'structurizr-dsl') return 'workspace "A3" {\n  model {\n    user = person "Usuario"\n    system = softwareSystem "Sistema"\n    user -> system "Usa"\n  }\n  views {\n    systemContext system {\n      include *\n      autoLayout\n    }\n  }\n}\n';
+  if (kind === 'structurizr-json') return '{\n  "name": "A3",\n  "model": { "people": [], "softwareSystems": [] },\n  "views": { "systemContextViews": [] }\n}\n';
   if (kind === 'drawing') return '{"schemaVersion":"1.0.0","strokes":[]}\n';
   return '';
 }
@@ -319,6 +322,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
   const [contentKind, setContentKind] = useState<ContentNodeKind>('page');
   const [mermaidSourceMode, setMermaidSourceMode] = useState<'inline' | 'resource'>('inline');
   const [plantumlSourceMode, setPlantumlSourceMode] = useState<'inline' | 'resource'>('inline');
+  const [structurizrSourceMode, setStructurizrSourceMode] = useState<'inline' | 'resource'>('inline');
   const [contentTitle, setContentTitle] = useState('Nueva página');
   const [contentValue, setContentValue] = useState('# Nueva página\n\n');
   const [contentUrl, setContentUrl] = useState('');
@@ -327,10 +331,11 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
   const [contentDescription, setContentDescription] = useState('');
   const [contentAltText, setContentAltText] = useState('');
   const [contentLanguage, setContentLanguage] = useState('');
-  const isSourceDiagram = contentKind === 'mermaid' || contentKind === 'plantuml';
-  const sourceDiagramMode = contentKind === 'mermaid' ? mermaidSourceMode : plantumlSourceMode;
-  const sourceDiagramExtension = contentKind === 'mermaid' ? /\.(?:mmd|mermaid)$/i : /\.(?:puml|plantuml)$/i;
-  const sourceDiagramExtensionLabel = contentKind === 'mermaid' ? '.mmd o .mermaid' : '.puml o .plantuml';
+  const isSourceDiagram = ['mermaid', 'plantuml', 'structurizr-dsl', 'structurizr-json'].includes(contentKind);
+  const sourceDiagramMode = contentKind === 'mermaid' ? mermaidSourceMode : contentKind === 'plantuml' ? plantumlSourceMode : structurizrSourceMode;
+  const sourceDiagramExtension = contentKind === 'mermaid' ? /\.(?:mmd|mermaid)$/i : contentKind === 'plantuml' ? /\.(?:puml|plantuml)$/i : contentKind === 'structurizr-dsl' ? /\.dsl$/i : /\.json$/i;
+  const sourceDiagramFormatLabel = contentKind === 'mermaid' ? 'Mermaid' : contentKind === 'plantuml' ? 'PlantUML' : 'Structurizr';
+  const sourceDiagramExtensionLabel = contentKind === 'mermaid' ? '.mmd o .mermaid' : contentKind === 'plantuml' ? '.puml o .plantuml' : contentKind === 'structurizr-dsl' ? '.dsl' : '.json';
   const [dropNotice, setDropNotice] = useState<FileDropNotice | null>(null);
   const [dropMode, setDropMode] = useState<'copy' | 'reference' | null>('copy');
   const [viewport, setViewport] = useState<WorldViewport>({ x: 0, y: 0, zoom: 1 });
@@ -368,7 +373,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
       nodeIds: previous.nodeIds.filter((id) => !visibility.hiddenPlacements.has(id.toLowerCase())),
       drawingIds: previous.drawingIds.filter((id) => !visibility.hiddenDrawings.has(id.toLowerCase())),
       groupIds: previous.groupIds.filter((id) => !visibility.hiddenGroups.has(id.toLowerCase())) }));
-    setNodes((previous) => toFlowNodes(next, originRef.current, handleResizeEnd, toolRef.current, previous, force, toggleGroup, onOpenMarkdown, handleDiagramImported));
+    setNodes((previous) => toFlowNodes(next, originRef.current, handleResizeEnd, toolRef.current, previous, force, toggleGroup, onOpenMarkdown, handleDiagramImported, onProjectsChanged));
     setEdges((previous) => toFlowEdges(next, originRef.current, toolRef.current, previous, groupLayouts(next).edgeEndpoints));
   }
   diagramImported.current = installWorkspace;
@@ -415,7 +420,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
   useEffect(() => {
     const latest = workspaceRef.current;
     if (latest) {
-      setNodes((previous) => toFlowNodes(latest, origin, handleResizeEnd, tool, previous, true, toggleGroup, onOpenMarkdown, handleDiagramImported));
+      setNodes((previous) => toFlowNodes(latest, origin, handleResizeEnd, tool, previous, true, toggleGroup, onOpenMarkdown, handleDiagramImported, onProjectsChanged));
       setEdges((previous) => toFlowEdges(latest, origin, tool, previous, groupLayouts(latest).edgeEndpoints));
     }
   }, [origin.x, origin.y, handleResizeEnd, handleDiagramImported, onOpenMarkdown, tool]);
@@ -1086,18 +1091,18 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
         <div className="canvas-insert-node-form">
           <label>Tipo <select data-content-kind value={contentKind} disabled={!workspace?.canWrite} onChange={(event) => {
             const kind = event.target.value as ContentNodeKind; setContentKind(kind); setContentTitle(`Nuevo ${contentNodeDefinition(kind).label.toLowerCase()}`); setContentValue(initialContentValue(kind)); setContentImageSource('resource');
-            setMermaidSourceMode('inline'); setPlantumlSourceMode('inline');
+            setMermaidSourceMode('inline'); setPlantumlSourceMode('inline'); setStructurizrSourceMode('inline');
           }}>{CONTENT_NODE_CATALOG.map((item) => <option key={item.kind} value={item.kind}>{item.label}</option>)}</select></label>
           <label>Título <input data-content-title value={contentTitle} maxLength={200} disabled={!workspace?.canWrite} onChange={(event) => setContentTitle(event.target.value)} /></label>
-          {isSourceDiagram && <label>Origen de {contentKind === 'mermaid' ? 'Mermaid' : 'PlantUML'} <select data-diagram-source-mode value={sourceDiagramMode} disabled={!workspace?.canWrite} onChange={(event) => {
+          {isSourceDiagram && <label>Origen de {sourceDiagramFormatLabel} <select data-diagram-source-mode value={sourceDiagramMode} disabled={!workspace?.canWrite} onChange={(event) => {
             const mode = event.target.value as 'inline' | 'resource';
-            if (contentKind === 'mermaid') setMermaidSourceMode(mode); else setPlantumlSourceMode(mode);
+            if (contentKind === 'mermaid') setMermaidSourceMode(mode); else if (contentKind === 'plantuml') setPlantumlSourceMode(mode); else setStructurizrSourceMode(mode);
             if (mode === 'resource') setContentResourceId(workspace?.resourceChoices.find((resource) => resource.kind !== 'remote-url' && sourceDiagramExtension.test(resource.label))?.id ?? '');
-          }}><option value="inline">Crear fuente {contentKind === 'mermaid' ? '.mmd' : '.puml'} nueva</option><option value="resource">Usar recurso existente</option></select></label>}
+          }}><option value="inline">Crear fuente {sourceDiagramExtensionLabel} nueva</option><option value="resource">Usar recurso existente</option></select></label>}
           {isSourceDiagram && sourceDiagramMode === 'resource' ? <label>Recurso fuente <select data-content-resource value={contentResourceId} disabled={!workspace?.canWrite || !(workspace?.resourceChoices.some((resource) => resource.kind !== 'remote-url' && sourceDiagramExtension.test(resource.label)))}
             onChange={(event) => setContentResourceId(event.target.value)}><option value="">Selecciona {sourceDiagramExtensionLabel}</option>{workspace?.resourceChoices.filter((resource) => resource.kind !== 'remote-url' && sourceDiagramExtension.test(resource.label)).map((resource) => <option key={resource.id} value={resource.id}>{resource.label}</option>)}</select></label> :
-            contentKind === 'page' || contentKind === 'short-text' || contentKind === 'code' || contentKind === 'drawing' || contentKind === 'mermaid' || contentKind === 'plantuml'
-              ? <label className="canvas-content-source">{contentKind === 'mermaid' ? 'Fuente Mermaid' : contentKind === 'plantuml' ? 'Fuente PlantUML' : 'Fuente'} <textarea data-content-value value={contentValue} maxLength={contentKind === 'plantuml' ? 256 * 1024 : 1_000_000} disabled={!workspace?.canWrite} onChange={(event) => setContentValue(event.target.value)} /></label>
+            contentKind === 'page' || contentKind === 'short-text' || contentKind === 'code' || contentKind === 'drawing' || isSourceDiagram
+              ? <label className="canvas-content-source">{isSourceDiagram ? `Fuente ${sourceDiagramFormatLabel}` : 'Fuente'} <textarea data-content-value value={contentValue} maxLength={contentKind === 'plantuml' ? 256 * 1024 : contentKind.startsWith('structurizr-') ? 1024 * 1024 : 1_000_000} disabled={!workspace?.canWrite} onChange={(event) => setContentValue(event.target.value)} /></label>
             : contentKind === 'youtube' || contentKind === 'web-link'
               ? <label>URL <input data-content-url type="url" value={contentUrl} maxLength={2048} placeholder="https://…" disabled={!workspace?.canWrite} onChange={(event) => setContentUrl(event.target.value)} /></label>
               : contentKind === 'image' ? <>

@@ -30,7 +30,8 @@
     "test:mermaid": "node --test test/mermaid-source.test.mjs",
     "test:mermaid:smoke": "node test/run-mermaid.mjs",
     "test:plantuml": "npm run build --workspace @a3/domain && npm run prepare:plantuml && node --experimental-strip-types --experimental-transform-types --test test/plantuml-renderer.test.mjs",
-    "test:plantuml:import:smoke": "node test/run-plantuml-import.mjs"
+    "test:plantuml:import:smoke": "node test/run-plantuml-import.mjs",
+    "test:structurizr:smoke": "node test/run-structurizr.mjs"
   },
   "devDependencies": {
     "@a3/project-store": "0.1.0-dev.0",

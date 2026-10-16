@@ -5,7 +5,8 @@ import { fixture, context, id, W1, R1, request, success } from './fixture.mjs';
 
 test('A3-006/008/025: built-in content nodes create canonical records and a reversible workspace event', () => {
   let state = fixture();
-  const inline = new Map([['page', '# Página\n'], ['short-text', 'Una idea'], ['code', 'const answer = 42;'], ['drawing', '{"schemaVersion":"1.0.0","strokes":[]}\n'], ['mermaid', 'flowchart TD\n A-->B\n'], ['plantuml', '@startuml\nAlice -> Bob\n@enduml\n']]);
+  const inline = new Map([['page', '# Página\n'], ['short-text', 'Una idea'], ['code', 'const answer = 42;'], ['drawing', '{"schemaVersion":"1.0.0","strokes":[]}\n'], ['mermaid', 'flowchart TD\n A-->B\n'], ['plantuml', '@startuml\nAlice -> Bob\n@enduml\n'],
+    ['structurizr-dsl', 'workspace "A3" { model { editor = person "Editor" } views { } }'], ['structurizr-json', '{"model":{"people":[]}}']]);
   const urls = new Map([['youtube', 'https://youtu.be/dQw4w9WgXcQ'], ['web-link', 'https://example.com/reference']]);
   for (let index = 0; index < CONTENT_NODE_CATALOG.length; index++) {
     const definition = CONTENT_NODE_CATALOG[index], entityId = id(400 + index * 3), resourceId = id(401 + index * 3), placementId = id(402 + index * 3);

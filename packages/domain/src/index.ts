@@ -6,6 +6,8 @@ export * from './iot.js';
 export * from './iot-circuit.js';
 export * from './mermaid-source.js';
 export * from './plantuml-source.js';
+export * from './structurizr-source.js';
+export * from './structurizr-import.js';
 export * from './mermaid-import.js';
 export * from './plantuml-import.js';
 export { prepareCommand, revalidatePlan, reversibleCanvasCommand } from './kernel.js';
