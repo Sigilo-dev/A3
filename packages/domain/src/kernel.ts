@@ -9,7 +9,7 @@ function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnost
   throw new DomainFault(diagnostic(detail, message, ref, code));
 }
 const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity',
-  'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-visual-edge', 'a3.core.update-drawing', 'a3.core.convert-drawings-to-node', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-collection-members',
+  'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-visual-edge', 'a3.core.update-drawing', 'a3.core.convert-drawings-to-node', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-group-collapsed', 'a3.core.set-collection-members',
   'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
 const kinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
 const scoped = new Set(['placement', 'visual-edge', 'relation-view', 'group', 'drawing']);
@@ -204,8 +204,10 @@ function convertDrawingsToNode(draft: Draft, payload: Payloads['a3.core.convert-
 }
 
 function moveGroup(draft: Draft, ref: DocumentRef, offset: { x: number; y: number }): void {
+  if (!Number.isFinite(offset.x) || !Number.isFinite(offset.y)) fail('invalid-group-offset', 'El desplazamiento del grupo debe ser finito.', ref);
   const visited = new Set<string>();
   const placements = new Set<string>();
+  const drawings = new Set<string>();
   function visit(current: DocumentRef): void {
     if (visited.has(refKey(current))) return;
     visited.add(refKey(current));
@@ -213,8 +215,8 @@ function moveGroup(draft: Draft, ref: DocumentRef, offset: { x: number; y: numbe
     if (record.kind !== 'group') fail('wrong-document-kind', 'Solo se puede mover un grupo.', current);
     for (const member of record.value.members) {
       const child = { kind: member.kind, id: member.id, workspaceId: record.workspaceId };
-      if (member.kind === 'drawing') fail('drawing-geometry-unavailable', 'E2 debe proporcionar el comando de geometría del trazo.', child, 'ENGINE_UNAVAILABLE');
       if (member.kind === 'group') visit(child);
+      else if (member.kind === 'drawing') drawings.add(refKey(child));
       else placements.add(refKey(child));
     }
   }
@@ -222,7 +224,18 @@ function moveGroup(draft: Draft, ref: DocumentRef, offset: { x: number; y: numbe
   for (const record of draft.snapshot.records.filter((r) => r.kind === 'placement' && placements.has(refKey(refOf(r))))) {
     if (record.kind === 'placement' && record.value.style['a3.ui.locked'] === true) continue;
     draft.edit(refOf(record), 'placement', (value) => {
-      value.position = { ...value.position, x: value.position.x + offset.x, y: value.position.y + offset.y };
+      const x = value.position.x + offset.x, y = value.position.y + offset.y;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) fail('invalid-group-offset', 'El desplazamiento excede las coordenadas válidas.', refOf(record));
+      value.position = { ...value.position, x, y };
+    });
+  }
+  for (const record of draft.snapshot.records.filter((r) => r.kind === 'drawing' && drawings.has(refKey(refOf(r))))) {
+    draft.edit(refOf(record), 'drawing', (value) => {
+      value.points = value.points.map((point) => {
+        const x = point.x + offset.x, y = point.y + offset.y;
+        if (!Number.isFinite(x) || !Number.isFinite(y)) fail('invalid-group-offset', 'El desplazamiento excede las coordenadas del trazo.', refOf(record));
+        return { ...point, x, y };
+      });
     });
   }
 }
@@ -457,6 +470,7 @@ function apply(draft: Draft): void {
     case 'a3.core.set-group-members': draft.edit(request.payload.ref, 'group', (value) => {
       value.members = request.payload.members.map((member) => ({ ...value.members.find((old) => old.kind === member.kind && sameId(old.id, member.id)), ...copy(member) }));
     }); break;
+    case 'a3.core.set-group-collapsed': draft.edit(request.payload.ref, 'group', (value) => { value.collapsed = request.payload.collapsed; }); break;
     case 'a3.core.set-collection-members': draft.edit({ kind: 'collection', id: request.payload.collectionId }, 'collection', (value) => { value.entityIds = copy(request.payload.entityIds); }); break;
     case 'a3.core.set-variables': {
       const scope = request.payload.scope;

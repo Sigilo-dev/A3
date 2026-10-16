@@ -2,7 +2,7 @@ import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir } from 'no
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { defaultRegistry, revisionsOf, validateSnapshot, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type Entity, type Placement, type Project, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
+import { defaultRegistry, revisionsOf, validateSnapshot, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type Entity, type Group, type GroupMember, type Placement, type Project, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
@@ -46,12 +46,13 @@ export type CanvasVisualEdgeView = Pick<VisualEdge, 'id' | 'revision' | 'sourceP
 export type CanvasVisualEdgePatch = Partial<Pick<VisualEdge, 'sourcePlacementId' | 'targetPlacementId' | 'label' | 'waypoints' | 'style'>>;
 export type CanvasDrawingView = Pick<Drawing, 'id' | 'revision' | 'points' | 'parameters' | 'style'>;
 export type CanvasDrawingPatch = Omit<Partial<Pick<Drawing, 'points' | 'parameters' | 'style'>>, 'parameters'> & { parameters?: Partial<DrawingParameters> };
+export type CanvasGroupView = Pick<Group, 'id' | 'revision' | 'name' | 'members'> & { collapsed: boolean };
 export interface CanvasPlacementMove { id: string; expectedRevision: number; position: { x: number; y: number }; }
 export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; }
 export interface LocalCanvasWorkspace {
   sessionId: string; workspaceId: string; name: string; revision: number;
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
-  placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[]; drawings: readonly CanvasDrawingView[];
+  placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[]; drawings: readonly CanvasDrawingView[]; groups: readonly CanvasGroupView[];
   canDeleteEdges: boolean; canDeleteDrawings: boolean; canConvertDrawings: boolean;
 }
 export interface LocalExplorerEntry extends Omit<ExplorerDirectoryPage['entries'][number], 'path' | 'identity'> { id: string; path: string; }
@@ -393,9 +394,11 @@ export class LocalProjectManager {
       requiredCapabilities: ['document.edit', 'diagram.edit'], stage: 'prepare' });
     const drawings = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'drawing' }> => record.kind === 'drawing' && record.workspaceId === workspaceId)
       .map(({ value }) => ({ id: value.id, revision: value.revision, points: value.points, parameters: value.parameters, style: value.style }));
+    const groups = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'group' }> => record.kind === 'group' && record.workspaceId === workspaceId)
+      .map(({ value }) => ({ id: value.id, revision: value.revision, name: value.name, members: value.members, collapsed: value.collapsed === true }));
     const draft = this.#viewportDrafts.get(workspaceId);
     const { x, y, zoom } = draft?.viewport ?? workspace.viewport;
-    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, placements, visualEdges, drawings,
+    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, placements, visualEdges, drawings, groups,
       canDeleteEdges: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && deletion.allowed,
       canDeleteDrawings: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && drawingDeletion.allowed,
       canConvertDrawings: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && drawingConversion.allowed,
@@ -510,6 +513,90 @@ export class LocalProjectManager {
       const placement = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === id.toLowerCase());
       demand(placement?.kind === 'placement', 'PLACEMENT_MISSING', 'El extremo debe pertenecer a este workspace.');
       return placement.value.entityId;
+    });
+  }
+  #canvasGroupEntityIds(active: ActiveProjectBinding, workspaceId: string, groupId: string): string[] {
+    return this.#canvasMemberEntityIds(active, workspaceId, [{ kind: 'group', id: groupId }]);
+  }
+  #canvasMemberEntityIds(active: ActiveProjectBinding, workspaceId: string, members: readonly GroupMember[]): string[] {
+    const records = active.lease.service.state.project.snapshot.records;
+    const groups = new Map(records.filter((record): record is Extract<DomainRecord, { kind: 'group' }> => record.kind === 'group' && record.workspaceId === workspaceId)
+      .map((record) => [record.value.id.toLowerCase(), record]));
+    const placements = new Map(records.filter((record): record is Extract<DomainRecord, { kind: 'placement' }> => record.kind === 'placement' && record.workspaceId === workspaceId)
+      .map((record) => [record.value.id.toLowerCase(), record]));
+    const entities = new Set<string>(), visited = new Set<string>();
+    const visitGroup = (id: string): void => {
+      const key = id.toLowerCase(); if (visited.has(key)) return; visited.add(key);
+      const group = groups.get(key); if (!group) return;
+      for (const member of group.value.members) {
+        if (member.kind === 'group') visitGroup(member.id);
+        else if (member.kind === 'placement') {
+          const placement = placements.get(member.id.toLowerCase()); if (placement) entities.add(placement.value.entityId);
+        }
+      }
+    };
+    for (const member of members) {
+      if (member.kind === 'group') visitGroup(member.id);
+      else if (member.kind === 'placement') {
+        const placement = placements.get(member.id.toLowerCase()); if (placement) entities.add(placement.value.entityId);
+      }
+    }
+    return [...entities];
+  }
+  createCanvasGroup(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, name: string, members: GroupMember[]): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision, 'REVISION_CONFLICT', 'El workspace cambió; recarga antes de agrupar.');
+      demand(typeof name === 'string' && name.trim().length > 0 && name.trim().length <= 120, 'INVALID_GROUP_NAME', 'El grupo necesita un nombre de 1 a 120 caracteres.');
+      demand(Array.isArray(members) && members.length > 0 && members.length <= 512, 'INVALID_GROUP_MEMBERS', 'Selecciona al menos un miembro para agrupar.');
+      const id = randomUUID();
+      const record: DomainRecord = { kind: 'group', workspaceId, value: { schemaVersion: '1.0.0', id, revision: 1, extensions: {}, name: name.trim(), members, collapsed: false } };
+      const entities = members.flatMap((member) => member.kind === 'placement' ? this.#canvasEndpointEntities(active, workspaceId, [member.id]) :
+        member.kind === 'group' ? this.#canvasGroupEntityIds(active, workspaceId, member.id) : []);
+      await this.#commitCanvasCommand(active, { command: 'a3.core.create-document', payload: { record } }, entities, { kind: 'group', workspaceId, id });
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  setCanvasGroupMembers(sessionId: string, workspaceId: string, groupId: string, expectedRevision: number, members: GroupMember[]): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const group = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'group' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === groupId.toLowerCase());
+      demand(group?.kind === 'group', 'GROUP_MISSING', 'El grupo ya no está disponible en este workspace.');
+      demand(Number.isSafeInteger(expectedRevision) && group.value.revision === expectedRevision, 'REVISION_CONFLICT', 'El grupo cambió; recarga antes de modificar sus miembros.');
+      const scope = new Set([...this.#canvasGroupEntityIds(active, workspaceId, group.value.id), ...this.#canvasMemberEntityIds(active, workspaceId, members)]);
+      await this.#commitCanvasCommand(active, { command: 'a3.core.set-group-members', payload: { ref: { kind: 'group', id: group.value.id, workspaceId }, members } }, [...scope]);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  renameCanvasGroup(sessionId: string, workspaceId: string, groupId: string, expectedRevision: number, name: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const group = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'group' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === groupId.toLowerCase());
+      demand(group?.kind === 'group', 'GROUP_MISSING', 'El grupo ya no está disponible en este workspace.');
+      demand(Number.isSafeInteger(expectedRevision) && group.value.revision === expectedRevision, 'REVISION_CONFLICT', 'El grupo cambió; recarga antes de renombrarlo.');
+      demand(typeof name === 'string' && name.trim().length > 0 && name.trim().length <= 120, 'INVALID_GROUP_NAME', 'El grupo necesita un nombre de 1 a 120 caracteres.');
+      await this.#commitCanvasCommand(active, { command: 'a3.core.rename', payload: { ref: { kind: 'group', id: group.value.id, workspaceId }, name: name.trim() } }, this.#canvasGroupEntityIds(active, workspaceId, group.value.id));
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  moveCanvasGroup(sessionId: string, workspaceId: string, groupId: string, expectedRevision: number, offset: { x: number; y: number }): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const group = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'group' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === groupId.toLowerCase());
+      demand(group?.kind === 'group', 'GROUP_MISSING', 'El grupo ya no está disponible en este workspace.');
+      demand(Number.isSafeInteger(expectedRevision) && group.value.revision === expectedRevision, 'REVISION_CONFLICT', 'El grupo cambió; recarga antes de moverlo.');
+      await this.#commitCanvasCommand(active, { command: 'a3.core.move-group', payload: { ref: { kind: 'group', id: group.value.id, workspaceId }, offset } }, this.#canvasGroupEntityIds(active, workspaceId, group.value.id));
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  setCanvasGroupCollapsed(sessionId: string, workspaceId: string, groupId: string, expectedRevision: number, collapsed: boolean): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const group = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'group' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === groupId.toLowerCase());
+      demand(group?.kind === 'group', 'GROUP_MISSING', 'El grupo ya no está disponible en este workspace.');
+      demand(Number.isSafeInteger(expectedRevision) && group.value.revision === expectedRevision, 'REVISION_CONFLICT', 'El grupo cambió; recarga antes de contraerlo.');
+      await this.#commitCanvasCommand(active, { command: 'a3.core.set-group-collapsed', payload: { ref: { kind: 'group', id: group.value.id, workspaceId }, collapsed } }, this.#canvasGroupEntityIds(active, workspaceId, group.value.id));
+      return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }
   moveCanvasPlacements(sessionId: string, workspaceId: string, placements: CanvasPlacementMove[]): Promise<LocalCanvasWorkspace> {

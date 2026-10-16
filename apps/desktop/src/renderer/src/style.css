@@ -111,6 +111,26 @@ button:focus-visible, a:focus-visible { outline: 2px solid #c3ed82; outline-offs
 .canvas-selection-properties { display: flex; align-items: center; gap: 12px; height: 34px; flex-shrink: 0; font-size: 11px; }
 .canvas-selection-properties label { display: flex; align-items: center; gap: 6px; margin: 0; }
 .canvas-selection-properties button, .canvas-selection-properties select { margin: 0; font-size: 11px; padding: 4px 8px; }
+.canvas-group-toolbar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 7px 0 2px; color: #b8c9b7; font-size: 11px; }
+.canvas-group-toolbar label { display: flex; align-items: center; gap: 5px; margin: 0; }
+.canvas-group-toolbar input, .canvas-group-toolbar select { max-width: 220px; margin: 0; padding: 5px 7px; background: #101a15; color: #dce5dc; border: 1px solid #49604d; border-radius: 3px; font-size: 11px; }
+.canvas-group-toolbar button { margin: 0; padding: 5px 8px; font-size: 10px; }
+.canvas-group-toolbar [data-canvas-group-member-count] { color: #899b91; }
+.canvas-group-frame { position: absolute; inset: 0; box-sizing: border-box; overflow: visible; border: 1px dashed #76966a; border-radius: 12px; background: #526d3d12; color: #dce8d0; pointer-events: none; }
+.canvas-group-frame.selected { border-color: #c3ed82; border-style: solid; }
+.canvas-group-header { position: absolute; top: -31px; left: 0; display: flex; align-items: center; gap: 9px; min-height: 25px; padding: 3px 8px; border: 1px solid #607950; border-radius: 5px; background: #1c2a22; color: #e6f0df; white-space: nowrap; pointer-events: auto; cursor: grab; }
+.canvas-group-header strong { font-size: 11px; }
+.canvas-group-header small { color: #aab7a4; font-size: 9px; }
+.canvas-group-card { position: relative; box-sizing: border-box; width: 100%; height: 100%; overflow: hidden; border: 1px solid #91b979; border-radius: 9px; background: #20352a; color: #e6f0df; box-shadow: 0 7px 24px #05090c77; }
+.canvas-group-card.selected { outline: 2px solid #d2eea8; outline-offset: 2px; }
+.canvas-group-card .canvas-group-header { top: 0; left: 0; right: 0; min-height: 36px; justify-content: space-between; border: 0; border-bottom: 1px solid #52694c; border-radius: 8px 8px 0 0; cursor: grab; }
+.canvas-group-card p { margin: 53px 12px 8px; font-size: 10px; color: #bbc8b7; }
+.canvas-group-expand { padding: 3px 7px; border: 1px solid #536c4b; border-radius: 4px; background: #17221b; color: #dce9d1; font-size: 9px; cursor: pointer; }
+.canvas-group-card .react-flow__handle { top: 63px; }
+.canvas-group-frame .react-flow__handle { top: 50%; }
+.canvas-group-edge-layer { position: absolute; overflow: visible; pointer-events: none; }
+.canvas-group-edge-path { vector-effect: non-scaling-stroke; }
+.canvas-group-edge-label { fill: #e5eedc; stroke: #18231f; stroke-width: 4px; paint-order: stroke; font-size: 10px; }
 .canvas-edge-editor { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: end; max-height: 190px; overflow: auto; padding: 10px; margin-top: 8px; border: 1px solid #3d5144; border-radius: 5px; background: #17201c; }
 .canvas-edge-editor p { width: 100%; margin: 0; color: #b8c9b7; font-size: 11px; }
 .canvas-edge-editor label { display: grid; gap: 3px; font-size: 10px; margin: 0; }

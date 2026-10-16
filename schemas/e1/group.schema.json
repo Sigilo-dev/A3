@@ -42,6 +42,9 @@
         "additionalProperties": true
       },
       "uniqueItems": true
+    },
+    "collapsed": {
+      "type": "boolean"
     }
   },
   "required": [

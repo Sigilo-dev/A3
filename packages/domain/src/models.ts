@@ -47,7 +47,7 @@ export interface Drawing extends Document {
 export interface DrawingAssetStroke extends OpenData { sourceDrawingId: UUID; points: DrawingPoint[]; parameters: DrawingParameters; style: ExtensionMap; }
 export interface DrawingAsset extends OpenData { schemaVersion: string; strokes: DrawingAssetStroke[]; }
 export interface GroupMember extends OpenData { kind: 'placement' | 'group' | 'drawing'; id: UUID; }
-export interface Group extends Document { name: string; members: GroupMember[]; }
+export interface Group extends Document { name: string; members: GroupMember[]; collapsed?: boolean; }
 export interface Collection extends Document { name: string; entityIds: UUID[]; }
 export type ValueType = 'string' | 'number' | 'boolean' | 'json';
 export interface Variable extends OpenData {
@@ -127,6 +127,7 @@ export type Payloads = {
   'a3.core.move-resource': { resourceId: UUID; location: ResourceLocation };
   'a3.core.move-group': { ref: DocumentRef; offset: Point };
   'a3.core.set-group-members': { ref: DocumentRef; members: GroupMember[] };
+  'a3.core.set-group-collapsed': { ref: DocumentRef; collapsed: boolean };
   'a3.core.set-collection-members': { collectionId: UUID; entityIds: UUID[] };
   'a3.core.set-variables': { scope: VariableScope; variables: Variable[] };
   'a3.core.delete': { ref: DocumentRef; replacementDefaultWorkspaceId?: UUID };

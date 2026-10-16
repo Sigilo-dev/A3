@@ -281,11 +281,16 @@ test('group cycles are rejected; moving a nested selection transforms shared mem
   assert.equal(find(plan.nextSnapshot, 'placement', P1).value.position.x, before.x + 10);
   assert.equal(find(plan.nextSnapshot, 'placement', P1).value.position.y, before.y + 20);
   assert.equal(find(plan.nextSnapshot, 'placement', P1).value.revision, 2);
-  const record = { kind: 'drawing', workspaceId: W1, value: freshDocument(42, { points: [{ x: 1, y: 2 }],
+  const record = { kind: 'drawing', workspaceId: W1, value: freshDocument(42, { points: [{ x: 1, y: 2, pressure: 0.7 }],
     parameters: { size: 4, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: true }, style: {}, futureGeometry: true }) };
   state.records.push(record);
   find(state, 'group', id(40)).value.members.push({ kind: 'drawing', id: id(42) });
-  rejection(run(state, 'a3.core.move-group', { ref: { kind: 'group', id: id(40), workspaceId: W1 }, offset: { x: 10, y: 20 } }), 'drawing-geometry-unavailable');
+  const moved = success(run(state, 'a3.core.move-group', { ref: { kind: 'group', id: id(40), workspaceId: W1 }, offset: { x: 10, y: 20 } })).nextSnapshot;
+  assert.deepEqual(find(moved, 'drawing', id(42), W1).value.points, [{ x: 11, y: 22, pressure: 0.7 }]);
+  assert.deepEqual(find(moved, 'drawing', id(42), W1).value.parameters, find(state, 'drawing', id(42), W1).value.parameters);
+  assert.equal(find(moved, 'drawing', id(42), W1).value.futureGeometry, true);
+  const collapsed = success(run(moved, 'a3.core.set-group-collapsed', { ref: { kind: 'group', id: id(40), workspaceId: W1 }, collapsed: true })).nextSnapshot;
+  assert.equal(find(collapsed, 'group', id(40), W1).value.collapsed, true);
 });
 
 test('creating a project validates default workspace and absence preconditions', () => {

@@ -1,6 +1,6 @@
 import type { CanvasDrawingPatch, CanvasPlacementMove, CanvasVisualEdgePatch, LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
-import type { Drawing, DrawingParameters, DrawingPoint } from '@a3/domain';
-export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasDrawingView, CanvasDrawingPatch, CanvasResourcePreview, LocalCanvasWorkspace } from '@a3/project-store';
+import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
+export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourcePreview, LocalCanvasWorkspace } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
@@ -14,6 +14,11 @@ export type CanvasRequest =
   | { action: 'update-placement'; sessionId: string; workspaceId: string; placementId: string; expectedRevision: number;
       patch: { position?: { x: number; y: number }; size?: { width: number; height: number }; style?: Record<string, unknown> } }
   | { action: 'move-placements'; sessionId: string; workspaceId: string; placements: CanvasPlacementMove[] }
+  | { action: 'create-group'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; name: string; members: GroupMember[] }
+  | { action: 'set-group-members'; sessionId: string; workspaceId: string; groupId: string; expectedRevision: number; members: GroupMember[] }
+  | { action: 'rename-group'; sessionId: string; workspaceId: string; groupId: string; expectedRevision: number; name: string }
+  | { action: 'move-group'; sessionId: string; workspaceId: string; groupId: string; expectedRevision: number; offset: { x: number; y: number } }
+  | { action: 'set-group-collapsed'; sessionId: string; workspaceId: string; groupId: string; expectedRevision: number; collapsed: boolean }
   | { action: 'create-visual-edge'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; sourcePlacementId: string; targetPlacementId: string }
   | { action: 'update-visual-edge'; sessionId: string; workspaceId: string; edgeId: string; expectedRevision: number; patch: CanvasVisualEdgePatch }
   | { action: 'delete-visual-edge'; sessionId: string; workspaceId: string; edgeId: string; expectedRevision: number }

@@ -1,11 +1,11 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { applyEdgeChanges, applyNodeChanges, Background, BackgroundVariant, Handle, NodeResizer, Position, ReactFlow, SelectionMode, ViewportPortal, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { CanvasEntitySummary, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
-import { CanvasEdgeEditor, edgeTypes, toFlowEdges, type CanvasEdge, type CanvasTool } from './CanvasVisualEdges';
+import type { CanvasEntitySummary, CanvasGroupView, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
+import { CanvasEdgeEditor, edgeAppearance, edgeTypes, toFlowEdges, type CanvasEdge, type CanvasTool } from './CanvasVisualEdges';
 import { CanvasDrawingLayer, type StrokePreview } from './CanvasDrawings';
 import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffset, panViewport, renderOrigin, screenToWorld, toVisualViewport, wheelViewport, worldToScreen, zoomAt, type WorldViewport } from '../../shared/world-viewport';
-import type { Drawing, DrawingParameters, DrawingPoint } from '@a3/domain';
+import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
 
 // Navigation reference only: no Entity, Placement, drawing or React Flow node is created.
 const reference = { x: 120, y: 110, width: 550, height: 220 };
@@ -14,6 +14,9 @@ type CanvasNodeData = {
   onResizeEnd: (id: string, position: { x: number; y: number }, size: { width: number; height: number }) => void;
 };
 type CanvasNode = Node<CanvasNodeData, 'a3Entity'>;
+type CanvasGroupNodeData = { group: CanvasGroupView; canWrite: boolean; tool: CanvasTool; collapsed: boolean; memberCount: number; basePosition: { x: number; y: number }; onToggle: (groupId: string) => void };
+type CanvasGroupNode = Node<CanvasGroupNodeData, 'a3Group'>;
+type CanvasFlowNode = CanvasNode | CanvasGroupNode;
 const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }: NodeProps<CanvasNode>) {
   const [preview, setPreview] = useState<{ text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary' } | null>(null);
   useEffect(() => {
@@ -47,17 +50,136 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
       {Object.keys(data.placement.style).length > 0 && <details><summary>Estilo de esta vista</summary><pre>{JSON.stringify(data.placement.style, null, 2)}</pre></details>}
     </div>
   </article>;
+}), a3Group: memo(function CanvasGroupNodeRenderer({ data, selected }: NodeProps<CanvasGroupNode>) {
+  const handles = <><Handle id="group-visual-target" type="target" position={Position.Left} isConnectable={data.canWrite && data.tool === 'connect'} aria-label="Línea visual al grupo" />
+    <Handle id="group-visual-source" type="source" position={Position.Right} isConnectable={data.canWrite && data.tool === 'connect'} aria-label="Línea visual desde el grupo" /></>;
+  return data.collapsed
+    ? <article className={`canvas-group-card${selected ? ' selected' : ''}`} data-group-id={data.group.id} data-group-collapsed="true" aria-label={`Grupo ${data.group.name}, contraído`}>
+      {handles}<header className="canvas-group-header"><strong>{data.group.name}</strong><small>Grupo · {data.memberCount} miembros</small></header>
+      <p>Representaciones y trazos ocultos</p><button className="canvas-group-expand nodrag nopan" onClick={(event) => { event.stopPropagation(); data.onToggle(data.group.id); }}>Expandir grupo</button>
+    </article>
+    : <div className={`canvas-group-frame${selected ? ' selected' : ''}`} data-group-id={data.group.id} data-group-collapsed="false" aria-label={`Grupo ${data.group.name}`}>
+      <div className="canvas-group-header"><strong>{data.group.name}</strong><small>{data.memberCount} miembros</small>
+        <button className="canvas-group-expand nodrag nopan" onClick={(event) => { event.stopPropagation(); data.onToggle(data.group.id); }}>Contraer</button></div>{handles}
+    </div>;
 }) };
 const defaultDrawingParameters: DrawingParameters = { size: 4, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: true };
 interface ActiveStroke { pointerId: number; pointerType: string; hasPressure: boolean; points: DrawingPoint[]; }
 
-function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd'], tool: CanvasTool, previous: CanvasNode[] = [], force = false): CanvasNode[] {
+interface GroupLayout { x: number; y: number; width: number; height: number; placementIds: Set<string>; drawingIds: Set<string>; groupIds: Set<string>; }
+function groupLayouts(workspace: LocalCanvasWorkspace): { layouts: Map<string, GroupLayout>; hiddenPlacements: Set<string>; hiddenDrawings: Set<string>; hiddenGroups: Set<string>; edgeEndpoints: Map<string, string> } {
+  const groups = new Map(workspace.groups.map((group) => [group.id.toLowerCase(), group]));
+  const placements = new Map(workspace.placements.map((placement) => [placement.id.toLowerCase(), placement]));
+  const drawings = new Map(workspace.drawings.map((drawing) => [drawing.id.toLowerCase(), drawing]));
+  const memoized = new Map<string, { placementIds: Set<string>; drawingIds: Set<string>; groupIds: Set<string> }>();
+  const collect = (id: string, visiting = new Set<string>()): { placementIds: Set<string>; drawingIds: Set<string>; groupIds: Set<string> } => {
+    const key = id.toLowerCase(), prior = memoized.get(key); if (prior) return prior;
+    const group = groups.get(key); if (!group || visiting.has(key)) return { placementIds: new Set(), drawingIds: new Set(), groupIds: new Set() };
+    const path = new Set(visiting); path.add(key);
+    const result = { placementIds: new Set<string>(), drawingIds: new Set<string>(), groupIds: new Set<string>() };
+    for (const member of group.members) {
+      if (member.kind === 'placement' && placements.has(member.id.toLowerCase())) result.placementIds.add(placements.get(member.id.toLowerCase())!.id);
+      else if (member.kind === 'drawing' && drawings.has(member.id.toLowerCase())) result.drawingIds.add(drawings.get(member.id.toLowerCase())!.id);
+      else if (member.kind === 'group' && groups.has(member.id.toLowerCase())) {
+        const child = groups.get(member.id.toLowerCase())!, descendants = collect(child.id, path);
+        result.groupIds.add(child.id); descendants.groupIds.forEach((value) => result.groupIds.add(value));
+        descendants.placementIds.forEach((value) => result.placementIds.add(value)); descendants.drawingIds.forEach((value) => result.drawingIds.add(value));
+      }
+    }
+    memoized.set(key, result); return result;
+  };
+  const layouts = new Map<string, GroupLayout>();
+  for (const group of workspace.groups) {
+    const descendants = collect(group.id); let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const id of descendants.placementIds) { const value = placements.get(id.toLowerCase())!; minX = Math.min(minX, value.position.x); minY = Math.min(minY, value.position.y); maxX = Math.max(maxX, value.position.x + value.size.width); maxY = Math.max(maxY, value.position.y + value.size.height); }
+    for (const id of descendants.drawingIds) for (const point of drawings.get(id.toLowerCase())?.points ?? []) { minX = Math.min(minX, point.x); minY = Math.min(minY, point.y); maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y); }
+    if (!Number.isFinite(minX)) { minX = 0; minY = 0; maxX = 200; maxY = 100; }
+    layouts.set(group.id.toLowerCase(), { x: minX - 24, y: minY - 24, width: Math.max(200, maxX - minX + 48), height: Math.max(100, maxY - minY + 48), ...descendants });
+  }
+  const depth = new Map<string, number>();
+  const walk = (id: string, level: number, seen: Set<string>): void => { const key = id.toLowerCase(); if (seen.has(key)) return; seen.add(key);
+    depth.set(key, Math.min(depth.get(key) ?? Infinity, level)); const group = groups.get(key); if (!group) return;
+    for (const member of group.members) if (member.kind === 'group') walk(member.id, level + 1, new Set(seen)); };
+  const childIds = new Set(workspace.groups.flatMap((group) => group.members.filter((member) => member.kind === 'group').map((member) => member.id.toLowerCase())));
+  for (const group of workspace.groups.filter((item) => !childIds.has(item.id.toLowerCase()))) walk(group.id, 0, new Set());
+  for (const group of workspace.groups) if (!depth.has(group.id.toLowerCase())) walk(group.id, 0, new Set());
+  const collapsed = workspace.groups.filter((group) => group.collapsed).sort((a, b) => (depth.get(a.id.toLowerCase()) ?? 0) - (depth.get(b.id.toLowerCase()) ?? 0));
+  const hiddenPlacements = new Set<string>(), hiddenDrawings = new Set<string>(), hiddenGroups = new Set<string>(), edgeEndpoints = new Map<string, string>();
+  for (const group of collapsed) {
+    const descendants = layouts.get(group.id.toLowerCase())!;
+    for (const id of descendants.placementIds) { if (!edgeEndpoints.has(id.toLowerCase())) edgeEndpoints.set(id.toLowerCase(), `a3-group:${group.id}`); hiddenPlacements.add(id.toLowerCase()); }
+    descendants.drawingIds.forEach((id) => hiddenDrawings.add(id.toLowerCase()));
+    descendants.groupIds.forEach((id) => hiddenGroups.add(id.toLowerCase()));
+  }
+  return { layouts, hiddenPlacements, hiddenDrawings, hiddenGroups, edgeEndpoints };
+}
+function collapsedEdgePoint(box: { x: number; y: number; width: number; height: number }, toward: { x: number; y: number }): { x: number; y: number } {
+  const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  if (Math.abs(toward.y - center.y) > Math.abs(toward.x - center.x)) return { x: center.x, y: box.y + (toward.y >= center.y ? box.height : 0) };
+  const right = toward.x >= center.x;
+  return { x: box.x + (right ? box.width : 0), y: center.y };
+}
+function CanvasCollapsedEdges({ workspace, origin, endpointMap, layouts }: { workspace: LocalCanvasWorkspace; origin: { x: number; y: number }; endpointMap: ReadonlyMap<string, string>; layouts: ReadonlyMap<string, GroupLayout> }): React.JSX.Element | null {
+  const groups = new Map(workspace.groups.map((group) => [group.id.toLowerCase(), group]));
+  const placements = new Map(workspace.placements.map((placement) => [placement.id.toLowerCase(), placement]));
+  const routes = workspace.visualEdges.flatMap((edge) => {
+    const sourceGroup = endpointMap.get(edge.sourcePlacementId.toLowerCase()), targetGroup = endpointMap.get(edge.targetPlacementId.toLowerCase());
+    if (!sourceGroup && !targetGroup) return [];
+    if (sourceGroup && targetGroup && sourceGroup === targetGroup) return [];
+    const bounds = (placementId: string, groupEndpoint: string | undefined) => {
+      if (groupEndpoint) {
+        const groupId = groupEndpoint.slice('a3-group:'.length), group = groups.get(groupId.toLowerCase()), layout = layouts.get(groupId.toLowerCase());
+        return group && layout ? { id: groupEndpoint, x: layout.x, y: layout.y, width: 250, height: 126 } : undefined;
+      }
+      const placement = placements.get(placementId.toLowerCase());
+      return placement ? { id: placement.id, x: placement.position.x, y: placement.position.y, width: placement.size.width, height: placement.size.height } : undefined;
+    };
+    const sourceBox = bounds(edge.sourcePlacementId, sourceGroup), targetBox = bounds(edge.targetPlacementId, targetGroup);
+    if (!sourceBox || !targetBox) return [];
+    const sourceCenter = { x: sourceBox.x + sourceBox.width / 2, y: sourceBox.y + sourceBox.height / 2 };
+    const targetCenter = { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 };
+    const startWorld = collapsedEdgePoint(sourceBox, targetCenter), endWorld = collapsedEdgePoint(targetBox, sourceCenter);
+    const start = { x: startWorld.x - origin.x, y: startWorld.y - origin.y }, end = { x: endWorld.x - origin.x, y: endWorld.y - origin.y };
+    const waypoints = edge.waypoints.map((point) => ({ x: point.x - origin.x, y: point.y - origin.y }));
+    const points = [start, ...waypoints, end];
+    const style = edgeAppearance(edge.style), markerId = `a3-group-arrow-${edge.id}`;
+    let path: string;
+    if (waypoints.length || style.route === 'straight') path = points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ');
+    else if (style.route === 'orthogonal') {
+      const middle = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y) ? { x: (start.x + end.x) / 2, y: start.y } : { x: start.x, y: (start.y + end.y) / 2 };
+      const last = { x: end.x, y: middle.y };
+      path = `M ${start.x} ${start.y} L ${middle.x} ${middle.y} L ${last.x} ${last.y} L ${end.x} ${end.y}`;
+    } else if (Math.abs(end.x - start.x) >= Math.abs(end.y - start.y)) {
+      const bend = Math.max(40, Math.abs(end.x - start.x) / 2), direction = end.x >= start.x ? 1 : -1;
+      path = `M ${start.x} ${start.y} C ${start.x + direction * bend} ${start.y}, ${end.x - direction * bend} ${end.y}, ${end.x} ${end.y}`;
+    } else {
+      const bend = Math.max(40, Math.abs(end.y - start.y) / 2), direction = end.y >= start.y ? 1 : -1;
+      path = `M ${start.x} ${start.y} C ${start.x} ${start.y + direction * bend}, ${end.x} ${end.y - direction * bend}, ${end.x} ${end.y}`;
+    }
+    return [{ edge, sourceBox, targetBox, sourceId: sourceBox.id, targetId: targetBox.id, path, labelPoint: { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }, style, markerId }];
+  });
+  if (!routes.length) return null;
+  return <svg className="canvas-group-edge-layer" width="1" height="1" overflow="visible" aria-label="Conexiones visuales externas de grupos contraídos">
+    <defs>{routes.map(({ markerId, style }) => <marker key={markerId} id={markerId} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill={style.color} />
+    </marker>)}</defs>
+    {routes.map(({ edge, sourceId, targetId, path, labelPoint, style, markerId }) => <g key={edge.id} data-canvas-edge-source={sourceId} data-canvas-edge-target={targetId}
+      data-visual-edge-id={edge.id} role="img" aria-label={`Línea visual externa: ${edge.label || 'sin etiqueta'}`}>
+      <path className="canvas-group-edge-path" d={path} fill="none" stroke={style.color} strokeWidth={style.width} strokeDasharray={style.pattern === 'dashed' ? '7 5' : undefined}
+        markerStart={['backward', 'both'].includes(style.direction) ? `url(#${markerId})` : undefined} markerEnd={['forward', 'both'].includes(style.direction) ? `url(#${markerId})` : undefined} />
+      {edge.label && <text x={labelPoint.x} y={labelPoint.y - 7} textAnchor="middle" className="canvas-group-edge-label">{edge.label}</text>}
+    </g>)}
+  </svg>;
+}
+function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd'], tool: CanvasTool, previous: CanvasFlowNode[] = [], force = false, onToggle: (id: string) => void = () => undefined): CanvasFlowNode[] {
   const entities = new Map(workspace.entities.map((entity) => [entity.id.toLowerCase(), entity]));
+  const groups = groupLayouts(workspace);
   const old = new Map(previous.map((node) => [node.id, node]));
-  return workspace.placements.flatMap((placement) => {
+  const placementNodes: CanvasNode[] = workspace.placements.flatMap((placement) => {
+    if (groups.hiddenPlacements.has(placement.id.toLowerCase())) return [];
     const entity = entities.get(placement.entityId.toLowerCase());
     if (!entity) return [];
-    const existing = old.get(placement.id);
+    const existing = old.get(placement.id) as CanvasNode | undefined;
     if (!force && existing && existing.data.placement.revision === placement.revision && existing.data.entity.revision === entity.revision &&
         existing.data.canWrite === workspace.canWrite && existing.data.tool === tool) return [existing];
     return [{ id: placement.id, type: 'a3Entity', position: { x: placement.position.x - origin.x, y: placement.position.y - origin.y },
@@ -66,6 +188,18 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
       ariaLabel: `${entity.title || entity.type}${placement.style['a3.ui.locked'] === true ? ', bloqueado' : ''}`,
       data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, tool, onResizeEnd } }];
   });
+  const groupNodes: CanvasGroupNode[] = workspace.groups.filter((group) => !groups.hiddenGroups.has(group.id.toLowerCase())).map((group) => {
+    const key = group.id.toLowerCase(), layout = groups.layouts.get(key)!, collapsed = group.collapsed;
+    const position = { x: layout.x - origin.x, y: layout.y - origin.y };
+    const existing = old.get(`a3-group:${group.id}`) as CanvasGroupNode | undefined;
+    const memberCount = layout.placementIds.size + layout.drawingIds.size + layout.groupIds.size;
+    if (!force && existing?.data.group.revision === group.revision && existing.data.tool === tool && existing.data.canWrite === workspace.canWrite && existing.data.collapsed === collapsed && existing.data.basePosition.x === position.x && existing.data.basePosition.y === position.y) return existing;
+    const width = collapsed ? 250 : layout.width, height = collapsed ? 126 : layout.height;
+    return { id: `a3-group:${group.id}`, type: 'a3Group', position, style: { width, height }, zIndex: collapsed ? 2 : 0,
+      draggable: workspace.canWrite && tool === 'select', dragHandle: '.canvas-group-header', selectable: true, focusable: true, selected: existing?.selected,
+      ariaLabel: `Grupo ${group.name}${collapsed ? ', contraído' : ''}`, data: { group, canWrite: workspace.canWrite, tool, collapsed, memberCount, basePosition: position, onToggle } };
+  });
+  return [...groupNodes, ...placementNodes];
 }
 export function CanvasPanel({ active }: { active: LocalProjectSession | null | undefined }): React.JSX.Element {
   const [selected, setSelected] = useState('');
@@ -81,11 +215,13 @@ export function CanvasPanel({ active }: { active: LocalProjectSession | null | u
 
 function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; workspaceId: string }): React.JSX.Element {
   const [workspace, setWorkspace] = useState<LocalCanvasWorkspace | null>(null);
-  const [nodes, setNodes] = useState<CanvasNode[]>([]);
+  const [nodes, setNodes] = useState<CanvasFlowNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
   const [tool, setTool] = useState<CanvasTool>('select');
   const toolRef = useRef(tool); toolRef.current = tool;
-  const [selection, setSelection] = useState<{ nodeIds: string[]; edgeIds: string[]; drawingIds: string[] }>({ nodeIds: [], edgeIds: [], drawingIds: [] });
+  const [selection, setSelection] = useState<{ nodeIds: string[]; groupIds: string[]; edgeIds: string[]; drawingIds: string[] }>({ nodeIds: [], groupIds: [], edgeIds: [], drawingIds: [] });
+  const [groupName, setGroupName] = useState('Grupo nuevo');
+  const [selectedGroupId, setSelectedGroupId] = useState('');
   const [strokePreview, setStrokePreview] = useState<StrokePreview | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState('');
   const [viewport, setViewport] = useState<WorldViewport>({ x: 0, y: 0, zoom: 1 });
@@ -116,8 +252,13 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     setWorkspace(next);
     revision.current = next.revision; writable.current = next.canWrite;
     placementRevisions.current = new Map(next.placements.map((placement) => [placement.id, placement.revision]));
-    setNodes((previous) => toFlowNodes(next, originRef.current, handleResizeEnd, toolRef.current, previous, force));
-    setEdges((previous) => toFlowEdges(next, originRef.current, toolRef.current, previous));
+    const visibility = groupLayouts(next);
+    setSelection((previous) => ({ ...previous,
+      nodeIds: previous.nodeIds.filter((id) => !visibility.hiddenPlacements.has(id.toLowerCase())),
+      drawingIds: previous.drawingIds.filter((id) => !visibility.hiddenDrawings.has(id.toLowerCase())),
+      groupIds: previous.groupIds.filter((id) => !visibility.hiddenGroups.has(id.toLowerCase())) }));
+    setNodes((previous) => toFlowNodes(next, originRef.current, handleResizeEnd, toolRef.current, previous, force, toggleGroup));
+    setEdges((previous) => toFlowEdges(next, originRef.current, toolRef.current, previous, groupLayouts(next).edgeEndpoints));
   }
 
   const persistPlacement = useCallback((placementId: string, patch: { position?: { x: number; y: number }; size?: { width: number; height: number }; style?: Record<string, unknown> }): Promise<void> => {
@@ -145,13 +286,15 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     void persistPlacement(placementId, { position: { x: localPosition.x + originRef.current.x, y: localPosition.y + originRef.current.y }, size });
   }, [persistPlacement]);
 
-  const handleNodeChanges = useCallback((changes: NodeChange<CanvasNode>[]): void => {
-    setNodes((currentNodes) => applyNodeChanges(changes.filter((change) => change.type !== 'remove'), currentNodes) as CanvasNode[]);
+  const handleNodeChanges = useCallback((changes: NodeChange<CanvasFlowNode>[]): void => {
+    setNodes((currentNodes) => applyNodeChanges(changes.filter((change) => change.type !== 'remove'), currentNodes) as CanvasFlowNode[]);
   }, []);
-  const handleSelectionChange = useCallback(({ nodes: selectedNodes, edges: selectedEdges }: { nodes: CanvasNode[]; edges: CanvasEdge[] }): void => {
-    const nodeIds = selectedNodes.map((node) => node.id), edgeIds = selectedEdges.map((edge) => edge.id);
-    setSelection((previous) => previous.nodeIds.join() === nodeIds.join() && previous.edgeIds.join() === edgeIds.join()
-      ? previous : { nodeIds, edgeIds, drawingIds: [] });
+  const handleSelectionChange = useCallback(({ nodes: selectedNodes, edges: selectedEdges }: { nodes: CanvasFlowNode[]; edges: CanvasEdge[] }): void => {
+    const nodeIds = selectedNodes.filter((node): node is CanvasNode => node.type === 'a3Entity').map((node) => node.id);
+    const groupIds = selectedNodes.filter((node): node is CanvasGroupNode => node.type === 'a3Group').map((node) => node.data.group.id);
+    const edgeIds = selectedEdges.map((edge) => edge.id);
+    setSelection((previous) => previous.nodeIds.join() === nodeIds.join() && previous.groupIds.join() === groupIds.join() && previous.edgeIds.join() === edgeIds.join()
+      ? previous : { ...previous, nodeIds, groupIds, edgeIds });
   }, []);
   useEffect(() => {
     if (tool === 'text') hostRef.current?.parentElement?.querySelector<HTMLInputElement>('[data-edge-label]')?.focus();
@@ -160,8 +303,8 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   useEffect(() => {
     const latest = workspaceRef.current;
     if (latest) {
-      setNodes((previous) => toFlowNodes(latest, origin, handleResizeEnd, tool, previous, true));
-      setEdges((previous) => toFlowEdges(latest, origin, tool, previous));
+      setNodes((previous) => toFlowNodes(latest, origin, handleResizeEnd, tool, previous, true, toggleGroup));
+      setEdges((previous) => toFlowEdges(latest, origin, tool, previous, groupLayouts(latest).edgeEndpoints));
     }
   }, [origin.x, origin.y, handleResizeEnd, tool]);
   useEffect(() => {
@@ -283,14 +426,63 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     mutationTail.current = operation;
     return operation;
   }
+  function toggleGroup(groupId: string): void {
+    void mutateCanvas((latest) => {
+      const group = latest.groups.find((item) => item.id === groupId);
+      if (!group) throw new Error('El grupo ya no está disponible.');
+      return { action: 'set-group-collapsed', sessionId, workspaceId, groupId, expectedRevision: group.revision, collapsed: !group.collapsed };
+    }, 'Vista del grupo guardada');
+  }
+  function selectedMembers(): GroupMember[] {
+    return [...selection.nodeIds.map((id) => ({ kind: 'placement' as const, id })),
+      ...selection.drawingIds.map((id) => ({ kind: 'drawing' as const, id })), ...selection.groupIds.map((id) => ({ kind: 'group' as const, id }))];
+  }
+  async function createGroup(): Promise<void> {
+    const members = selectedMembers(), before = new Set(workspaceRef.current?.groups.map((group) => group.id) ?? []);
+    if (!members.length || !workspace?.canWrite) return;
+    const ok = await mutateCanvas((latest) => ({ action: 'create-group', sessionId, workspaceId, expectedWorkspaceRevision: latest.revision, name: groupName, members }), 'Grupo creado');
+    if (ok) { const created = workspaceRef.current?.groups.find((group) => !before.has(group.id)); if (created) setSelectedGroupId(created.id); }
+  }
+  function currentGroupId(latest: LocalCanvasWorkspace): string | undefined {
+    const fromSelection = selection.groupIds.length === 1 ? selection.groupIds[0] : '';
+    const requested = fromSelection || selectedGroupId;
+    return latest.groups.find((group) => group.id === requested)?.id;
+  }
+  function includeSelection(): void {
+    void mutateCanvas((latest) => {
+      const groupId = currentGroupId(latest), group = latest.groups.find((item) => item.id === groupId);
+      if (!group) throw new Error('Selecciona un grupo para incluir miembros.');
+      const members = [...group.members];
+      for (const member of selectedMembers()) if (member.id !== group.id && !members.some((item) => item.kind === member.kind && item.id.toLowerCase() === member.id.toLowerCase())) members.push(member);
+      return { action: 'set-group-members', sessionId, workspaceId, groupId: group.id, expectedRevision: group.revision, members };
+    }, 'Miembros añadidos al grupo');
+  }
+  function removeSelectionFromGroup(): void {
+    void mutateCanvas((latest) => {
+      const groupId = currentGroupId(latest), group = latest.groups.find((item) => item.id === groupId);
+      if (!group) throw new Error('Selecciona un grupo para sacar miembros.');
+      const selected = selectedMembers();
+      const members = group.members.filter((member) => !selected.some((item) => item.kind === member.kind && item.id.toLowerCase() === member.id.toLowerCase()));
+      return { action: 'set-group-members', sessionId, workspaceId, groupId: group.id, expectedRevision: group.revision, members };
+    }, 'Miembros retirados del grupo');
+  }
+  function renameGroup(): void {
+    void mutateCanvas((latest) => {
+      const groupId = currentGroupId(latest), group = latest.groups.find((item) => item.id === groupId);
+      if (!group) throw new Error('Selecciona un grupo para renombrarlo.');
+      return { action: 'rename-group', sessionId, workspaceId, groupId: group.id, expectedRevision: group.revision, name: groupName };
+    }, 'Grupo renombrado');
+  }
   function selectDrawing(id: string, event: React.MouseEvent<SVGElement> | React.KeyboardEvent<SVGElement>): void {
     const additive = event.shiftKey || event.ctrlKey || event.metaKey;
     setSelection((previous) => {
       const next = additive ? previous.drawingIds.includes(id) ? previous.drawingIds.filter((item) => item !== id) : [...previous.drawingIds, id] : [id];
-      return { nodeIds: [], edgeIds: [], drawingIds: next };
+      return additive ? { ...previous, drawingIds: next } : { nodeIds: [], groupIds: [], edgeIds: [], drawingIds: next };
     });
-    setNodes((previous) => previous.map((node) => node.selected ? { ...node, selected: false } : node));
-    setEdges((previous) => previous.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
+    if (!additive) {
+      setNodes((previous) => previous.map((node) => node.selected ? { ...node, selected: false } : node));
+      setEdges((previous) => previous.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
+    }
   }
   function appendStroke(event: React.PointerEvent<HTMLDivElement>): void {
     const stroke = activeStroke.current, host = hostRef.current;
@@ -315,7 +507,7 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     if (toolRef.current !== 'draw' || !writable.current || !workspaceRef.current || event.button !== 0) return;
     event.preventDefault(); event.stopPropagation();
     activeStroke.current = { pointerId: event.pointerId, pointerType: event.pointerType, hasPressure: false, points: [] };
-    setSelection({ nodeIds: [], edgeIds: [], drawingIds: [] });
+    setSelection({ nodeIds: [], groupIds: [], edgeIds: [], drawingIds: [] });
     setNodes((previous) => previous.map((node) => node.selected ? { ...node, selected: false } : node));
     setEdges((previous) => previous.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Synthetic test input and older touch drivers may not expose capture. */ }
@@ -335,7 +527,7 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       points: stroke.points, parameters, style: { 'a3.ui.stroke.color': '#c3ed82' } }), 'Trazo guardado', 'drawing').then((ok) => {
       if (!ok || !live.current) return;
       const created = workspaceRef.current?.drawings.find((drawing) => !existing.has(drawing.id));
-      if (created) { setSelection({ nodeIds: [], edgeIds: [], drawingIds: [created.id] }); setStatus('Trazo guardado'); }
+      if (created) { setSelection({ nodeIds: [], groupIds: [], edgeIds: [], drawingIds: [created.id] }); setStatus('Trazo guardado'); }
     });
   }
   function cancelStroke(event: React.PointerEvent<HTMLDivElement>): void {
@@ -343,6 +535,8 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     activeStroke.current = null; setStrokePreview(null);
   }
   function createVisualEdge(sourcePlacementId: string, targetPlacementId: string): void {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuid.test(sourcePlacementId) || !uuid.test(targetPlacementId)) return;
     const before = new Set(workspaceRef.current?.visualEdges.map((edge) => edge.id));
     void mutateCanvas((latest) => ({ action: 'create-visual-edge', sessionId, workspaceId, expectedWorkspaceRevision: latest.revision, sourcePlacementId, targetPlacementId })).then((ok) => {
       if (!ok || !live.current) return;
@@ -351,6 +545,8 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     });
   }
   function updateVisualEdge(edgeId: string, patch: CanvasVisualEdgePatch): void {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (patch.sourcePlacementId && !uuid.test(patch.sourcePlacementId) || patch.targetPlacementId && !uuid.test(patch.targetPlacementId)) return;
     void mutateCanvas((latest) => ({ action: 'update-visual-edge', sessionId, workspaceId, edgeId,
       expectedRevision: latest.visualEdges.find((edge) => edge.id === edgeId)?.revision ?? 0, patch }));
   }
@@ -378,21 +574,35 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       }) }), 'Nodo Dibujo creado', 'drawing').then((ok) => {
         if (!ok || !live.current) return;
         const placement = workspaceRef.current?.placements.find((item) => !existingPlacements.has(item.id));
-        setSelection({ nodeIds: placement ? [placement.id] : [], edgeIds: [], drawingIds: [] });
+        setSelection({ nodeIds: placement ? [placement.id] : [], groupIds: [], edgeIds: [], drawingIds: [] });
         if (placement) setNodes((previous) => previous.map((node) => ({ ...node, selected: node.id === placement.id })));
       });
   }
-  function moveNodes(moved: CanvasNode[]): void {
+  function moveNodes(moved: CanvasFlowNode[]): void {
     const origin = originRef.current;
-    const positions = moved.filter((node) => node.draggable).map((node) => ({ id: node.id, position: { x: node.position.x + origin.x, y: node.position.y + origin.y } }));
+    const movedGroups = moved.filter((item): item is CanvasGroupNode => item.type === 'a3Group' && !!item.draggable);
+    const groupedPlacements = new Set<string>(movedGroups.flatMap((node) => [...(groupLayouts(workspaceRef.current!).layouts.get(node.data.group.id.toLowerCase())?.placementIds ?? [])]));
+    for (const node of movedGroups) {
+      const offset = { x: node.position.x - node.data.basePosition.x, y: node.position.y - node.data.basePosition.y };
+      if (offset.x || offset.y) void mutateCanvas((latest) => ({ action: 'move-group', sessionId, workspaceId, groupId: node.data.group.id,
+        expectedRevision: latest.groups.find((group) => group.id === node.data.group.id)?.revision ?? 0, offset }), 'Grupo movido');
+    }
+    const positions = moved.filter((node): node is CanvasNode => node.type === 'a3Entity' && !!node.draggable && !groupedPlacements.has(node.id))
+      .map((node) => ({ id: node.id, position: { x: node.position.x + origin.x, y: node.position.y + origin.y } }));
     if (!positions.length) return;
     void mutateCanvas((latest) => ({ action: 'move-placements', sessionId, workspaceId, placements: positions.map((item) => ({ ...item,
       expectedRevision: latest.placements.find((placement) => placement.id === item.id)?.revision ?? 0 })) }));
   }
+  const activeGroup = selection.groupIds.length === 1 ? workspace?.groups.find((group) => group.id === selection.groupIds[0]) : workspace?.groups.find((group) => group.id === selectedGroupId);
   const selectedPlacement = selection.nodeIds.length === 1 ? workspace?.placements.find((item) => item.id === selection.nodeIds[0]) : undefined;
   const selectedEdge = selection.edgeIds.length === 1 && selection.nodeIds.length === 0 && selection.drawingIds.length === 0 ? workspace?.visualEdges.find((item) => item.id === selection.edgeIds[0]) : undefined;
   const selectedDrawing = selection.drawingIds.length === 1 && selection.nodeIds.length === 0 && selection.edgeIds.length === 0
     ? workspace?.drawings.find((item) => item.id === selection.drawingIds[0]) : undefined;
+  const canvasGroupLayout = workspace ? groupLayouts(workspace) : null;
+  const hiddenDrawingIds = canvasGroupLayout?.hiddenDrawings ?? new Set<string>();
+  const visibleDrawings = workspace?.drawings.filter((drawing) => !hiddenDrawingIds.has(drawing.id.toLowerCase())) ?? [];
+  const visiblePlacementCount = workspace?.placements.filter((placement) => !canvasGroupLayout?.hiddenPlacements.has(placement.id.toLowerCase())).length ?? 0;
+  const hasGroupSelection = selection.nodeIds.length + selection.groupIds.length + selection.drawingIds.length > 0;
   const visual = toVisualViewport(viewport, origin);
   const topLeft = screenToWorld({ x: 0, y: 0 }, viewport);
   const referenceScreen = worldToScreen(reference, viewport);
@@ -400,10 +610,10 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   return <>
     <div className="canvas-tools" role="toolbar" aria-label="Herramienta del lienzo">
       <button data-canvas-tool="select" aria-pressed={tool === 'select'} onClick={() => setTool('select')}>Seleccionar (V)</button>
-      <button data-canvas-tool="draw" aria-pressed={tool === 'draw'} disabled={!workspace?.canWrite} onClick={() => { setSelection({ nodeIds: [], edgeIds: [], drawingIds: [] }); setTool('draw'); }}>Dibujar a mano (D)</button>
+      <button data-canvas-tool="draw" aria-pressed={tool === 'draw'} disabled={!workspace?.canWrite} onClick={() => { setSelection({ nodeIds: [], groupIds: [], edgeIds: [], drawingIds: [] }); setTool('draw'); }}>Dibujar a mano (D)</button>
       <button data-canvas-tool="connect" aria-pressed={tool === 'connect'} onClick={() => setTool('connect')}>Dibujar conexión (C)</button>
       <button data-canvas-tool="text" aria-pressed={tool === 'text'} onClick={() => setTool('text')}>Editar etiqueta (T)</button>
-      <span data-canvas-selection role="status">{selection.nodeIds.length} nodos, {selection.edgeIds.length} líneas y {selection.drawingIds.length} trazos seleccionados</span>
+      <span data-canvas-selection role="status">{selection.nodeIds.length} nodos, {selection.groupIds.length} grupos, {selection.edgeIds.length} líneas y {selection.drawingIds.length} trazos seleccionados</span>
     </div>
     <div className="canvas-toolbar" aria-label="Navegación del lienzo">
       <button className="secondary" data-canvas-zoom-out disabled={!workspace || viewport.zoom <= MIN_ZOOM} onClick={() => zoom(1 / 1.2)} aria-label="Alejar">−</button>
@@ -415,6 +625,21 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
         onChange={(event) => setSelectedEntityId(event.target.value)}>{workspace?.entityChoices.map((entity) => <option key={entity.id} value={entity.id}>{entity.title} · {entity.type}</option>)}</select></label>
       <button className="secondary" data-canvas-create-placement disabled={!workspace?.canWrite || !workspace.entityChoices.length} onClick={() => void createPlacement()}>Crear representación</button>
       <label className="canvas-fixture"><input type="checkbox" data-canvas-fixture checked={showReference} onChange={(event) => setShowReference(event.target.checked)} />Referencia de prueba</label>
+    </div>
+    <div className="canvas-group-toolbar" role="group" aria-label="Grupos espaciales">
+      <label>Nombre <input aria-label="Nombre del grupo" data-canvas-group-name value={groupName} onChange={(event) => setGroupName(event.target.value)} maxLength={120} /></label>
+      <button className="secondary" data-canvas-create-group disabled={!workspace?.canWrite || !hasGroupSelection} onClick={() => void createGroup()}>Agrupar selección</button>
+      <label>Grupo <select aria-label="Grupo espacial" data-canvas-group value={activeGroup?.id ?? ''} onChange={(event) => {
+        const next = workspace?.groups.find((group) => group.id === event.target.value); setSelectedGroupId(next?.id ?? ''); if (next) setGroupName(next.name);
+      }} disabled={!workspace?.groups.length}>
+        <option value="">Selecciona un grupo</option>{workspace?.groups.map((group) => <option key={group.id} value={group.id}>{group.name}{group.collapsed ? ' · contraído' : ''}</option>)}
+      </select></label>
+      <button className="quiet" data-canvas-group-include disabled={!workspace?.canWrite || !activeGroup || !hasGroupSelection} onClick={includeSelection}>Incluir selección</button>
+      <button className="quiet" data-canvas-group-remove disabled={!workspace?.canWrite || !activeGroup || !hasGroupSelection} onClick={removeSelectionFromGroup}>Sacar selección</button>
+      <button className="quiet" data-canvas-group-rename disabled={!workspace?.canWrite || !activeGroup} onClick={renameGroup}>Renombrar</button>
+      <button className="quiet" data-canvas-group-collapse disabled={!workspace?.canWrite || !activeGroup} aria-pressed={activeGroup?.collapsed === true}
+        onClick={() => activeGroup && toggleGroup(activeGroup.id)}>{activeGroup?.collapsed ? 'Expandir grupo' : 'Contraer grupo'}</button>
+      {activeGroup && <span data-canvas-group-member-count>{activeGroup.members.length} miembros directos</span>}
     </div>
     <div className="canvas-selection-properties" aria-label="Propiedades de la selección">
       {selectedPlacement && <label>Color de vista <select aria-label="Color de esta representación" data-canvas-style value={['#9bc279', '#78a9d1', '#d19b78', '#bb91d3'].includes(String(selectedPlacement.style['a3.ui.accent'])) ? String(selectedPlacement.style['a3.ui.accent']) : '#9bc279'}
@@ -469,12 +694,13 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
           event.preventDefault(); event.stopPropagation(); setTool('select');
           setNodes((previous) => previous.map((node) => node.selected ? { ...node, selected: false } : node));
           setEdges((previous) => previous.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
-          setSelection({ nodeIds: [], edgeIds: [], drawingIds: [] }); activeStroke.current = null; setStrokePreview(null); return;
+          setSelection({ nodeIds: [], groupIds: [], edgeIds: [], drawingIds: [] }); activeStroke.current = null; setStrokePreview(null); return;
         }
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && tool === 'select') {
           event.preventDefault(); event.stopPropagation(); setNodes((previous) => previous.map((node) => ({ ...node, selected: true })));
           setEdges((previous) => previous.map((edge) => ({ ...edge, selected: true })));
-          setSelection({ nodeIds: nodes.map((node) => node.id), edgeIds: edges.map((edge) => edge.id), drawingIds: workspace?.drawings.map((drawing) => drawing.id) ?? [] }); return;
+          setSelection({ nodeIds: nodes.filter((node) => node.type === 'a3Entity').map((node) => node.id), groupIds: nodes.filter((node): node is CanvasGroupNode => node.type === 'a3Group').map((node) => node.data.group.id),
+            edgeIds: edges.map((edge) => edge.id), drawingIds: workspace?.drawings.map((drawing) => drawing.id) ?? [] }); return;
         }
         if (!event.ctrlKey && !event.metaKey && ['v', 'c', 't', 'd'].includes(event.key.toLowerCase())) {
           event.preventDefault(); setTool(({ v: 'select', c: 'connect', t: 'text', d: 'draw' } as const)[event.key.toLowerCase() as 'v' | 'c' | 't' | 'd']); return;
@@ -490,12 +716,15 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
         const delta: Record<string, { x: number; y: number }> = { ArrowLeft: { x: 40, y: 0 }, ArrowRight: { x: -40, y: 0 }, ArrowUp: { x: 0, y: 40 }, ArrowDown: { x: 0, y: -40 } };
         if (delta[event.key]) {
           event.preventDefault(); event.stopPropagation();
-          if (selection.nodeIds.length && tool === 'select') {
+          if ((selection.nodeIds.length || selection.groupIds.length) && tool === 'select') {
             const step = event.shiftKey ? 20 : 1, movement = delta[event.key]!;
-            const selected = new Set(nodes.filter((node) => node.selected && node.draggable).map((node) => node.id));
+            const selected = new Set(nodes.filter((node): node is CanvasNode => node.type === 'a3Entity' && !!node.selected && !!node.draggable).map((node) => node.id));
             if (selected.size) void mutateCanvas((latest) => ({ action: 'move-placements', sessionId, workspaceId,
               placements: latest.placements.filter((placement) => selected.has(placement.id)).map((placement) => ({ id: placement.id, expectedRevision: placement.revision,
                 position: { x: placement.position.x - movement.x / 40 * step, y: placement.position.y - movement.y / 40 * step } })) }));
+            for (const groupId of selection.groupIds) void mutateCanvas((latest) => ({ action: 'move-group', sessionId, workspaceId, groupId,
+              expectedRevision: latest.groups.find((group) => group.id === groupId)?.revision ?? 0,
+              offset: { x: -movement.x / 40 * step, y: -movement.y / 40 * step } }), 'Grupo movido');
           } else if (!(event.target instanceof Element && event.target.closest('.react-flow__node'))) update(panViewport(current.current, delta[event.key]!), true);
         }
         else if (event.key === '+' || event.key === '=') { event.preventDefault(); zoom(1.2); }
@@ -524,11 +753,12 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
             <rect x="0" y="0" width="170" height="72" rx="8" /><rect x="380" y="130" width="170" height="72" rx="8" />
             <text x="14" y="32">Referencia A</text><text x="394" y="162">Referencia B</text>
           </svg>}
-          <CanvasDrawingLayer drawings={workspace.drawings} origin={origin} tool={tool} selectedIds={selection.drawingIds} preview={strokePreview} onSelect={selectDrawing} />
+          {canvasGroupLayout && <CanvasCollapsedEdges workspace={workspace} origin={origin} endpointMap={canvasGroupLayout.edgeEndpoints} layouts={canvasGroupLayout.layouts} />}
+          <CanvasDrawingLayer drawings={visibleDrawings} origin={origin} tool={tool} selectedIds={selection.drawingIds} preview={strokePreview} onSelect={selectDrawing} />
         </ViewportPortal>
       </ReactFlow>}
     </div>
-    <div className="canvas-status"><span data-canvas-status role="status">{status}</span><span data-canvas-node-count>{nodes.length} representaciones · Origen visible: {topLeft.x.toLocaleString('es', { maximumFractionDigits: 2 })}, {topLeft.y.toLocaleString('es', { maximumFractionDigits: 2 })}</span></div>
+    <div className="canvas-status"><span data-canvas-status role="status">{status}</span><span data-canvas-node-count>{visiblePlacementCount} representaciones · Origen visible: {topLeft.x.toLocaleString('es', { maximumFractionDigits: 2 })}, {topLeft.y.toLocaleString('es', { maximumFractionDigits: 2 })}</span></div>
     {workspace && <CanvasEdgeEditor workspace={workspace} edge={selectedEdge} tool={tool} onCreate={createVisualEdge} onUpdate={updateVisualEdge} onDelete={(id) => void deleteVisualEdge(id)}
       onRequestDeletePermission={() => void mutateCanvas(() => ({ action: 'approve-edge-delete', sessionId, workspaceId }))} />}
     {showReference && <p className="canvas-help">La referencia es un fixture aislado y no se añade al proyecto.</p>}

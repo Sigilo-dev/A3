@@ -29,6 +29,18 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
     input.placements.every((item: unknown) => !!item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length === 3 &&
       uuid.test(String((item as Record<string, unknown>).id)) && Number.isSafeInteger((item as Record<string, unknown>).expectedRevision) &&
       Number((item as Record<string, unknown>).expectedRevision) >= 1 && validPoint((item as Record<string, unknown>).position));
+  const validMembers = (members: unknown, allowEmpty = false): boolean => Array.isArray(members) && (allowEmpty || members.length > 0) && members.length <= 512 &&
+    members.every((member: unknown) => !!member && typeof member === 'object' && !Array.isArray(member) &&
+      ['placement', 'group', 'drawing'].includes(String((member as Record<string, unknown>).kind)) && uuid.test(String((member as Record<string, unknown>).id)));
+  if (input.action === 'create-group') return Object.keys(input).length === 6 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 &&
+    typeof input.name === 'string' && input.name.trim().length > 0 && input.name.length <= 120 && validMembers(input.members);
+  if (['set-group-members', 'rename-group', 'move-group', 'set-group-collapsed'].includes(input.action)) {
+    if (!uuid.test(String(input.groupId)) || !Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 1) return false;
+    if (input.action === 'set-group-members') return Object.keys(input).length === 6 && validMembers(input.members, true);
+    if (input.action === 'rename-group') return Object.keys(input).length === 6 && typeof input.name === 'string' && input.name.trim().length > 0 && input.name.length <= 120;
+    if (input.action === 'move-group') return Object.keys(input).length === 6 && validPoint(input.offset);
+    return Object.keys(input).length === 6 && typeof input.collapsed === 'boolean';
+  }
   if (input.action === 'create-visual-edge') return Object.keys(input).length === 6 && uuid.test(String(input.sourcePlacementId)) && uuid.test(String(input.targetPlacementId)) &&
     Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1;
   if (input.action === 'delete-visual-edge') return Object.keys(input).length === 5 && uuid.test(String(input.edgeId)) && Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) >= 1;
@@ -147,6 +159,11 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'update-placement': return { ok: true, value: await manager.updateCanvasPlacement(value.sessionId, value.workspaceId, value.placementId, value.expectedRevision, value.patch) };
           case 'content': return { ok: true, value: await manager.loadCanvasContent(value.sessionId, value.workspaceId, value.entityId, value.resourceId) };
           case 'move-placements': return { ok: true, value: await manager.moveCanvasPlacements(value.sessionId, value.workspaceId, value.placements) };
+          case 'create-group': return { ok: true, value: await manager.createCanvasGroup(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.name, value.members) };
+          case 'set-group-members': return { ok: true, value: await manager.setCanvasGroupMembers(value.sessionId, value.workspaceId, value.groupId, value.expectedRevision, value.members) };
+          case 'rename-group': return { ok: true, value: await manager.renameCanvasGroup(value.sessionId, value.workspaceId, value.groupId, value.expectedRevision, value.name) };
+          case 'move-group': return { ok: true, value: await manager.moveCanvasGroup(value.sessionId, value.workspaceId, value.groupId, value.expectedRevision, value.offset) };
+          case 'set-group-collapsed': return { ok: true, value: await manager.setCanvasGroupCollapsed(value.sessionId, value.workspaceId, value.groupId, value.expectedRevision, value.collapsed) };
           case 'create-visual-edge': return { ok: true, value: await manager.createCanvasVisualEdge(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.sourcePlacementId, value.targetPlacementId) };
           case 'update-visual-edge': return { ok: true, value: await manager.updateCanvasVisualEdge(value.sessionId, value.workspaceId, value.edgeId, value.expectedRevision, value.patch) };
           case 'delete-visual-edge': return { ok: true, value: await manager.deleteCanvasVisualEdge(value.sessionId, value.workspaceId, value.edgeId, value.expectedRevision) };

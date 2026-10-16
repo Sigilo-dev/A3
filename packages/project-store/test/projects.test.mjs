@@ -100,6 +100,64 @@ test('unknown format opens read-only and switching rejects an old session withou
   await assert.rejects(app.renameActive(inspected.active.sessionId, 'wrong project'), { code: 'STALE_SESSION' });
 });
 
+test('E2-B2: spatial groups manage subgroups and strokes, move once, collapse across reopen, and keep visual edges canonical', windows, async (t) => {
+  const { root, manager } = await setup(t);
+  const app = manager();
+  const opened = await app.openFolder(root);
+  const sessionId = opened.active.sessionId, workspaceId = opened.active.workspaces[0].id;
+  let view = await app.loadCanvasWorkspace(sessionId, workspaceId);
+  const placements = [...view.placements];
+  assert.equal(placements.length >= 2, true);
+  const originalEdge = structuredClone(view.visualEdges[0]);
+  const drawingResult = await app.createCanvasDrawing(sessionId, workspaceId, view.revision, [{ x: 20, y: 30, pressure: 0.6 }],
+    { size: 4, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: false }, { 'a3.ui.stroke.color': '#c3ed82' });
+  view = drawingResult;
+  const drawing = view.drawings[0];
+  view = await app.createCanvasGroup(sessionId, workspaceId, view.revision, 'Grupo principal', [
+    { kind: 'placement', id: placements[0].id }, { kind: 'drawing', id: drawing.id }
+  ]);
+  let parent = view.groups.find((group) => group.name === 'Grupo principal');
+  assert.ok(parent);
+  view = await app.createCanvasGroup(sessionId, workspaceId, view.revision, 'Subgrupo', [{ kind: 'placement', id: placements[1].id }]);
+  const child = view.groups.find((group) => group.name === 'Subgrupo');
+  assert.ok(child);
+  parent = view.groups.find((group) => group.id === parent.id);
+  const drawingMember = parent.members.find((member) => member.kind === 'drawing');
+  view = await app.setCanvasGroupMembers(sessionId, workspaceId, parent.id, parent.revision, parent.members.filter((member) => member.kind !== 'drawing'));
+  assert.ok(view.drawings.some((item) => item.id === drawing.id), 'ungrouping removes only a view reference, never the drawing document');
+  parent = view.groups.find((group) => group.id === parent.id);
+  view = await app.setCanvasGroupMembers(sessionId, workspaceId, parent.id, parent.revision, [...parent.members, drawingMember, { kind: 'group', id: child.id }]);
+  parent = view.groups.find((group) => group.id === parent.id);
+  view = await app.renameCanvasGroup(sessionId, workspaceId, parent.id, parent.revision, 'Plan revisado');
+  parent = view.groups.find((group) => group.id === parent.id);
+  assert.equal(parent.name, 'Plan revisado');
+  await assert.rejects(app.setCanvasGroupMembers(sessionId, workspaceId, child.id, child.revision, [{ kind: 'group', id: parent.id }]), /ciclo/i);
+  await assert.rejects(app.renameCanvasGroup(sessionId, workspaceId, parent.id, parent.revision - 1, 'Conflicto'), { code: 'REVISION_CONFLICT' });
+
+  const beforeFirst = view.placements.find((item) => item.id === placements[0].id).position;
+  const beforeSecond = view.placements.find((item) => item.id === placements[1].id).position;
+  view = await app.moveCanvasGroup(sessionId, workspaceId, parent.id, parent.revision, { x: 40, y: 25 });
+  assert.deepEqual(view.placements.find((item) => item.id === placements[0].id).position, { x: beforeFirst.x + 40, y: beforeFirst.y + 25 });
+  assert.deepEqual(view.placements.find((item) => item.id === placements[1].id).position, { x: beforeSecond.x + 40, y: beforeSecond.y + 25 });
+  assert.deepEqual(view.drawings[0].points, [{ x: 60, y: 55, pressure: 0.6 }]);
+  assert.equal(view.visualEdges[0].sourcePlacementId, originalEdge.sourcePlacementId);
+  assert.equal(view.visualEdges[0].targetPlacementId, originalEdge.targetPlacementId);
+
+  parent = view.groups.find((group) => group.id === parent.id);
+  view = await app.setCanvasGroupCollapsed(sessionId, workspaceId, parent.id, parent.revision, true);
+  assert.equal(view.groups.find((group) => group.id === parent.id).collapsed, true);
+  const recentId = opened.recents[0].id;
+  await app.closeActive(sessionId);
+  const reopened = await app.openRecent(recentId);
+  view = await app.loadCanvasWorkspace(reopened.active.sessionId, workspaceId);
+  parent = view.groups.find((group) => group.name === 'Plan revisado');
+  assert.equal(parent.collapsed, true);
+  assert.equal(view.visualEdges[0].sourcePlacementId, originalEdge.sourcePlacementId);
+  view = await app.setCanvasGroupCollapsed(reopened.active.sessionId, workspaceId, parent.id, parent.revision, false);
+  assert.equal(view.groups.find((group) => group.id === parent.id).collapsed, false);
+  assert.deepEqual(view.placements.find((item) => item.id === placements[0].id).position, { x: beforeFirst.x + 40, y: beforeFirst.y + 25 });
+});
+
 for (const [phase, index] of [['after-staging', undefined], ['after-install', 0], ['after-install', 1]]) {
   test(`bootstrap uses D1 recovery after interruption at ${phase}:${index ?? '-'}`, windows, async (t) => {
     const { tempRoot, manager } = await setup(t);

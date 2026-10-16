@@ -14,15 +14,19 @@ export function edgeAppearance(style: CanvasVisualEdgeView['style']) {
     direction: ['forward', 'backward', 'both'].includes(String(style['a3.ui.line.direction'])) ? String(style['a3.ui.line.direction']) : 'none'
   };
 }
-export function toFlowEdges(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, tool: CanvasTool, previous: CanvasEdge[] = []): CanvasEdge[] {
+export function toFlowEdges(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, tool: CanvasTool, previous: CanvasEdge[] = [], endpointMap: ReadonlyMap<string, string> = new Map()): CanvasEdge[] {
   const old = new Map(previous.map((edge) => [edge.id, edge]));
   return workspace.visualEdges.map((view) => {
     const existing = old.get(view.id);
     const reconnectable = workspace.canWrite && tool === 'connect';
-    if (existing?.data?.view.revision === view.revision && existing.reconnectable === reconnectable && existing.data.origin.x === origin.x && existing.data.origin.y === origin.y) return existing;
+    const source = endpointMap.get(view.sourcePlacementId.toLowerCase()) ?? view.sourcePlacementId;
+    const target = endpointMap.get(view.targetPlacementId.toLowerCase()) ?? view.targetPlacementId;
+    const sourceHandle = endpointMap.has(view.sourcePlacementId.toLowerCase()) ? 'group-visual-source' : 'visual-source';
+    const targetHandle = endpointMap.has(view.targetPlacementId.toLowerCase()) ? 'group-visual-target' : 'visual-target';
+    if (existing?.data?.view.revision === view.revision && existing.source === source && existing.target === target && existing.reconnectable === reconnectable && existing.data.origin.x === origin.x && existing.data.origin.y === origin.y) return existing;
     const style = edgeAppearance(view.style);
     const marker = { type: MarkerType.ArrowClosed, color: style.color };
-    return { id: view.id, source: view.sourcePlacementId, target: view.targetPlacementId, sourceHandle: 'visual-source', targetHandle: 'visual-target',
+    return { id: view.id, source, target, sourceHandle, targetHandle,
       type: 'a3Visual', data: { view, origin }, reconnectable, selectable: true, focusable: true, selected: existing?.selected,
       ariaLabel: `Línea visual: ${view.label || 'sin etiqueta'}. Solo organización.`,
       markerStart: ['backward', 'both'].includes(style.direction) ? marker : undefined,
@@ -39,9 +43,11 @@ export const edgeTypes = { a3Visual: memo(function VisualEdgeRenderer(props: Edg
     path = points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ');
     const middle = points[Math.floor(points.length / 2)]!; labelX = middle.x; labelY = middle.y;
   }
-  return <BaseEdge id={props.id} path={path} label={view.label} labelX={labelX} labelY={labelY} markerStart={props.markerStart} markerEnd={props.markerEnd}
-    interactionWidth={24} style={{ stroke: style.color, strokeWidth: style.width, strokeDasharray: style.pattern === 'dashed' ? '7 5' : undefined }}
-    labelStyle={{ fill: '#e5eedc' }} labelBgStyle={{ fill: '#18231f' }} labelBgPadding={[6, 4]} />;
+  return <g data-canvas-edge-source={props.source} data-canvas-edge-target={props.target}>
+    <BaseEdge id={props.id} path={path} label={view.label} labelX={labelX} labelY={labelY} markerStart={props.markerStart} markerEnd={props.markerEnd}
+      interactionWidth={24} style={{ stroke: style.color, strokeWidth: style.width, strokeDasharray: style.pattern === 'dashed' ? '7 5' : undefined }}
+      labelStyle={{ fill: '#e5eedc' }} labelBgStyle={{ fill: '#18231f' }} labelBgPadding={[6, 4]} />
+  </g>;
 }) };
 
 export function CanvasEdgeEditor({ workspace, edge, tool, onCreate, onUpdate, onDelete, onRequestDeletePermission }: {
