@@ -285,5 +285,13 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .fatal { margin: 40px; }
 .skip-link { position: fixed; top: -60px; left: 20px; z-index: 10; background: #c3ed82; color: #10151b; padding: 10px; }
 .skip-link:focus { top: 10px; }
+.code-language-label { display: flex; align-items: center; gap: 8px; margin: 0; }
+.code-language-label select { width: 160px; margin: 0; padding: 6px; color: #dce5dc; background: #18231d; border: 1px solid #53634e; border-radius: 4px; }
+.code-dialog .markdown-toolbar { flex-wrap: wrap; }
+.code-dialog .markdown-header small { overflow-wrap: anywhere; }
+.code-source-editor .cm-editor { min-height: 280px; }
+.code-source-editor .cm-panels { background: #1d2922; color: #e2eedc; }
+.code-source-editor .cm-panels input { background: #101a15; color: #e2eedc; }
+.code-source-editor .cm-panels button { color: #101a15; }
 @media (max-width: 1100px) { .shell { grid-template-columns: 194px minmax(360px, 1fr) 220px; } .inspector { padding: 28px 18px; } .breadcrumb { margin-bottom: 40px; } }
 @media (max-width: 1000px) { .file-layout { grid-template-columns: 1fr; } .file-toolbar form { flex: 1; } .file-toolbar input { flex: 1; } }

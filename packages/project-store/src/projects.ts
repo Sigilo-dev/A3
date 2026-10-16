@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
+import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
 import { checkedPath, fileBytes } from './reader.js';
@@ -96,6 +97,7 @@ export interface LocalExplorerOpen extends Omit<ExplorerOpenResult, 'path'> { re
 export interface LocalExplorerDeletePreview extends Omit<ExplorerDeletePreview, 'path'> { token: string; name: string; }
 interface ExplorerItemBinding { sessionId: string; path: string; identity: string; kind: 'file' | 'directory' | 'blocked-link'; resourceId?: string; }
 interface ExplorerPageBinding { sessionId: string; path: string; offset: number; }
+interface CodeBinding { sessionId: string; path: string; resourceId?: string; entityId?: string; entityRevision?: number; identity?: string; hash?: string; revision?: number | null; }
 interface ExplorerDeleteBinding { sessionId: string; itemId: string; path: string; identity: string; }
 interface ActiveProjectBinding { lease: ProjectLease; sessionId: string; projectId: string; name: string; rootIdentity: string; }
 interface Initialization {
@@ -212,6 +214,7 @@ export class LocalProjectManager {
   #explorerPaths = new Map<string, { id: string; identity: string }>();
   #explorerPages = new Map<string, ExplorerPageBinding>();
   #explorerDeletes = new Map<string, ExplorerDeleteBinding>();
+  #codeDocuments = new Map<string, CodeBinding>();
   #viewportDrafts = new Map<string, { sessionId: string; expectedRevision: number; viewport: WorkspaceViewport }>();
   #canvasHistories = new Map<string, CanvasHistoryState>();
   constructor(private readonly options: LocalProjectsOptions) {
@@ -862,6 +865,104 @@ export class LocalProjectManager {
       catch { return { entityId, resourceId, text: null, state: 'binary', mediaType }; }
     });
   }
+  async #readCodeDocument(active: ActiveProjectBinding, input: CodeBinding, documentId: string): Promise<{ document: CodeDocument; binding: CodeBinding }> {
+    const binding = { ...input };
+    await active.lease.service.checkExternalChanges();
+    const snapshot = active.lease.service.state.project.snapshot;
+    let resource = binding.resourceId ? snapshot.records.find((r): r is Extract<DomainRecord, { kind: 'resource' }> => r.kind === 'resource' && r.value.id.toLowerCase() === binding.resourceId!.toLowerCase()) : undefined;
+    if (!binding.resourceId) {
+      const matches = snapshot.records.filter((r): r is Extract<DomainRecord, { kind: 'resource' }> => r.kind === 'resource' && r.value.kind === 'project-file' && r.value.path.toLowerCase() === binding.path.toLowerCase());
+      demand(matches.length <= 1, 'CODE_RESOURCE_AMBIGUOUS', 'La ruta tiene varios recursos; revisa el catálogo antes de editar.');
+      resource = matches[0]; if (resource) binding.resourceId = resource.value.id;
+    }
+    demand(!binding.resourceId || resource, 'RESOURCE_MISSING', 'El recurso ya no existe; se conserva el borrador.');
+    let languageHint: string | null = null;
+    if (binding.entityId) {
+      const entity = snapshot.records.find((r) => r.kind === 'entity' && r.value.id.toLowerCase() === binding.entityId!.toLowerCase());
+      demand(entity?.kind === 'entity' && entity.value.type === 'a3.content.code' && entity.value.contentResourceId === resource?.value.id,
+        'REVISION_CONFLICT', 'El nodo de código cambió de recurso; vuelve a abrirlo.');
+      binding.entityRevision = entity.value.revision;
+      languageHint = typeof entity.value.properties['a3.content.language'] === 'string' ? entity.value.properties['a3.content.language'] : null;
+    }
+    demand(resource?.value.kind !== 'remote-url', 'CODE_REMOTE_UNAVAILABLE', 'Las URLs no se descargan para abrir código.');
+    let bytes: Uint8Array, hash: string;
+    let revision: number | null = resource?.value.revision ?? null;
+    const mounted = resource?.value.kind === 'mounted-file';
+    if (mounted) {
+      const opened = await active.lease.service.openResource(resource!.value.id, 2 * 1024 * 1024);
+      demand(opened.ok, 'CODE_READ_FAILED', opened.diagnostics.map((d) => `${d.code}: ${d.message}`).join('\n'));
+      bytes = opened.value.bytes; hash = opened.value.sha256; revision = opened.value.revision;
+      binding.path = resource!.value.path as string;
+    } else {
+      if (resource?.value.kind === 'project-file') binding.path = resource.value.path;
+      const opened = await active.lease.service.readCodeFile(binding.path, binding.identity);
+      demand(opened.ok, opened.diagnostics.some((d) => d.code === 'REVISION_CONFLICT') ? 'REVISION_CONFLICT' : opened.diagnostics.some((d) => d.code === 'PERMISSION_DENIED') ? 'PERMISSION_DENIED' : 'CODE_READ_FAILED', opened.diagnostics.map((d) => d.message).join('\n'));
+      bytes = opened.value.bytes; hash = opened.value.hash; binding.identity = opened.value.identity;
+    }
+    const decoded = decodeCodeText(bytes);
+    const state = active.lease.service.state;
+    const managed = binding.path.toLowerCase() === 'a3.project.json' || binding.path.toLowerCase().startsWith('.a3/') ||
+      !!resource && snapshot.records.some((r) => r.kind === 'entity' && r.value.type === 'a3.core.drawing' && r.value.contentResourceId === resource.value.id);
+    let readOnlyReason = decoded.readOnlyReason ?? (mounted ? 'Montaje externo: solo lectura. La edición externa no está habilitada por E0-C2.' : managed ? 'Archivo administrado por A3: solo lectura; su guardado requiere el editor de contrato correspondiente.' : state.mode !== 'writer' ? 'Proyecto abierto en solo lectura.' : state.externalConflict ? 'Hay cambios externos pendientes; reabre el proyecto antes de escribir.' : null);
+    if (!readOnlyReason) {
+      const allowed = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root, projectId: active.projectId,
+        operation: 'write', paths: [binding.path], refs: resource ? [refOf(resource)] : [], resources: resource ? [resource.value] : [], requiredCapabilities: ['document.edit'], stage: 'prepare' });
+      if (!allowed.allowed) readOnlyReason = 'El broker local no concede edición documental.';
+    }
+    binding.hash = hash; binding.revision = revision;
+    return { binding, document: { ...decoded, readOnlyReason, documentId, resourceId: binding.resourceId ?? null, revision, hash,
+      name: binding.path.split('/').at(-1) ?? binding.path, relativePath: binding.path, size: bytes.length, canWrite: readOnlyReason === null, languageHint } };
+  }
+  openCodeDocument(sessionId: string, target: CodeOpenTarget): Promise<CodeDocument> {
+    return this.#queue(async () => {
+      const active = this.#explorerContext(sessionId);
+      let binding: CodeBinding;
+      if ('itemId' in target) {
+        const item = this.#explorerPath(target.itemId, sessionId);
+        demand(item.kind === 'file', 'CODE_FILE_REQUIRED', 'Abre un archivo regular del explorador.');
+        binding = { sessionId, path: item.path, identity: item.identity, ...(item.resourceId ? { resourceId: item.resourceId } : {}) };
+      } else binding = { sessionId, path: '', resourceId: target.resourceId, ...(target.entityId ? { entityId: target.entityId } : {}) };
+      const documentId = randomUUID();
+      const opened = await this.#readCodeDocument(active, binding, documentId);
+      this.#codeDocuments.set(documentId, opened.binding); return opened.document;
+    });
+  }
+  reloadCodeDocument(sessionId: string, documentId: string): Promise<CodeDocument> {
+    return this.#queue(async () => {
+      const active = this.#explorerContext(sessionId), binding = this.#codeDocuments.get(documentId);
+      demand(binding?.sessionId === sessionId, 'STALE_DOCUMENT', 'El documento pertenece a otra sesión.');
+      const { identity: _identity, ...current } = binding;
+      const opened = await this.#readCodeDocument(active, current, documentId);
+      this.#codeDocuments.set(documentId, opened.binding); return opened.document;
+    });
+  }
+  saveCodeDocument(input: { sessionId: string; documentId: string; expectedRevision: number | null; expectedHash: string; content: string }): Promise<CodeDocument> {
+    return this.#queue(async () => {
+      const active = this.#explorerContext(input.sessionId), binding = this.#codeDocuments.get(input.documentId);
+      demand(binding?.sessionId === input.sessionId, 'STALE_DOCUMENT', 'El documento pertenece a otra sesión; se conserva el borrador.');
+      demand(typeof input.content === 'string' && input.content.length <= 2 * 1024 * 1024, 'CODE_SIZE_LIMIT', 'El editor admite hasta 2 MiB.');
+      demand(binding.hash === input.expectedHash && binding.revision === input.expectedRevision, 'REVISION_CONFLICT', 'La vista del documento cambió; compara antes de guardar.');
+      const opened = await this.#readCodeDocument(active, binding, input.documentId), current = opened.document;
+      demand(current.hash === input.expectedHash && current.revision === input.expectedRevision && opened.binding.entityRevision === binding.entityRevision,
+        'REVISION_CONFLICT', 'El archivo o su nodo cambió desde que se abrió. El borrador se conserva.');
+      demand(current.canWrite && current.encoding && current.content !== null, 'PERMISSION_DENIED', current.readOnlyReason ?? 'No se puede editar este archivo.');
+      if (input.content === current.content) return current;
+      const ending = codeLineEnding(input.content);
+      demand(ending !== 'mixed' && ending !== 'cr' && (ending === 'none' || current.lineEnding === 'none' || ending === current.lineEnding), 'CODE_REPRESENTATION_CHANGED', 'El buffer cambió el convenio de finales de línea; conserva el original.');
+      let bytes: Uint8Array;
+      try { bytes = encodeCodeText(input.content, current.encoding); } catch { throw new LocalProjectError('CODE_ENCODING_FAILED', 'El buffer contiene Unicode incompleto; los bytes originales se conservan.'); }
+      demand(bytes.length <= 2 * 1024 * 1024 && decodeCodeText(bytes).state === 'text', 'CODE_ENCODING_FAILED', 'El buffer no es texto seguro o supera 2 MiB.');
+      const plan = current.resourceId ? await active.lease.service.prepareResourceWrite({ operationId: randomUUID(), resourceId: current.resourceId,
+        expectedRevision: current.revision!, expectedHash: current.hash, bytes }) : await active.lease.service.prepareExplorerOperation({ operationId: randomUUID(), action: 'write-file', sourcePath: opened.binding.path,
+        ...(opened.binding.identity ? { expectedSourceIdentity: opened.binding.identity } : {}), expectedHash: current.hash, bytes });
+      demand(plan.ok, plan.diagnostics.some((d) => d.code === 'REVISION_CONFLICT') ? 'REVISION_CONFLICT' : plan.diagnostics.some((d) => d.code === 'PERMISSION_DENIED') ? 'PERMISSION_DENIED' : 'CODE_WRITE_FAILED', plan.diagnostics.map((d) => d.message).join('\n'));
+      const committed = await active.lease.service.commit(plan.value);
+      demand(committed.ok, committed.diagnostics.some((d) => d.code === 'REVISION_CONFLICT') ? 'REVISION_CONFLICT' : 'CODE_WRITE_FAILED', committed.diagnostics.map((d) => d.message).join('\n'));
+      const { identity: _identity, ...next } = opened.binding;
+      const saved = await this.#readCodeDocument(active, next, input.documentId);
+      this.#codeDocuments.set(input.documentId, saved.binding); return saved.document;
+    });
+  }
   #markdownWriteAllowed(active: ActiveProjectBinding, resource: Extract<DomainRecord, { kind: 'resource' }>): boolean {
     const state = active.lease.service.state;
     if (resource.value.kind !== 'project-file' || state.mode !== 'writer' || state.externalConflict) return false;
@@ -1329,6 +1430,7 @@ export class LocalProjectManager {
   }
   #clearExplorer(): void {
     this.#explorerSessionId = ''; this.#explorerItems.clear(); this.#explorerPaths.clear(); this.#explorerPages.clear(); this.#explorerDeletes.clear();
+    this.#codeDocuments.clear();
   }
   #explorerContext(sessionId?: string): ActiveProjectBinding {
     demand(this.#active && (!sessionId || this.#active.sessionId === sessionId), 'STALE_SESSION', 'La sesión del proyecto cambió; vuelve a abrir Archivos.');

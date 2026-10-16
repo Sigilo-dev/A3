@@ -129,12 +129,14 @@ export interface ExplorerDirectoryPage {
 export interface ExplorerOpenResult { path: string; name: string; text: string | null; size: number; mediaType?: string; }
 export interface ExplorerOperationRequest {
   operationId: string;
-  action: 'create-file' | 'create-folder' | 'rename' | 'duplicate' | 'trash';
+  action: 'create-file' | 'create-folder' | 'rename' | 'duplicate' | 'trash' | 'write-file';
   sourcePath?: string;
   targetPath?: string;
   expectedSourceIdentity?: string;
   targetParentIdentity?: string;
   content?: string;
+  bytes?: Uint8Array;
+  expectedHash?: string;
 }
 export interface ExplorerDeletePreview {
   path: string;

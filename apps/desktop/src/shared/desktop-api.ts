@@ -8,6 +8,13 @@ export const PROJECTS_CHANNEL = 'a3.projects:command';
 export const FILES_CHANNEL = 'a3.files:command';
 export const CANVAS_CHANNEL = 'a3.canvas:command';
 export const MARKDOWN_CHANNEL = 'a3.markdown:document';
+export const CODE_CHANNEL = 'a3.code:document';
+export type { CodeDocument, CodeOpenTarget } from '@a3/project-store';
+export type CodeRequest =
+  | { action: 'open'; sessionId: string; target: import('@a3/project-store').CodeOpenTarget }
+  | { action: 'reload'; sessionId: string; documentId: string }
+  | { action: 'save'; sessionId: string; documentId: string; expectedRevision: number | null; expectedHash: string; content: string };
+export type CodeResult = { ok: true; value: import('@a3/project-store').CodeDocument } | { ok: false; error: { code: string; message: string; recovery: string } };
 export const DROP_STAGE_CHANNEL = 'a3.canvas:stage-drop';
 export type CanvasRequest =
   | { action: 'load' | 'flush' | 'discard' | 'approve-edge-delete' | 'approve-drawing-delete' | 'approve-history-delete'; sessionId: string; workspaceId: string }
@@ -87,5 +94,6 @@ export interface DesktopAPI {
   canvas(request: CanvasContentRequest): Promise<CanvasContentResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;
   markdown(request: MarkdownRequest): Promise<MarkdownResult>;
+  code(request: CodeRequest): Promise<CodeResult>;
   onFileDrop(listener: (notice: FileDropNotice) => void): () => void;
 }

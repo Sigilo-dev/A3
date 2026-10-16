@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, parse, relative, resolve } from 'node:path';
 import { CONTENT_NODE_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
 
 interface StagedDropFile { path: string; root: string; relativePath: string; mountId: string; resourceId: string; name: string; size: number; mediaType: string; }
@@ -138,6 +138,24 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
   return ['load', 'flush', 'discard', 'approve-edge-delete', 'approve-drawing-delete', 'approve-history-delete'].includes(String(input.action)) && Object.keys(input).length === 3;
 }
 
+function validCodeRequest(value: unknown): value is CodeRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>, uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (typeof input.sessionId !== 'string' || !uuid.test(input.sessionId)) return false;
+  if (input.action === 'open') {
+    if (Object.keys(input).length !== 3 || !input.target || typeof input.target !== 'object' || Array.isArray(input.target)) return false;
+    const target = input.target as Record<string, unknown>;
+    return Object.keys(input).every((k) => ['action', 'sessionId', 'target'].includes(k)) &&
+      (Object.keys(target).length === 1 && typeof target.itemId === 'string' && uuid.test(target.itemId) ||
+        Object.keys(target).every((k) => ['resourceId', 'entityId'].includes(k)) && typeof target.resourceId === 'string' && uuid.test(target.resourceId) &&
+        (!('entityId' in target) || typeof target.entityId === 'string' && uuid.test(target.entityId)));
+  }
+  if (typeof input.documentId !== 'string' || !uuid.test(input.documentId)) return false;
+  if (input.action === 'reload') return Object.keys(input).length === 3 && Object.keys(input).every((k) => ['action', 'sessionId', 'documentId'].includes(k));
+  return input.action === 'save' && Object.keys(input).length === 6 && Object.keys(input).every((k) => ['action', 'sessionId', 'documentId', 'expectedRevision', 'expectedHash', 'content'].includes(k)) &&
+    (input.expectedRevision === null || Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) > 0) &&
+    typeof input.expectedHash === 'string' && /^[a-f0-9]{64}$/.test(input.expectedHash) && typeof input.content === 'string' && input.content.length <= 2 * 1024 * 1024;
+}
 function validMarkdownRequest(value: unknown): value is MarkdownRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const input = value as Record<string, unknown>, uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -387,6 +405,16 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           recovery: ['stage', 'flush', 'discard'].includes(value.action) ? 'La vista pendiente se conserva en la sesión. Reintenta guardar o descártala explícitamente antes de releer.' :
             'Los documentos confirmados se conservan. Recarga el workspace y revisa el conflicto o permiso antes de reintentar.' } };
       }
+    },
+    async handleCode(value: unknown): Promise<CodeResult> {
+      if (!validCodeRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de código inválida.', recovery: 'Abre el archivo desde el explorador o su nodo.' } };
+      try {
+        const document = value.action === 'open' ? await manager.openCodeDocument(value.sessionId, value.target) : value.action === 'reload'
+          ? await manager.reloadCodeDocument(value.sessionId, value.documentId) : await manager.saveCodeDocument(value);
+        return { ok: true, value: document };
+      } catch (error) { return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED',
+        message: error instanceof LocalProjectError ? error.message : 'No se pudo completar la operación de código.',
+        recovery: 'El borrador y los bytes guardados se conservan. Compara la versión actual y revisa permisos antes de guardar.' } }; }
     },
     async handleMarkdown(value: unknown): Promise<MarkdownResult> {
       if (!validMarkdownRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud Markdown inválida.', recovery: 'Vuelve a abrir la página desde su nodo.' } };

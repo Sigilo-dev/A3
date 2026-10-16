@@ -3,6 +3,8 @@ import type { AppInfo, LocalProjectsState } from '../../shared/desktop-api';
 import { ProjectsPanel } from './ProjectsPanel';
 import { FileExplorerPanel } from './FileExplorerPanel';
 import type { MarkdownEditorTarget } from './MarkdownEditor';
+import type { CodeEditorTarget } from './CodeEditor';
+const CodeEditorDialog = lazy(() => import('./CodeEditor').then((module) => ({ default: module.CodeEditorDialog })));
 const CanvasPanel = lazy(() => import('./CanvasPanel').then((module) => ({ default: module.CanvasPanel })));
 const MarkdownEditorDialog = lazy(() => import('./MarkdownEditor').then((module) => ({ default: module.MarkdownEditorDialog })));
 
@@ -34,10 +36,17 @@ export function App(): React.JSX.Element {
   const [projects, setProjects] = useState<LocalProjectsState | null>(null);
   const [markdownTarget, setMarkdownTarget] = useState<MarkdownEditorTarget | null>(null);
   const [markdownDirty, setMarkdownDirty] = useState(false);
+  const [codeTarget, setCodeTarget] = useState<CodeEditorTarget | null>(null), [codeDirty, setCodeDirty] = useState(false);
+  const [contentVersion, setContentVersion] = useState(0);
+  const codeSaved = useCallback((): void => setContentVersion((v) => v + 1), []);
+  const codeTargetRef = useRef(codeTarget); codeTargetRef.current = codeTarget;
+  const codeDirtyRef = useRef(codeDirty); codeDirtyRef.current = codeDirty;
   const markdownTargetRef = useRef(markdownTarget); markdownTargetRef.current = markdownTarget;
   const markdownDirtyRef = useRef(markdownDirty); markdownDirtyRef.current = markdownDirty;
   const acceptProjects = (value: LocalProjectsState): void => setProjects((previous) => previous && previous.sequence > value.sequence ? previous : value);
   const openMarkdown = useCallback((target: MarkdownEditorTarget): void => {
+    if (codeTargetRef.current && codeDirtyRef.current && !window.confirm('El archivo de código tiene cambios sin guardar. ¿Descartar su borrador?')) return;
+    setCodeTarget(null); setCodeDirty(false);
     const current = markdownTargetRef.current;
     if (current?.sessionId === target.sessionId && current.entityId === target.entityId && current.resourceId === target.resourceId) return;
     if (current && markdownDirtyRef.current && !window.confirm('El documento actual tiene cambios sin guardar. ¿Descartar el borrador y abrir otra página?')) return;
@@ -45,6 +54,14 @@ export function App(): React.JSX.Element {
   }, []);
   const closeMarkdown = useCallback((): void => { setMarkdownTarget(null); setMarkdownDirty(false); }, []);
   const updateMarkdownDirty = useCallback((dirty: boolean): void => setMarkdownDirty(dirty), []);
+  const openCode = useCallback((target: CodeEditorTarget): void => {
+    if (codeTargetRef.current?.sessionId === target.sessionId && JSON.stringify(codeTargetRef.current.target) === JSON.stringify(target.target)) return;
+    if (codeDirtyRef.current && !window.confirm('El archivo de código tiene cambios sin guardar. ¿Descartar el borrador y abrir otro archivo?')) return;
+    if (markdownDirtyRef.current && !window.confirm('La página tiene cambios sin guardar. ¿Descartar el borrador y abrir el archivo?')) return;
+    setMarkdownTarget(null); setMarkdownDirty(false); setCodeTarget(target); setCodeDirty(false);
+  }, []);
+  const closeCode = useCallback((): void => { setCodeTarget(null); setCodeDirty(false); }, []);
+  const updateCodeDirty = useCallback((dirty: boolean): void => setCodeDirty(dirty), []);
   const section = sections.find(([id]) => id === active)!;
 
   useEffect(() => {
@@ -89,7 +106,7 @@ export function App(): React.JSX.Element {
     </aside>
     <main id="content" className="content" tabIndex={-1}>
       <div className="breadcrumb">A3 <span>/</span> {section[1]}</div>
-      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} /> : active === 'canvas' ? <Suspense fallback={<p role="status">Abriendo lienzo…</p>}><CanvasPanel active={projects?.active} onOpenMarkdown={openMarkdown} /></Suspense> : active === 'files' ? <FileExplorerPanel active={projects?.active} /> : <><section className="intro" aria-labelledby="section-title">
+      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} /> : active === 'canvas' ? <Suspense fallback={<p role="status">Abriendo lienzo…</p>}><CanvasPanel active={projects?.active} onOpenMarkdown={openMarkdown} onOpenCode={openCode} contentVersion={contentVersion} /></Suspense> : active === 'files' ? <FileExplorerPanel active={projects?.active} onOpenCode={openCode} contentVersion={contentVersion} /> : <><section className="intro" aria-labelledby="section-title">
         <p className="eyebrow">Un lugar para tus ideas</p>
         <h1 id="section-title">{section[1]}</h1>
         <p className="lead">{section[2]}</p>
@@ -128,6 +145,9 @@ export function App(): React.JSX.Element {
     {markdownTarget && <Suspense fallback={<div className="markdown-backdrop"><p role="status">Preparando editor Markdown…</p></div>}>
       <MarkdownEditorDialog key={`${markdownTarget.sessionId}:${markdownTarget.entityId}:${markdownTarget.resourceId}`} target={markdownTarget}
         activeSessionId={projects?.active?.sessionId ?? null} onDirtyChange={updateMarkdownDirty} onClose={closeMarkdown} />
+    </Suspense>}
+    {codeTarget && <Suspense fallback={<div className="markdown-backdrop"><p role="status">Preparando editor de código…</p></div>}>
+      <CodeEditorDialog key={`${codeTarget.sessionId}:${JSON.stringify(codeTarget.target)}`} target={codeTarget} activeSessionId={projects?.active?.sessionId ?? null} onDirtyChange={updateCodeDirty} onSaved={codeSaved} onClose={closeCode} />
     </Suspense>}
   </div>;
 }

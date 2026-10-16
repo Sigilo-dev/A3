@@ -24,9 +24,9 @@ function DrawingAssetPreview({ source }: { source: string }): React.JSX.Element 
   } catch { return <p className="canvas-content-state">Fuente de dibujo no interpretable; los bytes originales se conservan.</p>; }
 }
 
-export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback, playbackBusy, playbackError, onOpenMarkdown }: {
+export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback, playbackBusy, playbackError, onOpenMarkdown, onOpenCode }: {
   entity: CanvasEntitySummary; preview: CanvasResourcePreview | null; mediaUrl: string | null;
-  activatePlayback: () => void; playbackBusy: boolean; playbackError: string | null; onOpenMarkdown?: () => void;
+  activatePlayback: () => void; playbackBusy: boolean; playbackError: string | null; onOpenMarkdown?: () => void; onOpenCode?: () => void;
 }): React.JSX.Element {
   const resource = entity.contentResource;
   const description = textProperty(entity, 'a3.content.description');
@@ -91,6 +91,7 @@ export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback,
     {resource && <small className="canvas-resource-label">{resource.label}</small>}
     {markdown && <><small>Markdown · vista de lectura</small>{onOpenMarkdown && <button className="quiet canvas-markdown-open" data-open-markdown={entity.id} onClick={onOpenMarkdown}>Abrir editor visual</button>}</>}
     {shortText && <><small>Texto breve · fuente Markdown</small>{onOpenMarkdown && <button className="quiet canvas-markdown-open" data-open-markdown={entity.id} onClick={onOpenMarkdown}>Abrir editor visual</button>}</>}
+    {code && onOpenCode && <button className="quiet canvas-markdown-open" data-open-code={entity.id} onClick={onOpenCode}>Abrir editor de código</button>}
     {drawing && <small>Dibujo vectorial · la fuente canónica se conserva en el recurso</small>}
   </section>;
   return <section className="canvas-content-card" data-content-renderer="fallback">

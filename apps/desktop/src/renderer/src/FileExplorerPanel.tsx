@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FilesRequest, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerOpen, LocalProjectSession } from '../../shared/desktop-api';
+import type { CodeEditorTarget } from './CodeEditor';
 
 type Crumb = { id: string; name: string };
-export function FileExplorerPanel({ active }: { active: LocalProjectSession | null | undefined }): React.JSX.Element {
+export function FileExplorerPanel({ active, onOpenCode, contentVersion }: { active: LocalProjectSession | null | undefined; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number }): React.JSX.Element {
   const [stack, setStack] = useState<Crumb[]>([{ id: 'project-root', name: 'Proyecto' }]);
   const [listing, setListing] = useState<LocalExplorerListing | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -31,6 +32,13 @@ export function FileExplorerPanel({ active }: { active: LocalProjectSession | nu
     setStack([{ id: 'project-root', name: 'Proyecto' }]); setListing(null); setSelected(null); setOpened(null); setDeleting(null);
     if (active) void load('project-root');
   }, [active?.sessionId]);
+  const lastContentVersion = useRef(contentVersion);
+  useEffect(() => {
+    if (lastContentVersion.current === contentVersion) return;
+    lastContentVersion.current = contentVersion;
+    setSelected(null); setOpened(null);
+    if (active) void load(current.id);
+  }, [contentVersion]);
 
   async function mutate(request: FilesRequest, returnTo = current.id): Promise<void> {
     const api = window.a3; if (busy || !active || !api) return;
@@ -102,6 +110,7 @@ export function FileExplorerPanel({ active }: { active: LocalProjectSession | nu
         {listing?.nextCursor && <button className="quiet" disabled={busy} onClick={() => void load(current.id, false, listing.nextCursor!)}>Cargar más…</button>}
         {selectedEntry && <div className="file-actions" aria-label={`Acciones para ${selectedEntry.name}`}>
           <button className="secondary" data-file-open onClick={() => void openEntry(selectedEntry)} disabled={busy || selectedEntry.kind === 'blocked-link'}>Abrir</button>
+          {selectedEntry.kind === 'file' && <button className="secondary" data-file-edit onClick={() => onOpenCode({ sessionId: active.sessionId, title: selectedEntry.name, target: { itemId: selectedEntry.id } })} disabled={busy}>Abrir editor de código</button>}
           <button className="secondary" data-file-rename disabled={!writable || busy || selectedEntry.kind === 'blocked-link'} onClick={() => {
             const next = window.prompt('Nuevo nombre', selectedEntry.name); if (next && active) void mutate({ action: 'rename', sessionId: active.sessionId, itemId: selectedEntry.id, name: next });
           }}>Renombrar</button>
@@ -121,6 +130,7 @@ export function FileExplorerPanel({ active }: { active: LocalProjectSession | nu
               const result = await api.files({ action: 'open-mount', sessionId: active.sessionId, resourceId: mount.id });
               if (result.ok && 'text' in result.value) setOpened(result.value); else if (!result.ok) setError(`${result.error.code}: ${result.error.message}`);
             }}>Abrir referencia</button>
+            <button className="quiet" data-edit-mounted-code disabled={busy || mount.status !== 'available'} onClick={() => onOpenCode({ sessionId: active.sessionId, title: mount.name, target: { resourceId: mount.id } })}>Ver código · solo lectura</button>
             <button className="quiet" disabled={busy || mount.status !== 'available'} onClick={() => void mutate({ action: 'copy-mount-path', sessionId: active.sessionId, resourceId: mount.id, kind: 'absolute' })}>Copiar ruta absoluta</button>
             <button className="quiet" disabled={busy || mount.status !== 'available'} onClick={() => void mutate({ action: 'copy-mount-path', sessionId: active.sessionId, resourceId: mount.id, kind: 'relative' })}>Copiar ruta relativa</button>
           </div>)}

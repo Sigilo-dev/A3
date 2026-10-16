@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session } fro
 import { access } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { APP_INFO_CHANNEL, CANVAS_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
+import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
 import { createProjectController } from './project-controller';
 
 const APP_URL = 'a3://desktop/index.html';
@@ -19,6 +19,17 @@ async function finishQuit(): Promise<void> {
   if (closing || quitting) return;
   closing = true;
   try {
+    // Ask the local renderer's unload guards before releasing the writer/session.
+    // A cancelled exit must leave the open project usable for saving the draft.
+    if (mainWindow && !mainWindow.webContents.isLoadingMainFrame()) {
+      const hasDraft = await mainWindow.webContents.executeJavaScript("!window.dispatchEvent(new Event('beforeunload', { cancelable: true }))");
+      if (hasDraft) {
+        const choice = await dialog.showMessageBox(mainWindow, { type: 'warning', title: 'A3 · Cambios sin guardar',
+          message: 'Hay un borrador de código sin guardar.', detail: 'Vuelve al editor para guardarlo o descártalo explícitamente antes de salir.',
+          buttons: ['Volver al editor', 'Descartar y salir'], defaultId: 0, cancelId: 0, noLink: true });
+        if (choice.response !== 1) return;
+      }
+    }
     await projects?.manager.shutdown();
     quitting = true; clearTimeout(bootTimer); app.quit();
   } catch {
@@ -140,6 +151,13 @@ async function startDesktop(): Promise<void> {
     }
     return projects.handleCanvas(args[0]);
   });
+  ipcMain.handle(CODE_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) {
+      return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Solicitud de código no autorizada.', recovery: 'Reabre A3.' } };
+    }
+    return projects.handleCode(args[0]);
+  });
   ipcMain.handle(MARKDOWN_CHANNEL, (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
         !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) {
@@ -175,6 +193,7 @@ async function startDesktop(): Promise<void> {
     });
     win.webContents.on('will-attach-webview', (event) => event.preventDefault());
     win.webContents.on('preload-error', fatalStartup);
+    win.webContents.on('will-prevent-unload', (event) => { if (quitting) event.preventDefault(); });
     win.webContents.on('render-process-gone', fatalStartup);
     win.webContents.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
       if (isMainFrame && code !== -3) fatalStartup();
@@ -200,7 +219,7 @@ async function startDesktop(): Promise<void> {
 
 app.on('before-quit', (event) => { if (!quitting) { event.preventDefault(); void finishQuit(); } });
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => { ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); });
+app.on('will-quit', () => { ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); });
 process.on('uncaughtException', fatalStartup);
 process.on('unhandledRejection', fatalStartup);
 void app.whenReady().then(() => { if (primaryInstance) return startDesktop(); }).catch(fatalStartup);

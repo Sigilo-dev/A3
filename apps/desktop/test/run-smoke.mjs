@@ -10,7 +10,7 @@ const require = createRequire(join(desktop, 'package.json'));
 const electron = require('electron');
 const packaged = process.argv.includes('--packaged');
 const development = process.argv.includes('--development');
-const markdownOnly = process.argv.includes('--markdown-only');
+const markdownOnly = process.argv.includes('--markdown-only') || process.argv.includes('--editors-only');
 if (packaged && development) throw new Error('Select only one output mode.');
 const source = packaged ? join(desktop, 'dist/win-unpacked/resources/app.asar/out') : join(desktop, 'out');
 const temp = await mkdtemp(join(tmpdir(), 'a3-desktop-smoke-'));

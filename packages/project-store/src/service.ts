@@ -490,6 +490,20 @@ export class ProjectService {
       } catch (error) { return failure([this.#operationError(directoryPath || 'project', error)]); }
     });
   }
+  readCodeFile(path: string, expectedIdentity?: string): Promise<StoreResult<{ bytes: Uint8Array; hash: string; identity: string }>> {
+    return this.#queue(async () => {
+      try {
+        if (!this.#authorized('read-resource', [path], [], [])) return failure([this.#denied(path)]);
+        if (await this.#isHiddenExplorerPath(path, false, await this.#ignoreRulesFor(path.split('/').slice(0, -1).join('/')))) throw new PathError('hidden-path', 'El archivo está oculto o excluido.');
+        const native = await checkedPath(this.root, path, 'file');
+        const identity = explorerIdentity(await lstat(native, { bigint: true }));
+        if (expectedIdentity && identity !== expectedIdentity) return failure([conflict(path, 'file-identity-changed')]);
+        const bytes = await fileBytes(this.root, path, 2 * 1024 * 1024);
+        if (explorerIdentity(await lstat(await checkedPath(this.root, path, 'file'), { bigint: true })) !== identity) return failure([conflict(path, 'file-identity-changed')]);
+        return { ok: true, value: { bytes, hash: sha256(bytes), identity }, diagnostics: [] };
+      } catch (error) { return failure([this.#operationError(path, error)]); }
+    });
+  }
   openExplorerFile(path: string, expectedIdentity?: string): Promise<StoreResult<ExplorerOpenResult>> {
     return this.#queue(async () => {
       try {
@@ -591,11 +605,12 @@ export class ProjectService {
     }
     return { images, refs };
   }
-  prepareExplorerOperation(request: ExplorerOperationRequest): Promise<StoreResult<PreparedWrite>> {
+  prepareExplorerOperation(input: ExplorerOperationRequest): Promise<StoreResult<PreparedWrite>> {
+    const request = { ...input, ...(input.bytes ? { bytes: Uint8Array.from(input.bytes) } : {}) };
     return this.#queue(async () => {
       try {
         const current = await this.#currentForWrite(); if (!current.ok) return current;
-        if (!uuid.test(request.operationId) || !['create-file', 'create-folder', 'rename', 'duplicate', 'trash'].includes(request.action)) return failure([issue('files', 'schema', 'invalid-file-operation', 'La operación de archivos no es válida.')]);
+        if (!uuid.test(request.operationId) || !['create-file', 'create-folder', 'rename', 'duplicate', 'trash', 'write-file'].includes(request.action)) return failure([issue('files', 'schema', 'invalid-file-operation', 'La operación de archivos no es válida.')]);
         const records = structuredClone(current.value.project.snapshot.records) as DomainRecord[];
         const originalRecords = current.value.project.snapshot.records;
         const fileImages: Image[] = [];
@@ -668,7 +683,18 @@ export class ProjectService {
           }
         } else {
           await ensureSource();
-          if (request.action === 'trash') {
+          if (request.action === 'write-file') {
+            this.#sourcePath(request.sourcePath!);
+            if (sourceIsDirectory || sourceFiles.length !== 1 || !request.bytes || request.bytes.length > 2 * 1024 * 1024 ||
+                !request.expectedHash || !/^[a-f0-9]{64}$/.test(request.expectedHash)) throw new PathError('invalid-code-write', 'Se requiere un archivo de texto acotado y su hash observado.');
+            const source = sourceFiles[0]!;
+            if (sha256(source.bytes) !== request.expectedHash) return failure([conflict(source.path, 'code-content-changed')]);
+            if (resourceByPath.has(source.path.toLowerCase())) return failure([conflict(source.path, 'code-resource-now-tracked')]);
+            const resource: DomainRecord = { kind: 'resource', value: { schemaVersion: '1.0.0', id: randomUUID(), revision: 1,
+              kind: 'project-file', path: source.path, mediaType: mediaTypeForPath(source.path), extensions: {} } };
+            nextRecords.push(resource);
+            fileImages.push({ path: source.path, bytes: request.bytes, ref: refOf(resource) });
+          } else if (request.action === 'trash') {
             const tracked = resourceByPath;
             for (const source of sourceFiles) for (const resource of tracked.get(source.path.toLowerCase()) ?? []) {
               const used = originalRecords.some((record) => record.kind === 'entity' && record.value.contentResourceId?.toLowerCase() === resource.value.id.toLowerCase());
@@ -765,6 +791,8 @@ export class ProjectService {
         const allImages = [...fileImages, ...encodedResources.images];
         const finalScan: Scan = { ...current.value, files: new Map(current.value.files) };
         for (const path of extPaths) if (!finalScan.files.has(path)) finalScan.files.set(path, await this.#observe(path, true));
+        if (request.action === 'write-file' && finalScan.files.get(request.sourcePath!)?.hash !== request.expectedHash) return failure([conflict(request.sourcePath!, 'code-content-changed')]);
+        if (request.action === 'write-file' && request.expectedSourceIdentity && explorerIdentity(await lstat(await checkedPath(this.root, request.sourcePath!, 'file'), { bigint: true })) !== request.expectedSourceIdentity) return failure([conflict(request.sourcePath!, 'file-identity-changed')]);
         const externalDirectories = [...await Promise.all(sourceDirectories.map((path) => this.#directoryObservation(path))), ...targetDirectoryObservations]
           .filter((value, index, all) => all.findIndex((candidate) => candidate.path.toLowerCase() === value.path.toLowerCase()) === index);
         if (allImages.length === 0) return failure([issue(request.sourcePath ?? request.targetPath ?? 'files', 'io', 'empty-operation', 'No hay archivos que modificar.')]);
@@ -774,7 +802,7 @@ export class ProjectService {
         const resources = nextRecords.flatMap((record) => record.kind === 'resource' ? [record.value] : []);
         return this.#makePlan(finalScan, request.operationId, allImages, nextRecords, resources,
           sha256(jsonBytes({ action: request.action, source: request.sourcePath ?? null, target: request.targetPath ?? null,
-            hashes: sourceFiles.map((file) => sha256(file.bytes)), actor: this.options.host.authenticatedActor })),
+            hashes: sourceFiles.map((file) => sha256(file.bytes)), ...(request.action === 'write-file' ? { afterHash: sha256(request.bytes!) } : {}), actor: this.options.host.authenticatedActor })),
           { requiredCapabilities: required, externalPaths: [...extPaths], externalDirectories });
       } catch (error) { return failure([this.#operationError(request.sourcePath ?? request.targetPath ?? 'files', error)]); }
     });

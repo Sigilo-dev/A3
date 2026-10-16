@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { createContext, memo, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { applyEdgeChanges, applyNodeChanges, Background, BackgroundVariant, Handle, NodeResizer, Position, ReactFlow, SelectionMode, ViewportPortal, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import type { CanvasEntitySummary, CanvasGroupView, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, CanvasSelection, CanvasResourcePreview, FileDropNotice, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
@@ -6,6 +6,9 @@ import { CanvasEdgeEditor, edgeAppearance, edgeTypes, toFlowEdges, type CanvasEd
 import { CanvasDrawingLayer, type StrokePreview } from './CanvasDrawings';
 import { CanvasContentBody } from './CanvasContentNodes';
 import type { MarkdownEditorTarget } from './MarkdownEditor';
+import type { CodeEditorTarget } from './CodeEditor';
+const CodeOpenContext = createContext<((target: CodeEditorTarget) => void) | undefined>(undefined);
+const ContentVersionContext = createContext(0);
 import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffset, panViewport, renderOrigin, screenToWorld, toVisualViewport, wheelViewport, worldToScreen, zoomAt, type WorldViewport } from '../../shared/world-viewport';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, type ContentNodeKind } from '@a3/domain/content-nodes';
 import type { Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
@@ -22,6 +25,8 @@ type CanvasGroupNodeData = { group: CanvasGroupView; canWrite: boolean; tool: Ca
 type CanvasGroupNode = Node<CanvasGroupNodeData, 'a3Group'>;
 type CanvasFlowNode = CanvasNode | CanvasGroupNode;
 const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }: NodeProps<CanvasNode>) {
+  const onOpenCode = useContext(CodeOpenContext);
+  const contentVersion = useContext(ContentVersionContext);
   const [preview, setPreview] = useState<CanvasResourcePreview | null>(null);
   const [playback, setPlayback] = useState<CanvasResourcePreview | null>(null);
   const [visible, setVisible] = useState(false);
@@ -50,7 +55,7 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
       }).catch(() => { if (mounted) setPreview({ entityId: data.entity.id, resourceId: data.entity.contentResourceId!, text: null, state: 'unavailable' }); });
     }
     return () => { mounted = false; };
-  }, [visible, data.sessionId, data.workspaceId, data.entity.id, data.entity.contentResourceId, data.entity.contentResource?.kind, data.entity.revision, data.entity.type]);
+  }, [visible, data.sessionId, data.workspaceId, data.entity.id, data.entity.contentResourceId, data.entity.contentResource?.kind, data.entity.revision, data.entity.type, contentVersion]);
   useEffect(() => {
     if (!visible) { setPlayback(null); setPlaybackBusy(false); return; }
     const bytes = playback?.bytes ?? preview?.bytes;
@@ -89,6 +94,8 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
       {data.entity.contentResourceId && <CanvasContentBody entity={data.entity} preview={preview} mediaUrl={mediaUrl} activatePlayback={() => void activatePlayback()}
         playbackBusy={playbackBusy} playbackError={playbackError} onOpenMarkdown={() => {
           if (data.entity.contentResourceId) data.onOpenMarkdown({ sessionId: data.sessionId, entityId: data.entity.id, resourceId: data.entity.contentResourceId, title: data.entity.title });
+        }} onOpenCode={() => {
+          if (data.entity.contentResourceId) onOpenCode?.({ sessionId: data.sessionId, title: data.entity.title, target: { resourceId: data.entity.contentResourceId, entityId: data.entity.id } });
         }} />}
       {Object.keys(data.placement.style).length > 0 && <details><summary>Estilo de esta vista</summary><pre>{JSON.stringify(data.placement.style, null, 2)}</pre></details>}
     </div>
@@ -245,16 +252,16 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
   });
   return [...groupNodes, ...placementNodes];
 }
-export function CanvasPanel({ active, onOpenMarkdown }: { active: LocalProjectSession | null | undefined; onOpenMarkdown: (target: MarkdownEditorTarget) => void }): React.JSX.Element {
+export function CanvasPanel({ active, onOpenMarkdown, onOpenCode, contentVersion }: { active: LocalProjectSession | null | undefined; onOpenMarkdown: (target: MarkdownEditorTarget) => void; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number }): React.JSX.Element {
   const [selected, setSelected] = useState('');
   const workspaceId = active?.workspaces.some((workspace) => workspace.id === selected) ? selected : active?.workspaces[0]?.id;
   if (!active || !workspaceId) return <section className="canvas-panel"><h1>Lienzo</h1><p>Abre un proyecto con un workspace disponible para empezar.</p></section>;
-  return <section className="canvas-panel">
+  return <CodeOpenContext.Provider value={onOpenCode}><ContentVersionContext.Provider value={contentVersion}><section className="canvas-panel">
     <div className="canvas-heading"><h1>Lienzo</h1><label>Workspace <select aria-label="Workspace del lienzo" value={workspaceId} onChange={(event) => setSelected(event.target.value)}>
       {active.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
     </select></label></div>
     <CanvasWorkspace key={`${active.sessionId}:${workspaceId}`} sessionId={active.sessionId} workspaceId={workspaceId} onOpenMarkdown={onOpenMarkdown} />
-  </section>;
+  </section></ContentVersionContext.Provider></CodeOpenContext.Provider>;
 }
 
 function initialContentValue(kind: ContentNodeKind): string {

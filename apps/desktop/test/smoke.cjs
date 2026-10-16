@@ -41,7 +41,7 @@ async function healthy() {
   assert.equal(probe.process, 'undefined');
   assert.equal(probe.require, 'undefined');
   assert.equal(probe.ipcRenderer, 'undefined');
-  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'files', 'canvas', 'markdown', 'onFileDrop']);
+  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'files', 'canvas', 'markdown', 'code', 'onFileDrop']);
   assert.equal(probe.url, expectedURL);
   const preferences = win.webContents.getLastWebPreferences();
   for (const [name, value] of Object.entries({ nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, webSecurity: true })) {
@@ -239,6 +239,9 @@ async function healthy() {
   fixtureEdge.style['a3.ui.line.route'] = 'future-route'; fixtureEdge.style['future.keep'] = { opaque: true };
   await writeFile(fixtureEdgePath, JSON.stringify(fixtureEdge, null, 2) + '\n');
   const markdownImage = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p7sAAAAASUVORK5CYII=', 'base64');
+  await writeFile(join(canvasFixture, 'editor.ts'), '\ufefffunction saludo(): string {\r\n  return "hola";\r\n}\r\n');
+  await writeFile(join(canvasFixture, 'binary.fixture'), Buffer.from([0, 65, 66]));
+  await writeFile(join(canvasFixture, 'mixed.fixture'), 'one\r\ntwo\n');
   await mkdir(join(canvasFixture, 'assets'), { recursive: true });
   await writeFile(join(canvasFixture, 'assets/reference.png'), markdownImage);
   await writeFile(join(canvasFixture, '.a3/resources/00000000-0000-4000-8000-000000000020.json'), JSON.stringify({ schemaVersion: '1.0.0',
@@ -394,6 +397,7 @@ async function healthy() {
   assert.doesNotMatch(editedUnsupported.value.content, /(?<!\r)\n/, 'CodeMirror preserves the original CRLF separator on a real source edit');
   await click('[data-markdown-close]');
 
+  const codeDocumentId = await require('./code-interactions.cjs')({ win, js, click, input, waitFor, root: canvasFixture });
   const fixtureSession = (await js("window.a3.projects({ action: 'list' })")).value.active;
   const fixtureWorkspaceId = fixtureSession.workspaces[0].id;
 
@@ -411,6 +415,8 @@ async function healthy() {
   assert.equal(deniedCanvas.error.code, 'PERMISSION_DENIED');
   const deniedMarkdown = await extra.webContents.executeJavaScript(`window.a3.markdown({ action: 'open', sessionId: '${fixtureSession.sessionId}', entityId: '${markdownTargets.safeEntityId}', resourceId: '${markdownTargets.safeResourceId}' })`);
   assert.equal(deniedMarkdown.error.code, 'PERMISSION_DENIED');
+  const deniedCode = await extra.webContents.executeJavaScript(`window.a3.code({ action: 'reload', sessionId: '${fixtureSession.sessionId}', documentId: '${codeDocumentId}' })`);
+  assert.equal(deniedCode.error.code, 'PERMISSION_DENIED');
   extra.destroy();
 
   await win.webContents.executeJavaScript("location.href = 'https://example.com'; undefined");
@@ -434,6 +440,8 @@ async function healthy() {
       'conversion creates editable vector drawing node', 'spatial groups create/rename/move/collapse/reopen and preserve external edges'] : []),
     'Milkdown GFM and A3 wikilinks', 'same-resource Markdown edit/preview/reopen', 'local portable image preview', 'revision conflict preserves both versions',
     'CodeMirror source and Milkdown share one document', 'unknown Markdown blocks survive source edit', 'revision conflict compare/resolve',
+    'CodeMirror code editor through explorer and code nodes', 'code Unicode BOM/CRLF save/reopen', 'line numbers, fold gutter, search/replace and languages',
+    'binary and mixed-EOL readonly', 'code conflict compare/resolve', 'code exit cancellation preserves writer', 'code IPC validation and sender denial',
     'technical relation sources unchanged', 'canvas and Markdown IPC denied to foreign window', 'stale sessions', 'window close'];
   console.log('A3_SMOKE=' + JSON.stringify({ mode, passed: true, electron: probe.result.value.electron, checks }));
   win.close();
