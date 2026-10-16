@@ -12,6 +12,8 @@ Mermaid `12.2.0` queda fijado con licencia MIT, verificada en el lock E0-D2 y el
 
 El host permite leer hasta 1 MiB para la previsualización Mermaid. El renderer solo procesa hasta 128.000 caracteres. Ninguna acción ejecuta scripts, HTML, plugins o click handlers de la fuente. El render no extrae un AST ni convierte a C4, UML, ER o relaciones A3. La autoridad `a3-model` no pasa por este renderer.
 
+La conversión no se acopla al renderer. E3-D2 añade un importador separado, explícito y parcial para un subconjunto comprobado de flowchart, class y ER; véase [su contrato y gramática](e3-d2-mermaid.md).
+
 ## Cobertura y límites
 
 | Criterio | Evidencia en E3-D1 | Límite |

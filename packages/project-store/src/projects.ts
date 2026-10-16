@@ -7,6 +7,7 @@ import { umlData, umlKind, validUmlOperation, type UmlChange, type UmlOperation 
 import { projectUmlCanvas, type CanvasUmlState } from './uml-canvas.js';
 import { erData, erTable, validErOperation, type ErChange, type ErOperation } from '@a3/domain';
 import { MERMAID_SOURCE_TYPE, mermaidSourceProperties } from '@a3/domain/mermaid-source';
+import { buildMermaidImportRecords, parseMermaidImport, requiredMermaidMapping, type MermaidImportGraph, type MermaidImportIdentityMap, type MermaidImportIssue } from '@a3/domain/mermaid-import';
 import { projectErCanvas, type CanvasErState } from './er-canvas.js';
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
@@ -95,6 +96,13 @@ export interface CanvasPlacementViewPatch { id: string; expectedRevision: number
 export interface CanvasSelectionRef { id: string; expectedRevision: number; }
 export interface CanvasSelection { placements: CanvasSelectionRef[]; drawings: CanvasSelectionRef[]; groups: CanvasSelectionRef[]; }
 export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; mediaType?: string; bytes?: Uint8Array; }
+export interface CanvasMermaidImportItem { key: string; kind: string; title: string; action: 'create' | 'update' | 'unchanged' | 'conflict'; }
+export interface CanvasMermaidImportPreview {
+  token: string; sourceEntityId: string; sourceRevision: number; resourceId: string; family: MermaidImportGraph['family']; mode: 'new' | 'update';
+  sourceHash: string; authority: 'source' | 'a3-model'; converted: readonly CanvasMermaidImportItem[]; unconverted: readonly MermaidImportIssue[];
+  missingResources: readonly MermaidImportIssue[]; idConflicts: readonly MermaidImportIssue[]; staleSourceKeys: readonly string[];
+  mapping: Readonly<MermaidImportIdentityMap>; canApply: boolean; message: string;
+}
 export interface MarkdownDocument {
   entityId: string; entityRevision: number; resourceId: string; revision: number; hash: string; content: string;
   canWrite: boolean; readOnlyReason: string | null; unsupported: readonly string[];
@@ -131,6 +139,10 @@ interface CanvasHistoryPending { action: 'push' | 'undo' | 'redo'; event: Revers
 interface CanvasHistoryState {
   schemaVersion: '1.0.0'; projectId: string; rootIdentity: string; workspaceId: string;
   entries: ReversibleCanvasCommand[]; cursor: number; revisionFloors: Record<string, number>; pending?: CanvasHistoryPending; blocked?: string;
+}
+interface MermaidImportPreviewBinding {
+  sessionId: string; workspaceId: string; sourceEntityId: string; sourceRevision: number; resourceId: string; sourceHash: string;
+  family: 'flowchart' | 'class' | 'er'; mode: 'new' | 'update'; graph: MermaidImportGraph; mapping: MermaidImportIdentityMap; records: DomainRecord[]; expiresAt: number;
 }
 function historyRequiresDelete(event: ReversibleCanvasCommand, direction: 'undo' | 'redo'): boolean {
   const removesRecord = event.changes.some((change) => {
@@ -214,6 +226,9 @@ function stableJson(value: unknown): string {
   if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(',')}}`;
   return JSON.stringify(value);
 }
+function recordObject(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
 function comparableHistoryRecord(value: DomainRecord | null): string {
   if (!value) return 'null';
   const copy = structuredClone(value); copy.value.revision = 0; return stableJson(copy);
@@ -241,6 +256,10 @@ export class LocalProjectManager {
   #codeDocuments = new Map<string, CodeBinding>();
   #viewportDrafts = new Map<string, { sessionId: string; expectedRevision: number; viewport: WorkspaceViewport }>();
   #canvasHistories = new Map<string, CanvasHistoryState>();
+  #mermaidImportPreviews = new Map<string, MermaidImportPreviewBinding>();
+  #resetExplorerBindings = (): void => {
+    this.#explorerSessionId = ''; this.#explorerItems.clear(); this.#explorerPaths.clear(); this.#explorerPages.clear(); this.#explorerDeletes.clear(); this.#codeDocuments.clear();
+  };
   constructor(private readonly options: LocalProjectsOptions) {
     demand(isProjectCapabilityBroker(options.host.capabilities), 'BROKER_REQUIRED', 'Se requiere el broker de permisos del host.');
   }
@@ -460,7 +479,7 @@ export class LocalProjectManager {
     const resumeId = this.#catalog.resumeId; delete this.#catalog.resumeId;
     try { await this.#persist(); } catch (error) { if (resumeId) this.#catalog.resumeId = resumeId; throw error; }
     this.#focusSession = undefined;
-    await this.#active.lease.close(); this.#active = undefined; this.#preview = undefined; this.#nameDraft = undefined; this.#clearExplorer(); return this.#state();
+    await this.#active.lease.close(); this.#active = undefined; this.#preview = undefined; this.#nameDraft = undefined; this.#resetExplorerBindings(); return this.#state();
   }); }
   async #loadFocusSession(active: ActiveProjectBinding): Promise<WorkspaceSession> {
     if (this.#focusSession) return this.#focusSession;
@@ -664,6 +683,51 @@ export class LocalProjectManager {
       if (current) history.revisionFloors[refKey(change.ref)] = Math.max(history.revisionFloors[refKey(change.ref)] ?? 0, current.value.revision);
       else history.revisionFloors[refKey(change.ref)] = Math.max(history.revisionFloors[refKey(change.ref)] ?? 0,
         change.before?.value.revision ?? 0, change.after?.value.revision ?? 0);
+    }
+  }
+  #explorerContext(sessionId?: string): ActiveProjectBinding {
+    demand(this.#active && (!sessionId || this.#active.sessionId === sessionId), 'STALE_SESSION', 'La sesión del proyecto cambió; vuelve a abrir Archivos.');
+    if (this.#explorerSessionId !== this.#active.sessionId) { this.#resetExplorerBindings(); this.#explorerSessionId = this.#active.sessionId; }
+    return this.#active;
+  }
+  async #commitExplorer(active: ActiveProjectBinding, action: 'create-file' | 'create-folder' | 'rename' | 'duplicate' | 'trash', input: { sourcePath?: string; targetPath?: string; identity?: string; parentIdentity?: string; content?: string; cleanupDirectory?: boolean }): Promise<void> {
+    const prepared = await active.lease.service.prepareExplorerOperation({ operationId: randomUUID(), action,
+      ...(input.sourcePath ? { sourcePath: input.sourcePath } : {}), ...(input.targetPath ? { targetPath: input.targetPath } : {}),
+      ...(input.identity ? { expectedSourceIdentity: input.identity } : {}), ...(input.parentIdentity ? { targetParentIdentity: input.parentIdentity } : {}),
+      ...(input.content !== undefined ? { content: input.content } : {}) });
+    demand(prepared.ok, 'FILE_OPERATION_REJECTED', prepared.diagnostics.map((diagnostic) => `${diagnostic.detail}: ${diagnostic.message}`).join('\n'));
+    const committed = await active.lease.service.commit(prepared.value);
+    demand(committed.ok, 'FILE_OPERATION_FAILED', committed.diagnostics.map((diagnostic) => `${diagnostic.detail}: ${diagnostic.message}`).join('\n'));
+    if (input.cleanupDirectory && input.sourcePath) await removeEmptyDirectoryTree(active.lease.service.root, input.sourcePath);
+    this.#explorerPages.clear();
+  }
+  async #commitCanvasCommand(active: ActiveProjectBinding, operation: Pick<DomainCommand, 'command' | 'payload'>, entityIds: string[], absent?: DocumentRef | readonly DocumentRef[], expectedContentHashes: { resourceId: string; hash: string }[] = []): Promise<void> {
+    const absentRefs = !absent ? [] : Array.isArray(absent) ? absent : [absent];
+    const payload = operation.payload as unknown as Record<string, unknown>;
+    const reference = payload.ref as { workspaceId?: unknown } | undefined;
+    const record = payload.record as DomainRecord | undefined;
+    const workspaceId = typeof payload.workspaceId === 'string' ? payload.workspaceId : typeof reference?.workspaceId === 'string' ? reference.workspaceId :
+      record && 'workspaceId' in record ? record.workspaceId : undefined;
+    if (typeof workspaceId === 'string' && uuid.test(workspaceId)) await this.#canvasHistory(active, workspaceId);
+    const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
+      ...operation, expectedRevisions: [...revisionsOf(active.lease.service.state.project.snapshot), ...absentRefs.map((ref) => ({ ...ref, revision: null }))],
+      expectedContentHashes, scope: { entityIds: [...new Set(entityIds)] } });
+    demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
+    const event = prepared.value.canvasCommand;
+    let history: CanvasHistoryState | undefined;
+    if (event?.changes.length) {
+      demand(event.changes.length <= 1024 && event.contentEffects.length <= 1024, 'CANVAS_HISTORY_LIMIT', 'El cambio supera el límite reversible de 1024 documentos o recursos y no se ha escrito.');
+      history = await this.#canvasHistory(active, event.workspaceId);
+      const pendingState = structuredClone(history);
+      pendingState.pending = { action: 'push', event, cursorBefore: history.cursor };
+      await this.#persistCanvasHistory(pendingState);
+      history.pending = pendingState.pending;
+    }
+    const committed = await active.lease.service.commit(prepared.value);
+    demand(committed.ok, committed.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+    if (history && event) {
+      this.#refreshHistoryRevisionFloors(history, event, active.lease.service.state.project.snapshot);
+      await this.#resolveCanvasHistoryPending(active, history);
     }
   }
   #canvasContext(sessionId: string, workspaceId: string): { active: ActiveProjectBinding; workspace: Workspace } {
@@ -1050,6 +1114,112 @@ export class LocalProjectManager {
       catch { return { entityId, resourceId, text: null, state: 'binary', mediaType }; }
     });
   }
+  previewCanvasMermaidImport(sessionId: string, workspaceId: string, sourceEntityId: string): Promise<CanvasMermaidImportPreview> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId), snapshot = active.lease.service.state.project.snapshot;
+      const source = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === sourceEntityId.toLowerCase());
+      demand(source?.kind === 'entity' && source.value.type === MERMAID_SOURCE_TYPE && source.value.typeVersion === '1.0.0' &&
+        typeof source.value.contentResourceId === 'string' && snapshot.records.some((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.entityId.toLowerCase() === sourceEntityId.toLowerCase()),
+      'MERMAID_SOURCE_MISSING', 'La fuente Mermaid no está en este workspace; se conservan sus documentos para reparar la referencia.');
+      const resource = snapshot.records.find((record) => record.kind === 'resource' && record.value.id.toLowerCase() === source.value.contentResourceId!.toLowerCase());
+      demand(resource?.kind === 'resource' && resource.value.kind === 'project-file' && /\.(?:mmd|mermaid)$/i.test(resource.value.path),
+        'MERMAID_IMPORT_SOURCE_UNAVAILABLE', 'La conversión requiere un recurso Mermaid interno del proyecto; los montajes y URLs no se leen ni descargan en esta operación.');
+      const opened = await active.lease.service.openResource(resource.value.id, 1024 * 1024);
+      demand(opened.ok, opened.diagnostics[0]?.code ?? 'MERMAID_IMPORT_SOURCE_UNAVAILABLE', opened.diagnostics.map((item) => item.message).join('\n'));
+      let text: string;
+      try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(opened.value.bytes); }
+      catch { throw new LocalProjectError('MERMAID_IMPORT_SOURCE_ENCODING', 'La fuente no es UTF-8 válido; sus bytes originales se conservan.'); }
+      const graph = parseMermaidImport(text), priorImport = recordObject(source.value.properties['a3.diagram.import']);
+      const priorMapping = recordObject(priorImport?.mapping) as MermaidImportIdentityMap | undefined;
+      const mode: 'new' | 'update' = priorImport ? 'update' : 'new';
+      const mapping: MermaidImportIdentityMap = {};
+      const idConflicts = [...graph.idConflicts];
+      if (priorImport && (!priorMapping || priorImport.schemaVersion !== '1.0.0' || priorImport.family !== graph.family)) {
+        idConflicts.push({ line: 1, source: '', reason: 'La importación existente tiene una versión o familia distinta y no se puede actualizar con seguridad.' });
+      }
+      if (priorMapping) for (const [key, value] of Object.entries(priorMapping)) {
+        if (typeof value !== 'string' || !uuid.test(value)) idConflicts.push({ line: 1, source: key, reason: 'El mapa persistido contiene un ID inválido.' });
+        else mapping[key] = value;
+      }
+      for (const key of requiredMermaidMapping(graph)) if (!mapping[key]) mapping[key] = randomUUID();
+      const mapValues = Object.values(mapping).map((value) => value.toLowerCase());
+      if (new Set(mapValues).size !== mapValues.length) idConflicts.push({ line: 1, source: '', reason: 'El mapa persistido repite IDs; no se elegirá uno automáticamente.' });
+      let records: DomainRecord[] = [];
+      if (graph.family && !idConflicts.length) {
+        try { records = buildMermaidImportRecords(graph, workspaceId, source.value.id, mapping).records; }
+        catch (error) { idConflicts.push({ line: 1, source: '', reason: error instanceof Error ? error.message : 'No se pudo formar el modelo A3.' }); }
+      }
+      const report: CanvasMermaidImportItem[] = [];
+      const sourceKey = (record: DomainRecord): string => {
+        const marker = recordObject(record.value.extensions['a3.mermaid.import']); return typeof marker?.sourceKey === 'string' ? marker.sourceKey : '';
+      };
+      const recordTitle = (record: DomainRecord): string => {
+        if (record.kind === 'entity') return record.value.title;
+        if (record.kind !== 'relation') return '';
+        const properties = record.value.properties;
+        const conceptual = recordObject(properties['a3.conceptual.relation']);
+        const uml = recordObject(properties['a3.uml']);
+        const er = recordObject(properties['a3.er']);
+        return String(properties['a3.conceptual.label'] ?? conceptual?.label ?? uml?.label ?? er?.label ?? '');
+      };
+      for (const record of records) {
+        const existing = snapshot.records.find((candidate) => String(candidate.value.id).toLowerCase() === String(record.value.id).toLowerCase());
+        const key = sourceKey(record);
+        if (existing) {
+          const marker = recordObject(existing.value.extensions['a3.mermaid.import']);
+          if (refKey(refOf(existing)) !== refKey(refOf(record)) || mode !== 'update' || marker?.sourceEntityId !== source.value.id || marker.sourceKey !== key) {
+            if (record.kind === 'entity' || record.kind === 'relation') report.push({ key, kind: record.value.type, title: recordTitle(record), action: 'conflict' });
+            idConflicts.push({ line: 1, source: key, reason: `El ID ${record.value.id} está ocupado por un documento no perteneciente a esta importación.` });
+          } else if (record.kind === 'entity' || record.kind === 'relation') {
+            const before = structuredClone(existing); before.value.revision = 1;
+            const after = structuredClone(record); after.value.revision = 1;
+            report.push({ key, kind: record.value.type, title: recordTitle(record), action: stableJson(before) === stableJson(after) ? 'unchanged' : 'update' });
+          }
+        } else if (record.kind === 'entity' || record.kind === 'relation') report.push({ key, kind: record.value.type, title: recordTitle(record), action: 'create' });
+      }
+      const needed = new Set(requiredMermaidMapping(graph));
+      const staleSourceKeys = Object.keys(priorMapping ?? {}).filter((key) => !needed.has(key));
+      const token = randomUUID();
+      const binding: MermaidImportPreviewBinding = { sessionId, workspaceId, sourceEntityId: source.value.id, sourceRevision: source.value.revision,
+        resourceId: resource.value.id, sourceHash: opened.value.sha256, family: graph.family ?? 'flowchart', mode, graph,
+        mapping, records, expiresAt: Date.now() + 10 * 60_000 };
+      for (const [key, value] of this.#mermaidImportPreviews) if (value.expiresAt < Date.now() || value.sessionId !== sessionId) this.#mermaidImportPreviews.delete(key);
+      if (this.#mermaidImportPreviews.size >= 20) this.#mermaidImportPreviews.delete(this.#mermaidImportPreviews.keys().next().value!);
+      this.#mermaidImportPreviews.set(token, binding);
+      const authority = source.value.properties['a3.diagram.authority'] === 'a3-model' ? 'a3-model' : 'source';
+      const writeDecision = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+        projectId: active.projectId, operation: 'write', paths: [resource.value.path], refs: [{ kind: 'workspace', id: workspaceId }, { kind: 'entity', id: source.value.id }], resources: [resource.value],
+        requiredCapabilities: ['diagram.edit', 'document.edit'], stage: 'prepare' });
+      const historyLimitOk = records.length > 0 && records.length < 1024;
+      const canApply = !!graph.family && graph.nodes.length > 0 && historyLimitOk && idConflicts.length === 0 && writeDecision.allowed &&
+        active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict;
+      return { token, sourceEntityId: source.value.id, sourceRevision: source.value.revision, resourceId: resource.value.id, family: graph.family,
+        mode, sourceHash: opened.value.sha256, authority, converted: report, unconverted: graph.unconverted, missingResources: graph.missingResources, idConflicts,
+        staleSourceKeys, mapping: { ...mapping }, canApply, message: canApply ? graph.unconverted.length || graph.missingResources.length ? 'Conversión parcial lista; revisa cada línea conservada antes de aplicar.' : 'Vista previa lista; revisa IDs y diferencias antes de aplicar.' :
+          !historyLimitOk ? 'La operación supera el límite reversible de documentos; reduce la fuente antes de aplicar.' : idConflicts.length ? 'La vista previa contiene conflictos de identidad que deben resolverse antes de aplicar.' :
+            !writeDecision.allowed || active.lease.service.state.mode !== 'writer' || active.lease.service.state.externalConflict ? 'El proyecto no permite escribir en este momento; la vista previa se conserva.' : 'La fuente no tiene un modelo aplicable.' };
+    });
+  }
+  applyCanvasMermaidImport(sessionId: string, workspaceId: string, token: string, authority: 'source' | 'a3-model'): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const binding = this.#mermaidImportPreviews.get(token);
+      demand(binding?.sessionId === sessionId && binding.workspaceId === workspaceId && binding.expiresAt > Date.now(), 'MERMAID_IMPORT_PREVIEW_EXPIRED', 'La vista previa venció o pertenece a otra sesión; vuelve a prepararla.');
+      const { active } = this.#canvasContext(sessionId, workspaceId), snapshot = active.lease.service.state.project.snapshot;
+      const source = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === binding.sourceEntityId.toLowerCase());
+      demand(source?.kind === 'entity' && source.value.revision === binding.sourceRevision && source.value.contentResourceId?.toLowerCase() === binding.resourceId.toLowerCase(),
+        'REVISION_CONFLICT', 'La fuente o sus metadatos cambiaron desde la vista previa; prepara un diff actualizado.');
+      const opened = await active.lease.service.openResource(binding.resourceId, 1024 * 1024);
+      demand(opened.ok && opened.value.sha256 === binding.sourceHash, 'REVISION_CONFLICT', 'La fuente cambió después de la vista previa; sus bytes originales se conservan.');
+      const missingRefs = binding.records.filter((record) => !snapshot.records.some((current) => refKey(refOf(current)) === refKey(refOf(record)))).map(refOf);
+      const entityIds = [binding.sourceEntityId, ...binding.records.flatMap((record) => record.kind === 'entity' ? [record.value.id] : record.kind === 'relation' ? [record.value.source.entityId, record.value.target.entityId] : [])];
+      await this.#commitCanvasCommand(active, { command: 'a3.mermaid.import', payload: { workspaceId, sourceEntityId: binding.sourceEntityId,
+        expectedSourceRevision: binding.sourceRevision, sourceResourceId: binding.resourceId, sourceHash: binding.sourceHash,
+        family: binding.family, authority, mode: binding.mode, mapping: binding.mapping, records: binding.records } }, entityIds, missingRefs,
+      [{ resourceId: binding.resourceId, hash: binding.sourceHash }]);
+      this.#mermaidImportPreviews.delete(token);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
   async #readCodeDocument(active: ActiveProjectBinding, input: CodeBinding, documentId: string): Promise<{ document: CodeDocument; binding: CodeBinding }> {
     const binding = { ...input };
     await active.lease.service.checkExternalChanges();
@@ -1285,35 +1455,6 @@ export class LocalProjectManager {
       return this.options.host.capabilities.setGrant({ root: active.lease.service.root, projectId: active.projectId,
         capability: 'mount.read', mode: 'direct' });
     });
-  }
-  async #commitCanvasCommand(active: ActiveProjectBinding, operation: Pick<DomainCommand, 'command' | 'payload'>, entityIds: string[], absent?: DocumentRef | readonly DocumentRef[], expectedContentHashes: { resourceId: string; hash: string }[] = []): Promise<void> {
-    const absentRefs = !absent ? [] : Array.isArray(absent) ? absent : [absent];
-    const payload = operation.payload as unknown as Record<string, unknown>;
-    const reference = payload.ref as { workspaceId?: unknown } | undefined;
-    const record = payload.record as DomainRecord | undefined;
-    const workspaceId = typeof payload.workspaceId === 'string' ? payload.workspaceId : typeof reference?.workspaceId === 'string' ? reference.workspaceId :
-      record && 'workspaceId' in record ? record.workspaceId : undefined;
-    if (typeof workspaceId === 'string' && uuid.test(workspaceId)) await this.#canvasHistory(active, workspaceId);
-    const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
-      ...operation, expectedRevisions: [...revisionsOf(active.lease.service.state.project.snapshot), ...absentRefs.map((ref) => ({ ...ref, revision: null }))],
-      expectedContentHashes, scope: { entityIds: [...new Set(entityIds)] } });
-    demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
-    const event = prepared.value.canvasCommand;
-    let history: CanvasHistoryState | undefined;
-    if (event?.changes.length) {
-      demand(event.changes.length <= 1024 && event.contentEffects.length <= 1024, 'CANVAS_HISTORY_LIMIT', 'El cambio supera el límite reversible de 1024 documentos o recursos y no se ha escrito.');
-      history = await this.#canvasHistory(active, event.workspaceId);
-      const pendingState = structuredClone(history);
-      pendingState.pending = { action: 'push', event, cursorBefore: history.cursor };
-      await this.#persistCanvasHistory(pendingState);
-      history.pending = pendingState.pending;
-    }
-    const committed = await active.lease.service.commit(prepared.value);
-    demand(committed.ok, committed.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
-    if (history && event) {
-      this.#refreshHistoryRevisionFloors(history, event, active.lease.service.state.project.snapshot);
-      await this.#resolveCanvasHistoryPending(active, history);
-    }
   }
   #canvasHistoryEntityIds(active: ActiveProjectBinding, event: ReversibleCanvasCommand): string[] {
     const records = [...active.lease.service.state.project.snapshot.records, ...event.changes.flatMap((change) => [change.before, change.after].filter((record): record is DomainRecord => !!record))];
@@ -1791,15 +1932,6 @@ export class LocalProjectManager {
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }
-  #clearExplorer(): void {
-    this.#explorerSessionId = ''; this.#explorerItems.clear(); this.#explorerPaths.clear(); this.#explorerPages.clear(); this.#explorerDeletes.clear();
-    this.#codeDocuments.clear();
-  }
-  #explorerContext(sessionId?: string): ActiveProjectBinding {
-    demand(this.#active && (!sessionId || this.#active.sessionId === sessionId), 'STALE_SESSION', 'La sesión del proyecto cambió; vuelve a abrir Archivos.');
-    if (this.#explorerSessionId !== this.#active.sessionId) { this.#clearExplorer(); this.#explorerSessionId = this.#active.sessionId; }
-    return this.#active;
-  }
   #explorerPath(id: string, sessionId: string): ExplorerItemBinding {
     const binding = this.#explorerItems.get(id);
     demand(binding && binding.sessionId === sessionId, 'STALE_FILE_ID', 'El elemento cambió o pertenece a otro proyecto; actualiza el explorador.');
@@ -1841,17 +1973,6 @@ export class LocalProjectManager {
     demand(result.ok, 'FILE_OPEN_FAILED', result.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
     return { ...result.value, relativePath: result.value.path };
   }); }
-  async #commitExplorer(active: ActiveProjectBinding, action: 'create-file' | 'create-folder' | 'rename' | 'duplicate' | 'trash', input: { sourcePath?: string; targetPath?: string; identity?: string; parentIdentity?: string; content?: string; cleanupDirectory?: boolean }): Promise<void> {
-    const prepared = await active.lease.service.prepareExplorerOperation({ operationId: randomUUID(), action,
-      ...(input.sourcePath ? { sourcePath: input.sourcePath } : {}), ...(input.targetPath ? { targetPath: input.targetPath } : {}),
-      ...(input.identity ? { expectedSourceIdentity: input.identity } : {}), ...(input.parentIdentity ? { targetParentIdentity: input.parentIdentity } : {}),
-      ...(input.content !== undefined ? { content: input.content } : {}) });
-    demand(prepared.ok, 'FILE_OPERATION_REJECTED', prepared.diagnostics.map((diagnostic) => `${diagnostic.detail}: ${diagnostic.message}`).join('\n'));
-    const committed = await active.lease.service.commit(prepared.value);
-    demand(committed.ok, 'FILE_OPERATION_FAILED', committed.diagnostics.map((diagnostic) => `${diagnostic.detail}: ${diagnostic.message}`).join('\n'));
-    if (input.cleanupDirectory && input.sourcePath) await removeEmptyDirectoryTree(active.lease.service.root, input.sourcePath);
-    this.#explorerPages.clear();
-  }
   createExplorerItem(parentId: string, name: string, kind: 'file' | 'directory', sessionId?: string): Promise<void> { return this.#queue(async () => {
     const active = this.#explorerContext(sessionId); let parent = ''; let parentIdentity: string | undefined;
     if (parentId !== 'project-root') { const item = this.#explorerPath(parentId, active.sessionId); demand(item.kind === 'directory', 'NOT_DIRECTORY', 'Selecciona una carpeta para crear el elemento.'); parent = item.path; parentIdentity = item.identity; }

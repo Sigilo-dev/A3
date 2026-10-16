@@ -13,6 +13,7 @@
     "./iot": { "types": "./dist/src/iot.d.ts", "import": "./dist/src/iot.js" },
     "./iot-circuit": { "types": "./dist/src/iot-circuit.d.ts", "import": "./dist/src/iot-circuit.js" },
     "./mermaid-source": { "types": "./dist/src/mermaid-source.d.ts", "import": "./dist/src/mermaid-source.js" },
+    "./mermaid-import": { "types": "./dist/src/mermaid-import.d.ts", "import": "./dist/src/mermaid-import.js" },
     "./shortcuts": { "types": "./dist/src/shortcuts.d.ts", "import": "./dist/src/shortcuts.js" },
     "./conceptual-diagrams": { "types": "./dist/src/conceptual-diagrams.d.ts", "import": "./dist/src/conceptual-diagrams.js" },
     ".": {

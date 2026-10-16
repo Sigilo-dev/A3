@@ -1,4 +1,4 @@
-import type { CanvasEntitySummary, CanvasResourcePreview } from '../../shared/desktop-api';
+import type { CanvasEntitySummary, CanvasResourcePreview, LocalCanvasWorkspace } from '../../shared/desktop-api';
 import { CONCEPTUAL_NODE_CATALOG, conceptualNodeKind } from '@a3/domain/conceptual-diagrams';
 import { MERMAID_SOURCE_TYPE } from '@a3/domain/mermaid-source';
 import { MermaidSourceRenderer } from './MermaidSourceRenderer';
@@ -27,9 +27,10 @@ function DrawingAssetPreview({ source }: { source: string }): React.JSX.Element 
   } catch { return <p className="canvas-content-state">Fuente de dibujo no interpretable; los bytes originales se conservan.</p>; }
 }
 
-export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback, playbackBusy, playbackError, onOpenMarkdown, onOpenCode }: {
+export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback, playbackBusy, playbackError, onOpenMarkdown, onOpenCode, onMermaidImported, onMermaidPreviewApply, sessionId, workspaceId }: {
   entity: CanvasEntitySummary; preview: CanvasResourcePreview | null; mediaUrl: string | null;
   activatePlayback: () => void; playbackBusy: boolean; playbackError: string | null; onOpenMarkdown?: () => void; onOpenCode?: () => void;
+  onMermaidImported?: (workspace: LocalCanvasWorkspace) => void; onMermaidPreviewApply?: boolean; sessionId: string; workspaceId: string;
 }): React.JSX.Element {
   const resource = entity.contentResource;
   const description = textProperty(entity, 'a3.content.description');
@@ -51,6 +52,7 @@ export function CanvasContentBody({ entity, preview, mediaUrl, activatePlayback,
   const code = entity.type === 'a3.content.code';
   const drawing = entity.type === 'a3.core.drawing';
   if (entity.type === MERMAID_SOURCE_TYPE) return <MermaidSourceRenderer entity={entity} source={text}
+    sessionId={sessionId} workspaceId={workspaceId} onImported={onMermaidImported} canApply={onMermaidPreviewApply === true}
     unavailableMessage={preview?.state === 'too-large' ? 'La vista segura supera el límite de lectura; el recurso y sus bytes originales permanecen intactos.' :
       preview?.state === 'binary' ? 'El recurso no es texto UTF-8; se conserva como fuente sin renderizar.' : unavailable || undefined} />;
   const conceptualKind = conceptualNodeKind(entity.type, entity.typeVersion);

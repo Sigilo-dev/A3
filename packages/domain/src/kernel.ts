@@ -6,6 +6,7 @@ import { applyUmlChange } from './uml-commands.js';
 import { remapUmlReferences, umlData, umlKind } from './uml.js';
 import { applyErChange } from './er-commands.js';
 import { erData, erTable, remapErReferences } from './er.js';
+import { MERMAID_SOURCE_TYPE } from './mermaid-source.js';
 import { createIotEntity, iotCatalogEntry, validCreateIotComponent } from './iot.js';
 import { createIotCircuitEntity, validIotCircuitOperation, IOT_CIRCUIT_KEY, IOT_CIRCUIT_TYPE, IOT_CIRCUIT_VERSION } from './iot-circuit.js';
 import { c4Category, c4Data } from './c4.js';
@@ -23,6 +24,7 @@ const commands = new Set(['a3.core.create-project', 'a3.core.create-document', '
   'a3.c4.change',
   'a3.uml.change',
   'a3.er.change',
+  'a3.mermaid.import',
   'a3.iot.create-component',
   'a3.iot.create-circuit', 'a3.iot.change-circuit',
   'a3.core.create-content-node',
@@ -633,10 +635,102 @@ function applyCanvasHistory(draft: Draft, payload: Payloads['a3.core.apply-canva
   }
 }
 
+function applyMermaidImport(draft: Draft, payload: Payloads['a3.mermaid.import']): void {
+  if (!isObject(payload) || Object.keys(payload).some((key) => !['workspaceId', 'sourceEntityId', 'expectedSourceRevision', 'sourceResourceId', 'sourceHash', 'family', 'authority', 'mode', 'mapping', 'records'].includes(key)) ||
+      !UUID_PATTERN.test(payload.workspaceId) || !UUID_PATTERN.test(payload.sourceEntityId) || !UUID_PATTERN.test(payload.sourceResourceId) ||
+      !Number.isSafeInteger(payload.expectedSourceRevision) || !/^[a-f0-9]{64}$/.test(payload.sourceHash) ||
+      !['flowchart', 'class', 'er'].includes(payload.family) || !['source', 'a3-model'].includes(payload.authority) || !['new', 'update'].includes(payload.mode) ||
+      !isObject(payload.mapping) || !Object.keys(payload.mapping).length || Object.keys(payload.mapping).length > 4096 ||
+      Object.entries(payload.mapping).some(([key, id]) => !key || key.length > 400 || typeof id !== 'string' || !UUID_PATTERN.test(id)) ||
+      !Array.isArray(payload.records) || !payload.records.length || payload.records.length > 1024) {
+    fail('mermaid-import-invalid', 'La propuesta Mermaid contiene identidades, familia o registros no válidos.');
+  }
+  const sourceRef: DocumentRef = { kind: 'entity', id: payload.sourceEntityId };
+  const source = draft.require(sourceRef);
+  if (source.kind !== 'entity' || source.value.type !== MERMAID_SOURCE_TYPE || source.value.typeVersion !== '1.0.0' ||
+      !sameId(source.value.contentResourceId ?? '', payload.sourceResourceId) || source.value.revision !== payload.expectedSourceRevision ||
+      !['source', 'a3-model'].includes(String(source.value.properties['a3.diagram.authority']))) {
+    fail('mermaid-source-conflict', 'La fuente cambió o ya no es un diagrama Mermaid compatible.', sourceRef, 'REVISION_CONFLICT');
+  }
+  draft.require({ kind: 'workspace', id: payload.workspaceId });
+  draft.requireHash(payload.sourceResourceId);
+  if (draft.context.contentHashes[payload.sourceResourceId] !== payload.sourceHash) {
+    fail('mermaid-source-hash-conflict', 'La fuente Mermaid cambió después de preparar la conversión.', { kind: 'resource', id: payload.sourceResourceId }, 'REVISION_CONFLICT');
+  }
+  const previous = source.value.properties['a3.diagram.import'];
+  if (payload.mode === 'new' && previous !== undefined) fail('mermaid-import-exists', 'Esta fuente ya tiene una importación; actualízala con su mapa de IDs y diff previo.', sourceRef, 'REVISION_CONFLICT');
+  if (payload.mode === 'update' && (!isObject(previous) || !isObject(previous.mapping))) {
+    fail('mermaid-import-mapping-required', 'No hay un mapa de IDs verificable para actualizar esta importación.', sourceRef);
+  }
+  const previousMapping = isObject(previous) && isObject(previous.mapping) ? previous.mapping : {};
+  if (payload.mode === 'update' && Object.entries(previousMapping).some(([key, id]) => payload.mapping[key] !== id)) {
+    fail('mermaid-import-mapping-conflict', 'El mapa de IDs cambió desde la vista previa; prepara de nuevo el diff.', sourceRef, 'REVISION_CONFLICT');
+  }
+  const mappingIds = new Set(Object.values(payload.mapping as Record<string, string>).map((id) => id.toLowerCase()));
+  if (mappingIds.size !== Object.keys(payload.mapping).length) fail('mermaid-import-id-collision', 'El mapa asigna un mismo ID a más de una construcción.', sourceRef);
+  const seen = new Set<string>(), seenMappingKeys = new Set<string>(), importedEntities = new Set<string>(), placements = new Set<string>(), relations = new Set<string>();
+  for (const candidate of payload.records as unknown[]) {
+    if (!isObject(candidate) || !['entity', 'relation', 'placement', 'relation-view'].includes(String(candidate.kind)) || validateRecord(candidate).length) {
+      fail('mermaid-import-record-invalid', 'La importación solo admite elementos nativos y vistas del workspace actual.');
+    }
+    const record = candidate as unknown as DomainRecord;
+    if ('workspaceId' in record && !sameId(record.workspaceId, payload.workspaceId)) fail('mermaid-import-record-invalid', 'Un registro pertenece a otro workspace.', refOf(record));
+    const ref = refOf(record), key = refKey(ref), marker = record.value.extensions['a3.mermaid.import'];
+    const recordId = String(record.value.id);
+    const sourceKey = isObject(marker) && typeof marker.sourceKey === 'string' ? marker.sourceKey : '';
+    const mappingKey = record.kind === 'entity' ? `entity:${sourceKey}` : record.kind === 'placement' ? `placement:${sourceKey}` :
+      record.kind === 'relation' ? `relation:${sourceKey}` : `relationView:${sourceKey}`;
+    const mappedId = (payload.mapping as Record<string, string>)[mappingKey];
+    if (seen.has(key) || seenMappingKeys.has(mappingKey) || !mappingIds.has(recordId.toLowerCase()) ||
+        typeof mappedId !== 'string' || !sameId(mappedId, recordId) || !isObject(marker) ||
+        marker.sourceEntityId !== payload.sourceEntityId || typeof marker.sourceKey !== 'string') {
+      fail('mermaid-import-record-invalid', 'Un registro no coincide con el mapa de IDs y procedencia de la importación.', ref);
+    }
+    seen.add(key); seenMappingKeys.add(mappingKey);
+    if (record.kind === 'entity') {
+      const expectedType = payload.family === 'flowchart' ? 'a3.conceptual.idea' : payload.family === 'class' ? 'a3.uml.class' : 'a3.er.table';
+      if (record.value.type !== expectedType || record.value.typeVersion !== '1.0.0') fail('mermaid-import-family-mismatch', 'Una entidad no pertenece a la familia declarada.', ref);
+      importedEntities.add(record.value.id.toLowerCase());
+    } else if (record.kind === 'relation') {
+      const allowed = payload.family === 'flowchart' ? record.value.type === 'a3.conceptual.relationship' : payload.family === 'class' ? record.value.type.startsWith('a3.uml.') : record.value.type === 'a3.er.relationship';
+      if (!allowed || record.value.typeVersion !== '1.0.0') fail('mermaid-import-family-mismatch', 'Una relación no pertenece a la familia declarada.', ref);
+      relations.add(record.value.id.toLowerCase());
+    } else if (record.kind === 'placement') {
+      placements.add(record.value.id.toLowerCase());
+    }
+    const current = draft.currentIndex.get(key);
+    const idCollision = draft.snapshot.records.find((candidate) => String(candidate.value.id).toLowerCase() === recordId.toLowerCase() && refKey(refOf(candidate)) !== key);
+    if (idCollision) fail('mermaid-import-id-conflict', 'El UUID propuesto ya está ocupado por otro documento; conserva ambas versiones y revisa el diff.', ref, 'REVISION_CONFLICT');
+    if (current) {
+      const currentMarker = current.value.extensions['a3.mermaid.import'];
+      if (payload.mode !== 'update' || !isObject(currentMarker) || currentMarker.sourceEntityId !== payload.sourceEntityId || currentMarker.sourceKey !== marker.sourceKey) {
+        fail('mermaid-import-id-conflict', 'El ID pertenece a otro documento o el mapeo no coincide; conserva ambas versiones y revisa el diff.', ref, 'REVISION_CONFLICT');
+      }
+      const merged = copy(record) as DomainRecord;
+      merged.value = { ...copy(current.value), ...merged.value, revision: current.value.revision + 1,
+        extensions: { ...copy(current.value.extensions), ...copy(record.value.extensions) } } as never;
+      draft.restore(merged, current.value.revision + 1);
+    } else draft.add(record);
+  }
+  if (!importedEntities.size || ![...importedEntities].every((id) => payload.records.some((record) => record.kind === 'placement' && record.value.entityId.toLowerCase() === id)) ||
+      payload.records.some((record) => record.kind === 'placement' && !importedEntities.has(record.value.entityId.toLowerCase()) ||
+        record.kind === 'relation' && (!importedEntities.has(record.value.source.entityId.toLowerCase()) || !importedEntities.has(record.value.target.entityId.toLowerCase()) ||
+          !payload.records.some((view) => view.kind === 'relation-view' && view.value.relationId.toLowerCase() === record.value.id.toLowerCase())) ||
+        record.kind === 'relation-view' && (!relations.has(record.value.relationId.toLowerCase()) || !placements.has(record.value.sourcePlacementId.toLowerCase()) || !placements.has(record.value.targetPlacementId.toLowerCase())))) {
+    fail('mermaid-import-references-invalid', 'La importación contiene extremos o vistas sin su elemento nativo.', sourceRef);
+  }
+  draft.edit(sourceRef, 'entity', (value) => {
+    value.properties['a3.diagram.authority'] = payload.authority;
+    value.properties['a3.diagram.import'] = { schemaVersion: '1.0.0', family: payload.family, sourceHash: payload.sourceHash,
+      mapping: copy(payload.mapping) } as unknown as import('./models.js').JsonValue;
+  });
+}
+
 function apply(draft: Draft): void {
   const request = draft.request;
   switch (request.command) {
     case 'a3.er.change': applyErChange(draft, request.payload, fail); break;
+    case 'a3.mermaid.import': applyMermaidImport(draft, request.payload); break;
     case 'a3.iot.create-component': {
       const payload = request.payload;
       if (!validCreateIotComponent(payload)) fail('iot-component-command-invalid', 'La inserción IoT requiere una pieza identificada, posición finita e IDs válidos.');

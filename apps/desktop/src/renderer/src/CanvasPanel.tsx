@@ -34,6 +34,7 @@ const reference = { x: 120, y: 110, width: 550, height: 220 };
 type CanvasNodeData = {
   sessionId: string; workspaceId: string; entity: CanvasEntitySummary; placement: CanvasPlacementView; canWrite: boolean; tool: CanvasTool;
   onOpenMarkdown: (target: MarkdownEditorTarget) => void;
+  onMermaidImported: (workspace: LocalCanvasWorkspace) => void;
   onResizeEnd: (id: string, position: { x: number; y: number }, size: { width: number; height: number }) => void;
 };
 type CanvasNode = Node<CanvasNodeData, 'a3Entity'>;
@@ -116,10 +117,10 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
         {c4Data(data.entity)?.instanceOfId && <p>Instancia de {c4Data(data.entity)?.instanceOfId}</p>}
         {c4Data(data.entity)?.environment && <p>Entorno: {c4Data(data.entity)?.environment}</p>}
       </section>}
-      {data.entity.contentResourceId && <CanvasContentBody entity={data.entity} preview={preview} mediaUrl={mediaUrl} activatePlayback={() => void activatePlayback()}
+      {data.entity.contentResourceId && <CanvasContentBody entity={data.entity} sessionId={data.sessionId} workspaceId={data.workspaceId} preview={preview} mediaUrl={mediaUrl} activatePlayback={() => void activatePlayback()}
         playbackBusy={playbackBusy} playbackError={playbackError} onOpenMarkdown={() => {
           if (data.entity.contentResourceId) data.onOpenMarkdown({ sessionId: data.sessionId, entityId: data.entity.id, resourceId: data.entity.contentResourceId, title: data.entity.title });
-        }} onOpenCode={() => {
+        }} onMermaidImported={data.onMermaidImported} onMermaidPreviewApply={data.canWrite} onOpenCode={() => {
           if (data.entity.contentResourceId) onOpenCode?.({ sessionId: data.sessionId, title: data.entity.title, target: { resourceId: data.entity.contentResourceId, entityId: data.entity.id } });
         }} />}
       {Object.keys(data.placement.style).length > 0 && <details><summary>Estilo de esta vista</summary><pre>{JSON.stringify(data.placement.style, null, 2)}</pre></details>}
@@ -246,7 +247,7 @@ function CanvasCollapsedEdges({ workspace, origin, endpointMap, layouts }: { wor
     </g>)}
   </svg>;
 }
-function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd'], tool: CanvasTool, previous: CanvasFlowNode[] = [], force = false, onToggle: (id: string) => void = () => undefined, onOpenMarkdown: (target: MarkdownEditorTarget) => void = () => undefined): CanvasFlowNode[] {
+function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd'], tool: CanvasTool, previous: CanvasFlowNode[] = [], force = false, onToggle: (id: string) => void = () => undefined, onOpenMarkdown: (target: MarkdownEditorTarget) => void = () => undefined, onMermaidImported: CanvasNodeData['onMermaidImported'] = () => undefined): CanvasFlowNode[] {
   const entities = new Map(workspace.entities.map((entity) => [entity.id.toLowerCase(), entity]));
   const groups = groupLayouts(workspace);
   const old = new Map(previous.map((node) => [node.id, node]));
@@ -256,13 +257,13 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
     if (!entity) return [];
     const existing = old.get(placement.id) as CanvasNode | undefined;
     if (!force && existing && existing.data.placement.revision === placement.revision && existing.data.entity.revision === entity.revision &&
-        existing.data.canWrite === workspace.canWrite && existing.data.tool === tool && existing.data.onOpenMarkdown === onOpenMarkdown) return [existing];
+        existing.data.canWrite === workspace.canWrite && existing.data.tool === tool && existing.data.onOpenMarkdown === onOpenMarkdown && existing.data.onMermaidImported === onMermaidImported) return [existing];
     return [{ id: placement.id, type: 'a3Entity', position: { x: placement.position.x - origin.x, y: placement.position.y - origin.y },
       style: { width: placement.size.width, height: placement.size.height }, draggable: workspace.canWrite && tool === 'select' && placement.style['a3.ui.locked'] !== true,
       zIndex: typeof placement.style['a3.ui.z-index'] === 'number' ? placement.style['a3.ui.z-index'] : 1,
       dragHandle: '.canvas-entity-header', selectable: true, focusable: true, selected: existing?.selected,
       ariaLabel: `${entity.title || entity.type}${placement.style['a3.ui.locked'] === true ? ', bloqueado' : ''}`,
-      data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, tool, onResizeEnd, onOpenMarkdown } }];
+      data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, tool, onResizeEnd, onOpenMarkdown, onMermaidImported } }];
   });
   const groupNodes: CanvasGroupNode[] = workspace.groups.filter((group) => !groups.hiddenGroups.has(group.id.toLowerCase())).map((group) => {
     const key = group.id.toLowerCase(), layout = groups.layouts.get(key)!, collapsed = group.collapsed;
@@ -348,6 +349,8 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
   const frame = useRef<number | undefined>(undefined);
   const failed = useRef(false);
   const activeStroke = useRef<ActiveStroke | null>(null);
+  const mermaidImported = useRef<CanvasNodeData['onMermaidImported']>(() => undefined);
+  const handleMermaidImported = useCallback((next: LocalCanvasWorkspace) => mermaidImported.current(next), []);
 
   function installWorkspace(next: LocalCanvasWorkspace, _changedPlacementId?: string, force = false): void {
     workspaceRef.current = next;
@@ -359,9 +362,10 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
       nodeIds: previous.nodeIds.filter((id) => !visibility.hiddenPlacements.has(id.toLowerCase())),
       drawingIds: previous.drawingIds.filter((id) => !visibility.hiddenDrawings.has(id.toLowerCase())),
       groupIds: previous.groupIds.filter((id) => !visibility.hiddenGroups.has(id.toLowerCase())) }));
-    setNodes((previous) => toFlowNodes(next, originRef.current, handleResizeEnd, toolRef.current, previous, force, toggleGroup, onOpenMarkdown));
+    setNodes((previous) => toFlowNodes(next, originRef.current, handleResizeEnd, toolRef.current, previous, force, toggleGroup, onOpenMarkdown, handleMermaidImported));
     setEdges((previous) => toFlowEdges(next, originRef.current, toolRef.current, previous, groupLayouts(next).edgeEndpoints));
   }
+  mermaidImported.current = installWorkspace;
 
   const persistPlacement = useCallback((placementId: string, patch: { position?: { x: number; y: number }; size?: { width: number; height: number }; style?: Record<string, unknown> }): Promise<void> => {
     const previous = placementWrites.current.get(placementId) ?? Promise.resolve();
@@ -405,10 +409,10 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
   useEffect(() => {
     const latest = workspaceRef.current;
     if (latest) {
-      setNodes((previous) => toFlowNodes(latest, origin, handleResizeEnd, tool, previous, true, toggleGroup, onOpenMarkdown));
+      setNodes((previous) => toFlowNodes(latest, origin, handleResizeEnd, tool, previous, true, toggleGroup, onOpenMarkdown, handleMermaidImported));
       setEdges((previous) => toFlowEdges(latest, origin, tool, previous, groupLayouts(latest).edgeEndpoints));
     }
-  }, [origin.x, origin.y, handleResizeEnd, onOpenMarkdown, tool]);
+  }, [origin.x, origin.y, handleResizeEnd, handleMermaidImported, onOpenMarkdown, tool]);
   useEffect(() => {
     if (workspace && !workspace.entityChoices.some((entity) => entity.id === selectedEntityId)) setSelectedEntityId(workspace.entityChoices[0]?.id ?? '');
   }, [workspace?.entityChoices, selectedEntityId]);

@@ -7,7 +7,7 @@ import { basename, dirname, join, parse, relative, resolve } from 'node:path';
 import { CONTENT_NODE_CATALOG, CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_RELATION_KINDS, IOT_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { validIotCircuitOperation } from '@a3/domain/iot-circuit';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasMermaidImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
 import { validCanvasView, validPageView } from '@a3/project-store';
 import type { WorkspaceSessionRequest, WorkspaceSessionResult } from '../shared/desktop-api';
@@ -77,6 +77,8 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
   const input = value as Record<string, unknown>;
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (typeof input.action !== 'string' || typeof input.sessionId !== 'string' || typeof input.workspaceId !== 'string' || !uuid.test(input.sessionId) || !uuid.test(input.workspaceId)) return false;
+  if (input.action === 'mermaid-import-preview') return Object.keys(input).length === 4 && uuid.test(String(input.sourceEntityId));
+  if (input.action === 'mermaid-import-apply') return Object.keys(input).length === 5 && uuid.test(String(input.token)) && ['source', 'a3-model'].includes(String(input.authority));
   if (input.action === 'uml') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 && validUmlOperation(input.operation);
   if (input.action === 'er') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 && validErOperation(input.operation);
   if (input.action === 'create-iot-component') return Object.keys(input).length === 7 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 &&
@@ -412,10 +414,12 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
-    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult> {
+    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasMermaidImportResult> {
       if (!validCanvasRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de lienzo inválida.', recovery: 'Reabre el workspace.' } };
       try {
         switch (value.action) {
+          case 'mermaid-import-preview': return { ok: true, value: await manager.previewCanvasMermaidImport(value.sessionId, value.workspaceId, value.sourceEntityId) };
+          case 'mermaid-import-apply': return { ok: true, value: await manager.applyCanvasMermaidImport(value.sessionId, value.workspaceId, value.token, value.authority) };
           case 'load': return { ok: true, value: await manager.loadCanvasWorkspace(value.sessionId, value.workspaceId) };
           case 'stage': return { ok: true, value: await manager.stageCanvasViewport(value.sessionId, value.workspaceId, value.expectedRevision, value.viewport) };
           case 'flush': return { ok: true, value: await manager.flushCanvasWorkspace(value.sessionId, value.workspaceId) };

@@ -1,0 +1,12 @@
+erDiagram
+  USER {
+    UUID id PK
+    String name
+    String email UK
+    UUID group_id FK
+  }
+  GROUP {
+    UUID id PK
+    String title
+  }
+  USER ||--o{ GROUP : member_of

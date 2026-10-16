@@ -143,9 +143,15 @@ export interface UpdateConceptualRelation {
 export interface CreateIotComponent {
   workspaceId: UUID; entityId: UUID; placementId: UUID; catalogId: string; title: string; position: Point;
 }
+export interface MermaidImportChange {
+  workspaceId: UUID; sourceEntityId: UUID; expectedSourceRevision: number; sourceResourceId: UUID; sourceHash: string;
+  family: 'flowchart' | 'class' | 'er'; authority: 'source' | 'a3-model'; mode: 'new' | 'update';
+  mapping: Record<string, UUID>; records: DomainRecord[];
+}
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
 export type Payloads = {
   'a3.er.change': ErChange;
+  'a3.mermaid.import': MermaidImportChange;
   'a3.uml.change': UmlChange;
   'a3.c4.change': C4Change;
   'a3.core.create-project': { project: Project; workspace: Workspace };

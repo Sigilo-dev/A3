@@ -1,0 +1,7 @@
+classDiagram
+  class Account
+  Account : +id: UUID
+  Account : +rename(value: String): Boolean
+  Account <|-- Admin
+  Account *-- Profile : owns
+  classDiagram-v2
