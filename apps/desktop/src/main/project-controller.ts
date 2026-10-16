@@ -25,7 +25,28 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
     return true;
   }
   if (input.action === 'content') return Object.keys(input).length === 5 && uuid.test(String(input.entityId)) && uuid.test(String(input.resourceId));
-  return ['load', 'flush', 'discard'].includes(String(input.action)) && Object.keys(input).length === 3;
+  if (input.action === 'move-placements') return Object.keys(input).length === 4 && Array.isArray(input.placements) && input.placements.length > 0 &&
+    input.placements.every((item: unknown) => !!item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length === 3 &&
+      uuid.test(String((item as Record<string, unknown>).id)) && Number.isSafeInteger((item as Record<string, unknown>).expectedRevision) &&
+      Number((item as Record<string, unknown>).expectedRevision) >= 1 && validPoint((item as Record<string, unknown>).position));
+  if (input.action === 'create-visual-edge') return Object.keys(input).length === 6 && uuid.test(String(input.sourcePlacementId)) && uuid.test(String(input.targetPlacementId)) &&
+    Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1;
+  if (input.action === 'delete-visual-edge') return Object.keys(input).length === 5 && uuid.test(String(input.edgeId)) && Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) >= 1;
+  if (input.action === 'update-visual-edge') {
+    if (Object.keys(input).length !== 6 || !uuid.test(String(input.edgeId)) || !Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 1 ||
+        !input.patch || typeof input.patch !== 'object' || Array.isArray(input.patch)) return false;
+    const patch = input.patch as Record<string, unknown>;
+    return Object.keys(patch).length > 0 && Object.keys(patch).every((key) => ['sourcePlacementId', 'targetPlacementId', 'label', 'waypoints', 'style'].includes(key)) &&
+      (!('sourcePlacementId' in patch) || uuid.test(String(patch.sourcePlacementId))) && (!('targetPlacementId' in patch) || uuid.test(String(patch.targetPlacementId))) &&
+      (!('label' in patch) || typeof patch.label === 'string') && (!('waypoints' in patch) || Array.isArray(patch.waypoints) && patch.waypoints.every(validPoint)) &&
+      (!('style' in patch) || !!patch.style && typeof patch.style === 'object' && !Array.isArray(patch.style));
+  }
+  return ['load', 'flush', 'discard', 'approve-edge-delete'].includes(String(input.action)) && Object.keys(input).length === 3;
+}
+function validPoint(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const point = value as Record<string, unknown>;
+  return Object.keys(point).length === 2 && Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
 function validRequest(value: unknown): value is ProjectsRequest {
@@ -86,10 +107,16 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'create-placement': return { ok: true, value: await manager.createCanvasPlacement(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.entityId, value.position) };
           case 'update-placement': return { ok: true, value: await manager.updateCanvasPlacement(value.sessionId, value.workspaceId, value.placementId, value.expectedRevision, value.patch) };
           case 'content': return { ok: true, value: await manager.loadCanvasContent(value.sessionId, value.workspaceId, value.entityId, value.resourceId) };
+          case 'move-placements': return { ok: true, value: await manager.moveCanvasPlacements(value.sessionId, value.workspaceId, value.placements) };
+          case 'create-visual-edge': return { ok: true, value: await manager.createCanvasVisualEdge(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.sourcePlacementId, value.targetPlacementId) };
+          case 'update-visual-edge': return { ok: true, value: await manager.updateCanvasVisualEdge(value.sessionId, value.workspaceId, value.edgeId, value.expectedRevision, value.patch) };
+          case 'delete-visual-edge': return { ok: true, value: await manager.deleteCanvasVisualEdge(value.sessionId, value.workspaceId, value.edgeId, value.expectedRevision) };
+          case 'approve-edge-delete': return { ok: true, value: await manager.approveCanvasEdgeDeletion(value.sessionId, value.workspaceId) };
         }
       } catch (error) {
         return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED', message: error instanceof LocalProjectError ? error.message : 'No se pudo completar la operación del lienzo.',
-          recovery: 'La vista pendiente se conserva en la sesión. Reintenta guardar o descártala explícitamente antes de releer.' } };
+          recovery: ['stage', 'flush', 'discard'].includes(value.action) ? 'La vista pendiente se conserva en la sesión. Reintenta guardar o descártala explícitamente antes de releer.' :
+            'Los documentos confirmados se conservan. Recarga el workspace y revisa el conflicto o permiso antes de reintentar.' } };
       }
     },
     async handle(value: unknown): Promise<ProjectsResult> {

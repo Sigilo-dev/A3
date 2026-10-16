@@ -1,14 +1,14 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { applyNodeChanges, Background, BackgroundVariant, NodeResizer, ReactFlow, ViewportPortal, type Node, type NodeChange, type NodeProps, type Edge } from '@xyflow/react';
+import { applyEdgeChanges, applyNodeChanges, Background, BackgroundVariant, Handle, NodeResizer, Position, ReactFlow, SelectionMode, ViewportPortal, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { CanvasEntitySummary, CanvasPlacementView, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
+import type { CanvasEntitySummary, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
+import { CanvasEdgeEditor, edgeTypes, toFlowEdges, type CanvasEdge, type CanvasTool } from './CanvasVisualEdges';
 import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffset, panViewport, renderOrigin, screenToWorld, toVisualViewport, wheelViewport, worldToScreen, zoomAt, type WorldViewport } from '../../shared/world-viewport';
 
-const edges: Edge[] = [];
 // Navigation reference only: no Entity, Placement, drawing or React Flow node is created.
 const reference = { x: 120, y: 110, width: 550, height: 220 };
 type CanvasNodeData = {
-  sessionId: string; workspaceId: string; entity: CanvasEntitySummary; placement: CanvasPlacementView; canWrite: boolean;
+  sessionId: string; workspaceId: string; entity: CanvasEntitySummary; placement: CanvasPlacementView; canWrite: boolean; tool: CanvasTool;
   onResizeEnd: (id: string, position: { x: number; y: number }, size: { width: number; height: number }) => void;
 };
 type CanvasNode = Node<CanvasNodeData, 'a3Entity'>;
@@ -29,11 +29,13 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
   const properties = Object.keys(data.entity.properties).length > 0 ? JSON.stringify(data.entity.properties, null, 2) : '';
   return <article className="canvas-entity-node" data-placement-id={data.placement.id} data-entity-id={data.entity.id}
     data-node-fallback={!data.entity.typeAvailable} style={borderColor ? { borderColor } : undefined}>
-    <NodeResizer isVisible={selected && data.canWrite} minWidth={180} minHeight={130} color="#c3ed82"
+    <Handle id="visual-target" type="target" position={Position.Left} isConnectable={data.canWrite && data.tool === 'connect'} aria-label="Destino de línea visual" />
+    <Handle id="visual-source" type="source" position={Position.Right} isConnectable={data.canWrite && data.tool === 'connect'} aria-label="Origen de línea visual" />
+    <NodeResizer isVisible={selected && data.canWrite && data.tool === 'select' && data.placement.style['a3.ui.locked'] !== true} minWidth={180} minHeight={130} color="#c3ed82"
       onResizeEnd={(_, size) => data.onResizeEnd(data.placement.id, { x: size.x, y: size.y }, { width: size.width, height: size.height })} />
-    <header className="canvas-entity-header"><strong>{data.entity.title || data.entity.type}</strong><small>{data.entity.type}@{data.entity.typeVersion}</small></header>
+    <header className="canvas-entity-header"><strong>{data.entity.title || data.entity.type}{data.placement.style['a3.ui.locked'] === true ? ' · Bloqueado' : ''}</strong><small>{data.entity.type}@{data.entity.typeVersion}</small></header>
     {!data.entity.typeAvailable && <p className="canvas-fallback-label">Tipo o paquete no instalado · propiedades conservadas</p>}
-    <div className="canvas-entity-body">
+    <div className="canvas-entity-body nodrag nopan nowheel">
       {data.entity.ports.length > 0 && <div className="canvas-ports" aria-label="Puertos">{data.entity.ports.map((port) => <span key={port.id} title={port.id}>{port.label || port.id}</span>)}</div>}
       {properties && <details><summary>Propiedades</summary><pre>{properties}</pre></details>}
       {data.entity.contentResourceId && <details><summary>Contenido</summary>
@@ -45,14 +47,20 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
   </article>;
 }) };
 
-function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd']): CanvasNode[] {
+function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd'], tool: CanvasTool, previous: CanvasNode[] = [], force = false): CanvasNode[] {
   const entities = new Map(workspace.entities.map((entity) => [entity.id.toLowerCase(), entity]));
+  const old = new Map(previous.map((node) => [node.id, node]));
   return workspace.placements.flatMap((placement) => {
     const entity = entities.get(placement.entityId.toLowerCase());
     if (!entity) return [];
+    const existing = old.get(placement.id);
+    if (!force && existing && existing.data.placement.revision === placement.revision && existing.data.entity.revision === entity.revision &&
+        existing.data.canWrite === workspace.canWrite && existing.data.tool === tool) return [existing];
     return [{ id: placement.id, type: 'a3Entity', position: { x: placement.position.x - origin.x, y: placement.position.y - origin.y },
-      style: { width: placement.size.width, height: placement.size.height }, draggable: workspace.canWrite, selectable: workspace.canWrite,
-      data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, onResizeEnd } }];
+      style: { width: placement.size.width, height: placement.size.height }, draggable: workspace.canWrite && tool === 'select' && placement.style['a3.ui.locked'] !== true,
+      dragHandle: '.canvas-entity-header', selectable: true, focusable: true, selected: existing?.selected,
+      ariaLabel: `${entity.title || entity.type}${placement.style['a3.ui.locked'] === true ? ', bloqueado' : ''}`,
+      data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, canWrite: workspace.canWrite, tool, onResizeEnd } }];
   });
 }
 export function CanvasPanel({ active }: { active: LocalProjectSession | null | undefined }): React.JSX.Element {
@@ -70,8 +78,11 @@ export function CanvasPanel({ active }: { active: LocalProjectSession | null | u
 function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; workspaceId: string }): React.JSX.Element {
   const [workspace, setWorkspace] = useState<LocalCanvasWorkspace | null>(null);
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
+  const [edges, setEdges] = useState<CanvasEdge[]>([]);
+  const [tool, setTool] = useState<CanvasTool>('select');
+  const toolRef = useRef(tool); toolRef.current = tool;
+  const [selection, setSelection] = useState<{ nodeIds: string[]; edgeIds: string[] }>({ nodeIds: [], edgeIds: [] });
   const [selectedEntityId, setSelectedEntityId] = useState('');
-  const [selectedPlacementId, setSelectedPlacementId] = useState('');
   const [viewport, setViewport] = useState<WorldViewport>({ x: 0, y: 0, zoom: 1 });
   const [origin, setOrigin] = useState({ x: 0, y: 0 });
   const [showReference, setShowReference] = useState(false);
@@ -85,6 +96,7 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   const revision = useRef(0);
   const placementRevisions = useRef(new Map<string, number>());
   const placementWrites = useRef(new Map<string, Promise<void>>());
+  const mutationTail = useRef<Promise<unknown>>(Promise.resolve());
   const workspaceRef = useRef<LocalCanvasWorkspace | null>(null);
   const writable = useRef(false);
   const changed = useRef(false);
@@ -93,23 +105,13 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   const frame = useRef<number | undefined>(undefined);
   const failed = useRef(false);
 
-  function installWorkspace(next: LocalCanvasWorkspace, changedPlacementId?: string): void {
-    const previous = workspaceRef.current;
+  function installWorkspace(next: LocalCanvasWorkspace, _changedPlacementId?: string, force = false): void {
     workspaceRef.current = next;
     setWorkspace(next);
+    revision.current = next.revision; writable.current = next.canWrite;
     placementRevisions.current = new Map(next.placements.map((placement) => [placement.id, placement.revision]));
-    if (!previous) setNodes(toFlowNodes(next, originRef.current, handleResizeEnd));
-    else if (changedPlacementId) {
-      const placement = next.placements.find((item) => item.id === changedPlacementId);
-      const entity = placement && next.entities.find((item) => item.id.toLowerCase() === placement.entityId.toLowerCase());
-      if (placement && entity) {
-        const node: CanvasNode = { id: placement.id, type: 'a3Entity', position: { x: placement.position.x - originRef.current.x, y: placement.position.y - originRef.current.y },
-          style: { width: placement.size.width, height: placement.size.height }, draggable: next.canWrite, selectable: next.canWrite,
-          data: { sessionId, workspaceId, entity, placement, canWrite: next.canWrite, onResizeEnd: handleResizeEnd } };
-        setNodes((currentNodes) => currentNodes.some((item) => item.id === changedPlacementId)
-          ? currentNodes.map((item) => item.id === changedPlacementId ? node : item) : [...currentNodes, node]);
-      }
-    }
+    setNodes((previous) => toFlowNodes(next, originRef.current, handleResizeEnd, toolRef.current, previous, force));
+    setEdges((previous) => toFlowEdges(next, originRef.current, toolRef.current, previous));
   }
 
   const persistPlacement = useCallback((placementId: string, patch: { position?: { x: number; y: number }; size?: { width: number; height: number }; style?: Record<string, unknown> }): Promise<void> => {
@@ -124,8 +126,8 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       if (live.current) {
         setErrorKind('placement'); setError(cause instanceof Error ? cause.message : 'No se pudo guardar la representación.'); setStatus('Representación sin guardar');
         void window.a3?.canvas({ action: 'load', sessionId, workspaceId }).then((result) => {
-          if (live.current && result.ok) installWorkspace(result.value, placementId);
-        });
+          if (live.current && result.ok) installWorkspace(result.value, placementId, true);
+        }).catch(() => undefined);
       }
     });
     placementWrites.current.set(placementId, next);
@@ -138,12 +140,23 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   }, [persistPlacement]);
 
   const handleNodeChanges = useCallback((changes: NodeChange<CanvasNode>[]): void => {
-    setNodes((currentNodes) => applyNodeChanges(changes, currentNodes) as CanvasNode[]);
+    setNodes((currentNodes) => applyNodeChanges(changes.filter((change) => change.type !== 'remove'), currentNodes) as CanvasNode[]);
   }, []);
+  const handleSelectionChange = useCallback(({ nodes: selectedNodes, edges: selectedEdges }: { nodes: CanvasNode[]; edges: CanvasEdge[] }): void => {
+    const nodeIds = selectedNodes.map((node) => node.id), edgeIds = selectedEdges.map((edge) => edge.id);
+    setSelection((previous) => previous.nodeIds.join() === nodeIds.join() && previous.edgeIds.join() === edgeIds.join() ? previous : { nodeIds, edgeIds });
+  }, []);
+  useEffect(() => {
+    if (tool === 'text') hostRef.current?.parentElement?.querySelector<HTMLInputElement>('[data-edge-label]')?.focus();
+  }, [tool, selection.edgeIds[0]]);
 
   useEffect(() => {
-    if (workspace) setNodes(toFlowNodes(workspace, origin, handleResizeEnd));
-  }, [origin.x, origin.y, handleResizeEnd]);
+    const latest = workspaceRef.current;
+    if (latest) {
+      setNodes((previous) => toFlowNodes(latest, origin, handleResizeEnd, tool, previous, true));
+      setEdges((previous) => toFlowEdges(latest, origin, tool, previous));
+    }
+  }, [origin.x, origin.y, handleResizeEnd, tool]);
   useEffect(() => {
     if (workspace && !workspace.entityChoices.some((entity) => entity.id === selectedEntityId)) setSelectedEntityId(workspace.entityChoices[0]?.id ?? '');
   }, [workspace?.entityChoices, selectedEntityId]);
@@ -208,6 +221,7 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   useEffect(() => {
     const host = hostRef.current; if (!host || !workspace) return;
     const wheel = (event: WheelEvent): void => {
+      if (event.target instanceof Element && event.target.closest('.nowheel, input, textarea, select')) return;
       event.preventDefault(); event.stopPropagation();
       const rect = host.getBoundingClientRect();
       try { update(wheelViewport(current.current, event, { x: event.clientX - rect.left, y: event.clientY - rect.top }, rect), true); }
@@ -237,15 +251,67 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     if (!result.ok) { setErrorKind('placement'); setError(`${result.error.code}: ${result.error.message} ${result.error.recovery}`); setStatus('Representación sin guardar'); return; }
     const id = result.value.placements.find((item) => !workspace.placements.some((old) => old.id === item.id))?.id;
     installWorkspace(result.value, id);
-    if (id) setSelectedPlacementId(id);
+    if (id) setNodes((previous) => previous.map((node) => ({ ...node, selected: node.id === id })));
     setError(null); setErrorKind(null); setStatus('Representación creada');
   }
-  const selectedPlacement = workspace?.placements.find((item) => item.id === selectedPlacementId);
+  function mutateCanvas(request: (latest: LocalCanvasWorkspace) => CanvasRequest): Promise<boolean> {
+    const operation = mutationTail.current.then(async () => {
+      const latest = workspaceRef.current; if (!latest || !window.a3) return false;
+      try {
+        const result = await window.a3.canvas(request(latest));
+        if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
+        workspaceRef.current = result.value;
+        if (live.current) { installWorkspace(result.value); setError(null); setErrorKind(null); setStatus('Organización guardada'); }
+        return true;
+      } catch (cause) {
+        if (!live.current) return false;
+        setErrorKind('placement'); setError(cause instanceof Error ? cause.message : 'No se pudo guardar la organización.'); setStatus('Cambio sin guardar');
+        try {
+          const result = await window.a3.canvas({ action: 'load', sessionId, workspaceId });
+          if (live.current && result.ok) installWorkspace(result.value, undefined, true);
+        } catch { /* Keep the original conflict visible if reload also fails. */ }
+        return false;
+      }
+    });
+    mutationTail.current = operation;
+    return operation;
+  }
+  function createVisualEdge(sourcePlacementId: string, targetPlacementId: string): void {
+    const before = new Set(workspaceRef.current?.visualEdges.map((edge) => edge.id));
+    void mutateCanvas((latest) => ({ action: 'create-visual-edge', sessionId, workspaceId, expectedWorkspaceRevision: latest.revision, sourcePlacementId, targetPlacementId })).then((ok) => {
+      if (!ok || !live.current) return;
+      setNodes((previous) => previous.map((node) => node.selected ? { ...node, selected: false } : node));
+      setEdges((previous) => previous.map((edge) => ({ ...edge, selected: !before.has(edge.id) })));
+    });
+  }
+  function updateVisualEdge(edgeId: string, patch: CanvasVisualEdgePatch): void {
+    void mutateCanvas((latest) => ({ action: 'update-visual-edge', sessionId, workspaceId, edgeId,
+      expectedRevision: latest.visualEdges.find((edge) => edge.id === edgeId)?.revision ?? 0, patch }));
+  }
+  function deleteVisualEdge(edgeId: string): Promise<boolean> {
+    return mutateCanvas((latest) => ({ action: 'delete-visual-edge', sessionId, workspaceId, edgeId,
+      expectedRevision: latest.visualEdges.find((edge) => edge.id === edgeId)?.revision ?? 0 }));
+  }
+  function moveNodes(moved: CanvasNode[]): void {
+    const origin = originRef.current;
+    const positions = moved.filter((node) => node.draggable).map((node) => ({ id: node.id, position: { x: node.position.x + origin.x, y: node.position.y + origin.y } }));
+    if (!positions.length) return;
+    void mutateCanvas((latest) => ({ action: 'move-placements', sessionId, workspaceId, placements: positions.map((item) => ({ ...item,
+      expectedRevision: latest.placements.find((placement) => placement.id === item.id)?.revision ?? 0 })) }));
+  }
+  const selectedPlacement = selection.nodeIds.length === 1 ? workspace?.placements.find((item) => item.id === selection.nodeIds[0]) : undefined;
+  const selectedEdge = selection.edgeIds.length === 1 && selection.nodeIds.length === 0 ? workspace?.visualEdges.find((item) => item.id === selection.edgeIds[0]) : undefined;
   const visual = toVisualViewport(viewport, origin);
   const topLeft = screenToWorld({ x: 0, y: 0 }, viewport);
   const referenceScreen = worldToScreen(reference, viewport);
   const referenceVisible = referenceScreen.x + reference.width * viewport.zoom >= -20000 && referenceScreen.y + reference.height * viewport.zoom >= -20000 && referenceScreen.x <= 20000 && referenceScreen.y <= 20000;
   return <>
+    <div className="canvas-tools" role="toolbar" aria-label="Herramienta del lienzo">
+      <button data-canvas-tool="select" aria-pressed={tool === 'select'} onClick={() => setTool('select')}>Seleccionar (V)</button>
+      <button data-canvas-tool="connect" aria-pressed={tool === 'connect'} onClick={() => setTool('connect')}>Dibujar conexión (C)</button>
+      <button data-canvas-tool="text" aria-pressed={tool === 'text'} onClick={() => setTool('text')}>Editar etiqueta (T)</button>
+      <span data-canvas-selection role="status">{selection.nodeIds.length} nodos y {selection.edgeIds.length} líneas seleccionados</span>
+    </div>
     <div className="canvas-toolbar" aria-label="Navegación del lienzo">
       <button className="secondary" data-canvas-zoom-out disabled={!workspace || viewport.zoom <= MIN_ZOOM} onClick={() => zoom(1 / 1.2)} aria-label="Alejar">−</button>
       <output data-canvas-zoom aria-label="Escala del lienzo">{(viewport.zoom * 100).toLocaleString('es', { maximumFractionDigits: 1 })} %</output>
@@ -255,33 +321,72 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       <label>Entidad <select aria-label="Entidad para nueva representación" data-canvas-entity value={selectedEntityId || workspace?.entityChoices[0]?.id || ''} disabled={!workspace?.canWrite || !workspace.entityChoices.length}
         onChange={(event) => setSelectedEntityId(event.target.value)}>{workspace?.entityChoices.map((entity) => <option key={entity.id} value={entity.id}>{entity.title} · {entity.type}</option>)}</select></label>
       <button className="secondary" data-canvas-create-placement disabled={!workspace?.canWrite || !workspace.entityChoices.length} onClick={() => void createPlacement()}>Crear representación</button>
+      <label className="canvas-fixture"><input type="checkbox" data-canvas-fixture checked={showReference} onChange={(event) => setShowReference(event.target.checked)} />Referencia de prueba</label>
+    </div>
+    <div className="canvas-selection-properties" aria-label="Propiedades de la selección">
       {selectedPlacement && <label>Color de vista <select aria-label="Color de esta representación" data-canvas-style value={['#9bc279', '#78a9d1', '#d19b78', '#bb91d3'].includes(String(selectedPlacement.style['a3.ui.accent'])) ? String(selectedPlacement.style['a3.ui.accent']) : '#9bc279'}
         disabled={!workspace?.canWrite} onChange={(event) => void persistPlacement(selectedPlacement.id, { style: { 'a3.ui.accent': event.target.value } })}>
         <option value="#9bc279">Verde</option><option value="#78a9d1">Azul</option><option value="#d19b78">Naranja</option><option value="#bb91d3">Violeta</option>
       </select></label>}
-      <label className="canvas-fixture"><input type="checkbox" data-canvas-fixture checked={showReference} onChange={(event) => setShowReference(event.target.checked)} />Referencia de prueba</label>
+      {selectedPlacement && <button className="quiet" data-canvas-lock disabled={!workspace?.canWrite} aria-pressed={selectedPlacement.style['a3.ui.locked'] === true}
+        onClick={() => void persistPlacement(selectedPlacement.id, { style: { 'a3.ui.locked': selectedPlacement.style['a3.ui.locked'] !== true } })}>
+        {selectedPlacement.style['a3.ui.locked'] === true ? 'Desbloquear nodo' : 'Bloquear nodo'}</button>}
     </div>
-    <p className="canvas-help">Arrastra o usa rueda/dos dedos para desplazar · Ctrl+rueda o pellizco para zoom · Flechas para desplazar. Cuadrícula: 20 · Snap: apagado · Guías: activadas.</p>
+    <p className="canvas-help">Seleccionar: clic, Shift/Ctrl+clic o rectángulo · Desplazar: botón central, Espacio+arrastrar o rueda · Flechas: mover selección; sin selección, desplazar vista · Tab/Enter: navegar y seleccionar · Supr: quitar líneas · Esc: cancelar. Cuadrícula: 20 · Snap: apagado.</p>
+    {tool === 'text' && !selectedEdge && <p className="canvas-help">Selecciona una línea visual para editar su etiqueta. Las entidades conservan su contenido compartido.</p>}
     {error && <div className="error" role="alert" data-canvas-error>{error}{workspace?.canWrite && <div className="input-row">
       {errorKind === 'viewport' && <><button className="quiet" onClick={() => { failed.current = false; setError(null); setErrorKind(null); flush(); }}>Reintentar guardar vista</button>
         <button className="quiet" onClick={() => void discard()}>Descartar cambio de vista</button></>}
       {errorKind === 'placement' && <button className="quiet" onClick={() => { void window.a3?.canvas({ action: 'load', sessionId, workspaceId }).then((result) => {
-        if (result.ok) { installWorkspace(result.value); setError(null); setErrorKind(null); setStatus('Vista recargada'); }
+        if (result.ok) { installWorkspace(result.value, undefined, true); setError(null); setErrorKind(null); setStatus('Vista recargada'); }
       }); }}>Recargar workspace</button>}
     </div>}</div>}
-    <div ref={hostRef} className="canvas-host" tabIndex={0} role="region" aria-label="Lienzo del workspace" data-canvas-ready={!!workspace}
-      data-viewport-x={viewport.x} data-viewport-y={viewport.y} data-viewport-zoom={viewport.zoom} onKeyDown={(event) => {
+    <div ref={hostRef} className="canvas-host" tabIndex={0} role="region" aria-label="Lienzo del workspace" data-canvas-ready={!!workspace} data-canvas-mode={tool}
+      data-viewport-x={viewport.x} data-viewport-y={viewport.y} data-viewport-zoom={viewport.zoom} onKeyDownCapture={(event) => {
+        if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"], summary')) return;
+        if (event.key === 'Escape') {
+          event.preventDefault(); event.stopPropagation(); setTool('select');
+          setNodes((previous) => previous.map((node) => node.selected ? { ...node, selected: false } : node));
+          setEdges((previous) => previous.map((edge) => edge.selected ? { ...edge, selected: false } : edge)); return;
+        }
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && tool === 'select') {
+          event.preventDefault(); event.stopPropagation(); setNodes((previous) => previous.map((node) => ({ ...node, selected: true })));
+          setEdges((previous) => previous.map((edge) => ({ ...edge, selected: true }))); return;
+        }
+        if (!event.ctrlKey && !event.metaKey && ['v', 'c', 't'].includes(event.key.toLowerCase())) {
+          event.preventDefault(); setTool(({ v: 'select', c: 'connect', t: 'text' } as const)[event.key.toLowerCase() as 'v' | 'c' | 't']); return;
+        }
+        if (event.key === 'Delete') {
+          event.preventDefault(); event.stopPropagation();
+          if (workspace?.canDeleteEdges) void (async () => { for (const edge of edges.filter((edge) => edge.selected)) await deleteVisualEdge(edge.id); })();
+          return;
+        }
         const delta: Record<string, { x: number; y: number }> = { ArrowLeft: { x: 40, y: 0 }, ArrowRight: { x: -40, y: 0 }, ArrowUp: { x: 0, y: 40 }, ArrowDown: { x: 0, y: -40 } };
-        if (delta[event.key]) { event.preventDefault(); update(panViewport(current.current, delta[event.key]!), true); }
+        if (delta[event.key]) {
+          event.preventDefault(); event.stopPropagation();
+          if (selection.nodeIds.length && tool === 'select') {
+            const step = event.shiftKey ? 20 : 1, movement = delta[event.key]!;
+            const selected = new Set(nodes.filter((node) => node.selected && node.draggable).map((node) => node.id));
+            if (selected.size) void mutateCanvas((latest) => ({ action: 'move-placements', sessionId, workspaceId,
+              placements: latest.placements.filter((placement) => selected.has(placement.id)).map((placement) => ({ id: placement.id, expectedRevision: placement.revision,
+                position: { x: placement.position.x - movement.x / 40 * step, y: placement.position.y - movement.y / 40 * step } })) }));
+          } else if (!(event.target instanceof Element && event.target.closest('.react-flow__node'))) update(panViewport(current.current, delta[event.key]!), true);
+        }
         else if (event.key === '+' || event.key === '=') { event.preventDefault(); zoom(1.2); }
         else if (event.key === '-') { event.preventDefault(); zoom(1 / 1.2); }
       }}>
       {workspace && <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} viewport={visual} defaultViewport={visual} minZoom={Math.min(MIN_ZOOM, viewport.zoom)} maxZoom={MAX_ZOOM}
-        panOnDrag={[0, 1]} zoomOnScroll={false} zoomOnPinch={false} panOnScroll={false} zoomOnDoubleClick={false} zoomActivationKeyCode={null}
-        snapToGrid={false} snapGrid={[GRID_SIZE, GRID_SIZE]} nodesDraggable={workspace.canWrite} nodesConnectable={false} elementsSelectable deleteKeyCode={null}
+        edgeTypes={edgeTypes} panOnDrag={[1]} panActivationKeyCode="Space" zoomOnScroll={false} zoomOnPinch={false} panOnScroll={false} zoomOnDoubleClick={false} zoomActivationKeyCode={null}
+        selectionOnDrag={tool === 'select'} selectionKeyCode="Shift" multiSelectionKeyCode={['Shift', 'Control', 'Meta']} selectionMode={SelectionMode.Partial}
+        snapToGrid={false} snapGrid={[GRID_SIZE, GRID_SIZE]} nodesDraggable={workspace.canWrite && tool === 'select'} nodesConnectable={workspace.canWrite && tool === 'connect'}
+        elementsSelectable nodesFocusable edgesFocusable edgesReconnectable={workspace.canWrite && tool === 'connect'} deleteKeyCode={null}
         onlyRenderVisibleElements colorMode="dark" onMove={(event, next) => { if (event) update(fromVisualViewport(next, originRef.current)); }}
-        onNodesChange={handleNodeChanges} onNodeClick={(_, node) => setSelectedPlacementId(node.id)} onPaneClick={() => setSelectedPlacementId('')}
-        onNodeDragStop={(_, node) => { setSelectedPlacementId(node.id); void persistPlacement(node.id, { position: { x: node.position.x + originRef.current.x, y: node.position.y + originRef.current.y } }); }}
+        onNodesChange={handleNodeChanges} onEdgesChange={(changes) => setEdges((previous) => applyEdgeChanges(changes.filter((change) => change.type !== 'remove'), previous))}
+        onSelectionChange={handleSelectionChange} onNodeDragStop={(_, _node, moved) => moveNodes(moved)}
+        onConnect={(connection) => createVisualEdge(connection.source, connection.target)}
+        onReconnect={(edge, connection) => updateVisualEdge(edge.id, { sourcePlacementId: connection.source, targetPlacementId: connection.target })}
+        ariaLabelConfig={{ 'node.a11yDescription.default': 'Pulsa Enter para seleccionar. Usa Tab para navegar y flechas para mover la selección.',
+          'edge.a11yDescription.default': 'Línea visual. Pulsa Enter para seleccionar y Supr para eliminar si tienes permiso.' }}
         onMoveEnd={(event) => { if (event) rebase(current.current); }}>
         <Background variant={BackgroundVariant.Lines} gap={GRID_SIZE} offset={gridOffset(origin)} color="#283532" />
         <ViewportPortal>
@@ -297,6 +402,8 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       </ReactFlow>}
     </div>
     <div className="canvas-status"><span data-canvas-status role="status">{status}</span><span data-canvas-node-count>{nodes.length} representaciones · Origen visible: {topLeft.x.toLocaleString('es', { maximumFractionDigits: 2 })}, {topLeft.y.toLocaleString('es', { maximumFractionDigits: 2 })}</span></div>
+    {workspace && <CanvasEdgeEditor workspace={workspace} edge={selectedEdge} tool={tool} onCreate={createVisualEdge} onUpdate={updateVisualEdge} onDelete={(id) => void deleteVisualEdge(id)}
+      onRequestDeletePermission={() => void mutateCanvas(() => ({ action: 'approve-edge-delete', sessionId, workspaceId }))} />}
     {showReference && <p className="canvas-help">La referencia es un fixture aislado y no se añade al proyecto.</p>}
   </>;
 }

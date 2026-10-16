@@ -101,6 +101,29 @@ button:focus-visible, a:focus-visible { outline: 2px solid #c3ed82; outline-offs
 .canvas-ports span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; border: 1px solid #45574e; border-radius: 10px; padding: 2px 7px; color: #b8ccbf; font-size: 9px; }
 .canvas-toolbar label { display: flex; align-items: center; gap: 6px; font-size: 11px; }
 .canvas-toolbar label select { max-width: 260px; }
+.canvas-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding-top: 8px; font-size: 11px; }
+.canvas-tools button { background: #19241e; color: #d3dfd4; border: 1px solid #45574c; border-radius: 4px; padding: 6px 10px; }
+.canvas-tools button[aria-pressed="true"] { color: #101a10; background: #b5d78e; border-color: #b5d78e; }
+.canvas-tools span { color: #aab7c2; margin-left: auto; }
+.canvas-selection-properties { display: flex; align-items: center; gap: 12px; height: 34px; flex-shrink: 0; font-size: 11px; }
+.canvas-selection-properties label { display: flex; align-items: center; gap: 6px; margin: 0; }
+.canvas-selection-properties button, .canvas-selection-properties select { margin: 0; font-size: 11px; padding: 4px 8px; }
+.canvas-edge-editor { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: end; max-height: 190px; overflow: auto; padding: 10px; margin-top: 8px; border: 1px solid #3d5144; border-radius: 5px; background: #17201c; }
+.canvas-edge-editor p { width: 100%; margin: 0; color: #b8c9b7; font-size: 11px; }
+.canvas-edge-editor label { display: grid; gap: 3px; font-size: 10px; margin: 0; }
+.canvas-edge-editor select, .canvas-edge-editor input { max-width: 170px; margin: 0; padding: 5px; min-height: 29px; background: #101a15; color: #dce5dc; border: 1px solid #49604d; border-radius: 3px; font-size: 11px; }
+.canvas-edge-editor input[type="number"] { width: 60px; }
+.canvas-edge-editor input[type="color"] { width: 55px; padding: 1px; }
+.canvas-edge-editor button { margin: 0; padding: 7px 10px; font-size: 11px; }
+.canvas-host .react-flow__node.selected .canvas-entity-node { outline: 2px solid #d2eea8; outline-offset: 2px; }
+.canvas-host .react-flow__node:focus-visible, .canvas-host .react-flow__edge:focus-visible { outline: 2px solid #d2eea8; }
+.canvas-host .react-flow__edge.selected .react-flow__edge-path { filter: drop-shadow(0 0 3px #d2eea8); }
+.canvas-host .react-flow__handle { width: 12px; height: 12px; background: #c3ed82; border: 2px solid #263b2a; opacity: .3; }
+.canvas-host[data-canvas-mode="connect"] .react-flow__handle { opacity: 1; }
+.canvas-entity-header { cursor: grab; }
+.canvas-entity-node { overflow: visible; }
+.canvas-entity-header { border-radius: 7px 7px 0 0; }
+.canvas-entity-body { border-radius: 0 0 7px 7px; }
 .shell { display: grid; grid-template-columns: 214px minmax(360px, 1fr) 260px; grid-template-rows: 58px minmax(0, 1fr) 36px auto; height: 100vh; min-height: 500px; }
 .topbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 32px; padding: 0 24px; border-bottom: 1px solid #293139; }
 .brand { font-size: 24px; font-weight: 750; letter-spacing: -1px; display: flex; gap: 4px; align-items: baseline; }

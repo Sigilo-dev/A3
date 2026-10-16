@@ -2,11 +2,11 @@
 
 Se integra React Flow `12.12.0`, el candidato ensayado en E0-D1, en una sección Lienzo con selector de workspace. El archivo canónico sigue siendo el Workspace E0 y el writer E1 guarda sus cambios con revisiones, broker, snapshots y journal. La decisión de coordenadas y origen visual está en [ADR 0009](../adr/0009-world-viewport.md).
 
-E2-A2 añade [placements y tarjetas de entidad al lienzo](placement-nodes.md); las reglas de cámara y persistencia del viewport siguen siendo las de este documento.
+E2-A2 añade [placements y tarjetas de entidad al lienzo](placement-nodes.md); E2-A3 añade [selección y líneas visuales](selection-visual-edges.md). Las reglas de cámara y persistencia del viewport siguen siendo las de este documento.
 
 ## Uso
 
-- Arrastrar con botón izquierdo o central desplaza el lienzo. La rueda y el desplazamiento de dos dedos también desplazan; Shift+rueda vertical desplaza horizontalmente. Ctrl/Cmd+rueda o el evento de pellizco de trackpad hace zoom sobre el cursor. Se normalizan deltas en píxeles, líneas y páginas.
+- Desde E2-A3, botón central o Espacio+arrastrar desplazan el lienzo; el botón izquierdo selecciona por rectángulo. La rueda y el desplazamiento de dos dedos también desplazan; Shift+rueda vertical desplaza horizontalmente. Ctrl/Cmd+rueda o el evento de pellizco de trackpad hace zoom sobre el cursor. Se normalizan deltas en píxeles, líneas y páginas.
 - Los botones +/− y teclas +/− hacen zoom alrededor del centro. Con el lienzo enfocado, las flechas desplazan 40 píxeles CSS. El rango interactivo es 5–800 %, con escala inicial de 100 %.
 - La cuadrícula inicial tiene 20 unidades de mundo, snap desactivado y guías de origen activadas. No hay herramientas de nodos, conectores ni dibujo en este corte.
 - «Referencia de prueba» muestra dos formas SVG aisladas. «Ajustar contenido» se activa para esa geometría y solo se ejecuta al pedirlo. La referencia no se guarda, y un workspace sin geometría mantiene fit desactivado. Cambiar tamaño de ventana no mueve la cámara ni ajusta contenido.

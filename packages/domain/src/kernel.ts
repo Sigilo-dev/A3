@@ -9,7 +9,7 @@ function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnost
   throw new DomainFault(diagnostic(detail, message, ref, code));
 }
 const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity',
-  'a3.core.move-placement', 'a3.core.update-placement-view', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-collection-members',
+  'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-visual-edge', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-collection-members',
   'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
 const kinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
 const scoped = new Set(['placement', 'visual-edge', 'relation-view', 'group', 'drawing']);
@@ -188,7 +188,10 @@ function moveGroup(draft: Draft, ref: DocumentRef, offset: { x: number; y: numbe
   }
   visit(ref);
   for (const record of draft.snapshot.records.filter((r) => r.kind === 'placement' && placements.has(refKey(refOf(r))))) {
-    draft.edit(refOf(record), 'placement', (value) => { value.position = { ...value.position, x: value.position.x + offset.x, y: value.position.y + offset.y }; });
+    if (record.kind === 'placement' && record.value.style['a3.ui.locked'] === true) continue;
+    draft.edit(refOf(record), 'placement', (value) => {
+      value.position = { ...value.position, x: value.position.x + offset.x, y: value.position.y + offset.y };
+    });
   }
 }
 
@@ -332,7 +335,27 @@ function apply(draft: Draft): void {
       break;
     }
     case 'a3.core.move-placement':
-      draft.edit(request.payload.ref, 'placement', (value) => { value.position = { ...value.position, ...copy(request.payload.position) }; }); break;
+      draft.edit(request.payload.ref, 'placement', (value) => {
+        if (value.style['a3.ui.locked'] === true) fail('placement-locked', 'Desbloquea la representación antes de moverla.', request.payload.ref);
+        value.position = { ...value.position, ...copy(request.payload.position) };
+      }); break;
+    case 'a3.core.move-placements': {
+      const { workspaceId, placements } = request.payload;
+      if (Object.keys(request.payload).some((key) => !['workspaceId', 'placements'].includes(key)) || !Array.isArray(placements) || !placements.length ||
+          placements.some((item) => !isObject(item) || Object.keys(item).some((key) => !['id', 'position'].includes(key)) || typeof item.id !== 'string' ||
+            !UUID_PATTERN.test(item.id) || !isObject(item.position) || Object.keys(item.position).some((key) => !['x', 'y'].includes(key)) ||
+            !Number.isFinite(item.position.x) || !Number.isFinite(item.position.y)) || new Set(placements.map((item) => item.id.toLowerCase())).size !== placements.length) {
+        fail('invalid-placement-moves', 'El movimiento requiere representaciones únicas y coordenadas finitas.');
+      }
+      for (const item of placements) {
+        const ref: DocumentRef = { kind: 'placement', id: item.id, workspaceId };
+        draft.edit(ref, 'placement', (value) => {
+          if (value.style['a3.ui.locked'] === true) fail('placement-locked', 'Desbloquea la representación antes de moverla.', ref);
+          value.position = { ...value.position, ...copy(item.position) };
+        });
+      }
+      break;
+    }
     case 'a3.core.update-placement-view': {
       const { position, size, style } = request.payload;
       if (Object.keys(request.payload).some((key) => !['ref', 'position', 'size', 'style'].includes(key)) ||
@@ -347,9 +370,23 @@ function apply(draft: Draft): void {
       }
       if (style && !isObject(style)) fail('invalid-placement-style', 'El estilo de vista debe ser un mapa JSON namespaced.', request.payload.ref);
       draft.edit(request.payload.ref, 'placement', (value) => {
+        if ((position || size) && value.style['a3.ui.locked'] === true) fail('placement-locked', 'Desbloquea la representación antes de cambiar su geometría.', request.payload.ref);
         if (position) value.position = { ...value.position, ...copy(position) };
         if (size) value.size = { ...value.size, ...copy(size) };
         if (style) value.style = { ...value.style, ...copy(style) };
+      });
+      break;
+    }
+    case 'a3.core.update-visual-edge': {
+      const { ref, ...patch } = request.payload;
+      if (!Object.keys(patch).length || Object.keys(patch).some((key) => !['sourcePlacementId', 'targetPlacementId', 'label', 'waypoints', 'style'].includes(key)) ||
+          (patch.style !== undefined && !isObject(patch.style))) fail('invalid-visual-edge-patch', 'Solo se pueden editar extremos, etiqueta, recorrido y estilo de la línea visual.', ref);
+      draft.edit(ref, 'visual-edge', (value) => {
+        if (patch.sourcePlacementId !== undefined) value.sourcePlacementId = patch.sourcePlacementId;
+        if (patch.targetPlacementId !== undefined) value.targetPlacementId = patch.targetPlacementId;
+        if (patch.label !== undefined) value.label = patch.label;
+        if (patch.waypoints !== undefined) value.waypoints = copy(patch.waypoints);
+        if (patch.style !== undefined) value.style = { ...value.style, ...copy(patch.style) };
       });
       break;
     }

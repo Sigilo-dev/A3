@@ -1,5 +1,5 @@
-import type { LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
-export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasResourcePreview, LocalCanvasWorkspace } from '@a3/project-store';
+import type { CanvasPlacementMove, CanvasVisualEdgePatch, LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
+export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasResourcePreview, LocalCanvasWorkspace } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
@@ -7,11 +7,15 @@ export const PROJECTS_CHANNEL = 'a3.projects:command';
 export const FILES_CHANNEL = 'a3.files:command';
 export const CANVAS_CHANNEL = 'a3.canvas:command';
 export type CanvasRequest =
-  | { action: 'load' | 'flush' | 'discard'; sessionId: string; workspaceId: string }
+  | { action: 'load' | 'flush' | 'discard' | 'approve-edge-delete'; sessionId: string; workspaceId: string }
   | { action: 'stage'; sessionId: string; workspaceId: string; expectedRevision: number; viewport: WorkspaceViewport }
   | { action: 'create-placement'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; entityId: string; position: { x: number; y: number } }
   | { action: 'update-placement'; sessionId: string; workspaceId: string; placementId: string; expectedRevision: number;
-      patch: { position?: { x: number; y: number }; size?: { width: number; height: number }; style?: Record<string, unknown> } };
+      patch: { position?: { x: number; y: number }; size?: { width: number; height: number }; style?: Record<string, unknown> } }
+  | { action: 'move-placements'; sessionId: string; workspaceId: string; placements: CanvasPlacementMove[] }
+  | { action: 'create-visual-edge'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; sourcePlacementId: string; targetPlacementId: string }
+  | { action: 'update-visual-edge'; sessionId: string; workspaceId: string; edgeId: string; expectedRevision: number; patch: CanvasVisualEdgePatch }
+  | { action: 'delete-visual-edge'; sessionId: string; workspaceId: string; edgeId: string; expectedRevision: number };
 export type CanvasContentRequest = { action: 'content'; sessionId: string; workspaceId: string; entityId: string; resourceId: string };
 export type CanvasResult = { ok: true; value: LocalCanvasWorkspace } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasContentResult = { ok: true; value: import('@a3/project-store').CanvasResourcePreview } | { ok: false; error: { code: string; message: string; recovery: string } };

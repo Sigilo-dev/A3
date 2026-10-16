@@ -2,6 +2,8 @@
 
 E2-A2 conecta las vistas guardadas del dominio con React Flow según [A3 §§6, 9–11, 26 y 28](../../A3_ESPECIFICACION_MAESTRA.md). El documento canónico sigue siendo `.a3/workspaces/<id>/placements/<placement-id>.json`; React Flow recibe una proyección temporal y nunca se serializa como proyecto.
 
+E2-A3 amplía esta base con [selección, bloqueo y líneas visuales](selection-visual-edges.md); los límites sobre conexiones descritos más abajo corresponden a la entrega E2-A2.
+
 ## Proyección
 
 El host carga los placements de un workspace y los une por `entityId` con sus entidades canónicas. Si una entidad aparece en dos workspaces, ambos reciben el mismo ID, título, propiedades, puertos y recurso de contenido. Cada placement conserva por separado su posición, tamaño, estilo e ID. La lista para crear otra representación contiene solo identificadores y títulos; los metadatos completos se transfieren únicamente para entidades ya representadas.

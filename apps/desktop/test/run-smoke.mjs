@@ -47,11 +47,11 @@ async function run(mode, output, expectedCode) {
     let timedOut = false;
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
-    const timeout = setTimeout(() => { timedOut = true; child.kill(); }, 60_000);
+    const timeout = setTimeout(() => { timedOut = true; child.kill(); }, mode === 'healthy' ? 120_000 : 60_000);
     child.on('error', (error) => { clearTimeout(timeout); reject(error); });
     child.on('close', (code) => {
       clearTimeout(timeout);
-      if (timedOut) return reject(new Error(`${mode}: Electron did not shut down.`));
+      if (timedOut) return reject(new Error(`${mode}: Electron did not shut down. Last canvas phase: ${stdout.split(/\r?\n/).filter((line) => line.startsWith('CANVAS_PHASE=')).at(-1) ?? 'not started'}`));
       const line = stdout.split(/\r?\n/).find((value) => value.startsWith('A3_SMOKE='));
       if (code !== expectedCode || !line) return reject(new Error(`${mode} exited ${code}: ${stdout}\n${stderr}`));
       const result = JSON.parse(line.slice('A3_SMOKE='.length));

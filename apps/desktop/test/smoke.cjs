@@ -78,7 +78,7 @@ async function healthy() {
   await mkdir(projectParent, { recursive: true });
   const existing = join(projectParent, 'Existing'); await mkdir(existing);
   const original = Buffer.from([0xff, 0, 13, 10, 42]); await writeFile(join(existing, 'original.bin'), original);
-  const js = (source) => win.webContents.executeJavaScript(source);
+  const js = (source) => win.webContents.executeJavaScript(source).catch((error) => { throw new Error(`Renderer check failed: ${source.slice(0, 260)}`, { cause: error }); });
   const click = (selector) => js(`document.querySelector(${JSON.stringify(selector)}).click(); undefined`);
   const waitFor = async (condition) => {
     for (let attempt = 0; attempt < 160; attempt++) {
@@ -169,9 +169,9 @@ async function healthy() {
   await waitFor(`Number(document.querySelector('[data-canvas-ready]').dataset.viewportX) !== ${zoomed.x}`);
   const scrolled = await readViewport(); assert.equal(scrolled.zoom, zoomed.zoom);
   // A native drag uses React Flow; wheel/pinch are normalized in the A3 visual adapter.
-  win.webContents.sendInputEvent({ type: 'mouseDown', x: paneRect.x, y: paneRect.y, button: 'left', clickCount: 1 });
+  win.webContents.sendInputEvent({ type: 'mouseDown', x: paneRect.x, y: paneRect.y, button: 'middle', clickCount: 1 });
   win.webContents.sendInputEvent({ type: 'mouseMove', x: paneRect.x + 35, y: paneRect.y + 21, movementX: 35, movementY: 21 });
-  win.webContents.sendInputEvent({ type: 'mouseUp', x: paneRect.x + 35, y: paneRect.y + 21, button: 'left', clickCount: 1 });
+  win.webContents.sendInputEvent({ type: 'mouseUp', x: paneRect.x + 35, y: paneRect.y + 21, button: 'middle', clickCount: 1 });
   await waitFor(`Number(document.querySelector('[data-canvas-ready]').dataset.viewportX) !== ${scrolled.x}`);
   await waitFor("document.querySelector('[data-canvas-status]')?.textContent === 'Vista guardada'");
   const beforeResize = await readViewport(); const [width, height] = win.getSize(); win.setSize(width + 130, height + 80);
@@ -212,6 +212,10 @@ async function healthy() {
   const fixtureEntity = JSON.parse(await readFile(fixtureEntityPath, 'utf8'));
   fixtureEntity.properties['demo.smoke'] = 'Fallback property'; fixtureEntity.ports = [{ id: 'smoke-port', label: 'Puerto visible' }];
   await writeFile(fixtureEntityPath, JSON.stringify(fixtureEntity, null, 2) + '\n');
+  const fixtureEdgePath = join(canvasFixture, '.a3/workspaces/00000000-0000-4000-8000-000000000006/visual-edges/00000000-0000-4000-8000-000000000011.json');
+  const fixtureEdge = JSON.parse(await readFile(fixtureEdgePath, 'utf8'));
+  fixtureEdge.style['a3.ui.line.route'] = 'future-route'; fixtureEdge.style['future.keep'] = { opaque: true };
+  await writeFile(fixtureEdgePath, JSON.stringify(fixtureEdge, null, 2) + '\n');
   folders.push(canvasFixture); await click('[data-open-project]');
   await waitFor("document.querySelector('[data-active-project] h2')?.textContent === 'Ejemplo E0-A'");
   await click('[data-section="canvas"]'); await waitFor("document.querySelector('[data-canvas-node-count]')?.textContent.startsWith('2 representaciones')");
@@ -236,7 +240,10 @@ async function healthy() {
   await waitFor("document.querySelector('[data-canvas-node-count]')?.textContent.startsWith('3 representaciones')");
   const reopenedNodeSize = await js(`(() => { const n = document.querySelector('.react-flow__node[data-id="${createdPlacement.id}"]'); return { width: Number.parseFloat(n.style.width), height: Number.parseFloat(n.style.height) }; })()`);
   assert.deepEqual(reopenedNodeSize, resizedPlacement.size);
-  assert.equal(await js("document.querySelectorAll('.react-flow__edge').length"), 0);
+  await waitFor("document.querySelectorAll('.react-flow__edge').length === 1");
+  await require('./canvas-interactions.cjs')({ win, js, click, input, waitFor, root: canvasFixture, createdPlacement }).catch(async (error) => {
+    await mkdir(dirname(screenshot), { recursive: true }); await writeFile(screenshot, (await win.webContents.capturePage()).toPNG()); throw error;
+  });
   const fixtureSession = (await js("window.a3.projects({ action: 'list' })")).value.active;
   const fixtureWorkspaceId = fixtureSession.workspaces[0].id;
 
@@ -263,7 +270,7 @@ async function healthy() {
   await mkdir(dirname(screenshot), { recursive: true });
   await writeFile(screenshot, (await win.webContents.capturePage()).toPNG());
   console.log('A3_SMOKE=' + JSON.stringify({ mode, passed: true, electron: probe.result.value.electron,
-    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'explorer create and rename', 'resource identity preserved', 'keyboard open/rename/duplicate/delete-cancel', 'incremental tree navigation', 'canvas explicit fit', 'native wheel and cursor zoom', 'React Flow native pan', 'resize without fit', 'workspace reopen without drift', 'extensive viewport rebasing', 'grid phase after rebase', 'placements render as fallback nodes', 'visible fallback exposes properties, content and ports', 'create placement through canvas', 'React Flow resize control and validated size update', 'placement resize remains persisted after reopen without edges', 'canvas IPC denied to foreign window', 'stale sessions', 'window close'] }));
+    checks: ['renderer isolation', 'limited IPC', 'sender validation', 'navigation', 'activity', 'CSP', 'popup denial', 'external navigation denial', 'UI create/reopen', 'draft flushed on close', 'relocation', 'cancel incorporation', 'preserve bytes', 'explorer create and rename', 'resource identity preserved', 'keyboard open/rename/duplicate/delete-cancel', 'incremental tree navigation', 'canvas explicit fit', 'native wheel and cursor zoom', 'React Flow native pan', 'resize without fit', 'workspace reopen without drift', 'extensive viewport rebasing', 'grid phase after rebase', 'placements render as fallback nodes', 'visible fallback exposes properties, content and ports', 'create placement through canvas', 'React Flow resize control and validated size update', 'placement resize remains persisted after reopen', 'rectangle and multiple selection', 'selection drag and keyboard move', 'locked placement stays fixed', 'visual edge create/reconnect/style/reopen/delete', 'text tool focus and keyboard navigation', 'technical relation sources unchanged', 'canvas IPC denied to foreign window', 'stale sessions', 'window close'] }));
   win.close();
 }
 

@@ -2,7 +2,7 @@ import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir } from 'no
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { defaultRegistry, revisionsOf, validateSnapshot, type DomainRecord, type Entity, type Placement, type Project, type TypeRegistry, type Workspace } from '@a3/domain';
+import { defaultRegistry, revisionsOf, validateSnapshot, type DocumentRef, type DomainCommand, type DomainRecord, type Entity, type Placement, type Project, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
@@ -42,11 +42,14 @@ export interface CanvasEntityChoice { id: string; type: string; typeVersion: str
 export interface CanvasPlacementView {
   id: string; revision: number; entityId: string; position: Placement['position']; size: Placement['size']; style: Placement['style'];
 }
+export type CanvasVisualEdgeView = Pick<VisualEdge, 'id' | 'revision' | 'sourcePlacementId' | 'targetPlacementId' | 'label' | 'waypoints' | 'style'>;
+export type CanvasVisualEdgePatch = Partial<Pick<VisualEdge, 'sourcePlacementId' | 'targetPlacementId' | 'label' | 'waypoints' | 'style'>>;
+export interface CanvasPlacementMove { id: string; expectedRevision: number; position: { x: number; y: number }; }
 export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; }
 export interface LocalCanvasWorkspace {
   sessionId: string; workspaceId: string; name: string; revision: number;
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
-  placements: readonly CanvasPlacementView[];
+  placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[]; canDeleteEdges: boolean;
 }
 export interface LocalExplorerEntry extends Omit<ExplorerDirectoryPage['entries'][number], 'path' | 'identity'> { id: string; path: string; }
 export interface LocalExplorerMount extends Omit<ExplorerMountEntry, 'resourceId'> { id: string; }
@@ -372,9 +375,17 @@ export class LocalProjectManager {
         title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId } : {}),
         typeAvailable: (this.options.registry ?? defaultRegistry()).nodeTypes.some((definition) => definition.name === value.type && definition.version === value.typeVersion) }));
     const entityChoices = choices.map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
+    const placementIds = new Map(placements.map((placement) => [placement.id.toLowerCase(), placement.id]));
+    const visualEdges = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'visual-edge' }> => record.kind === 'visual-edge' && record.workspaceId === workspaceId)
+      .map(({ value }) => ({ id: value.id, revision: value.revision, sourcePlacementId: placementIds.get(value.sourcePlacementId.toLowerCase()) ?? value.sourcePlacementId,
+        targetPlacementId: placementIds.get(value.targetPlacementId.toLowerCase()) ?? value.targetPlacementId,
+        label: value.label, waypoints: value.waypoints, style: value.style }));
+    const deletion = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+      projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: ['delete', 'diagram.edit'], stage: 'prepare' });
     const draft = this.#viewportDrafts.get(workspaceId);
     const { x, y, zoom } = draft?.viewport ?? workspace.viewport;
-    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, placements,
+    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, placements, visualEdges,
+      canDeleteEdges: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && deletion.allowed,
       canWrite: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && edit.allowed };
   }
   loadCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
@@ -444,7 +455,7 @@ export class LocalProjectManager {
       const record = snapshot.records.find((item) => item.kind === 'placement' && item.workspaceId === workspaceId && item.value.id.toLowerCase() === placementId.toLowerCase());
       demand(record?.kind === 'placement', 'PLACEMENT_MISSING', 'La representación ya no existe en este workspace.');
       demand(Number.isSafeInteger(expectedRevision) && expectedRevision === record.value.revision, 'REVISION_CONFLICT', 'La representación cambió; vuelve a cargar el placement antes de guardarlo.');
-      const payload = { ref: { kind: 'placement' as const, id: record.value.id, workspaceId }, ...patch };
+      const payload = { ...patch, ref: { kind: 'placement' as const, id: record.value.id, workspaceId } };
       const command = patch.position && !patch.size && !patch.style ? 'a3.core.move-placement' : 'a3.core.update-placement-view';
       const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
         command, payload: command === 'a3.core.move-placement' ? { ref: payload.ref, position: patch.position } : payload,
@@ -470,6 +481,77 @@ export class LocalProjectManager {
       }
       try { return { entityId, resourceId, text: new TextDecoder('utf-8', { fatal: true }).decode(opened.value.bytes), state: 'ready' }; }
       catch { return { entityId, resourceId, text: null, state: 'binary' }; }
+    });
+  }
+  async #commitCanvasCommand(active: ActiveProjectBinding, operation: Pick<DomainCommand, 'command' | 'payload'>, entityIds: string[], absent?: DocumentRef): Promise<void> {
+    const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
+      ...operation, expectedRevisions: [...revisionsOf(active.lease.service.state.project.snapshot), ...(absent ? [{ ...absent, revision: null }] : [])],
+      expectedContentHashes: [], scope: { entityIds: [...new Set(entityIds)] } });
+    demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
+    const committed = await active.lease.service.commit(prepared.value);
+    demand(committed.ok, committed.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+  }
+  #canvasEndpointEntities(active: ActiveProjectBinding, workspaceId: string, placementIds: string[]): string[] {
+    return placementIds.map((id) => {
+      const placement = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === id.toLowerCase());
+      demand(placement?.kind === 'placement', 'PLACEMENT_MISSING', 'El extremo debe pertenecer a este workspace.');
+      return placement.value.entityId;
+    });
+  }
+  moveCanvasPlacements(sessionId: string, workspaceId: string, placements: CanvasPlacementMove[]): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      demand(Array.isArray(placements) && placements.length > 0, 'INVALID_PLACEMENT_MOVES', 'Selecciona representaciones para mover.');
+      const entityIds = this.#canvasEndpointEntities(active, workspaceId, placements.map((item) => item.id));
+      for (const item of placements) {
+        const record = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === item.id.toLowerCase())!;
+        demand(Number.isSafeInteger(item.expectedRevision) && record.value.revision === item.expectedRevision, 'REVISION_CONFLICT', 'La selección cambió; recarga antes de moverla.');
+      }
+      await this.#commitCanvasCommand(active, { command: 'a3.core.move-placements', payload: { workspaceId, placements: placements.map(({ id, position }) => ({ id, position })) } }, entityIds);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  createCanvasVisualEdge(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, sourcePlacementId: string, targetPlacementId: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision, 'REVISION_CONFLICT', 'El workspace cambió; recarga antes de conectar.');
+      const entityIds = this.#canvasEndpointEntities(active, workspaceId, [sourcePlacementId, targetPlacementId]);
+      const record: DomainRecord = { kind: 'visual-edge', workspaceId, value: { schemaVersion: '1.0.0', id: randomUUID(), revision: 1,
+        sourcePlacementId, targetPlacementId, label: '', waypoints: [], style: {}, extensions: {} } };
+      await this.#commitCanvasCommand(active, { command: 'a3.core.create-document', payload: { record } }, entityIds, { kind: 'visual-edge', workspaceId, id: record.value.id });
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  updateCanvasVisualEdge(sessionId: string, workspaceId: string, edgeId: string, expectedRevision: number, patch: CanvasVisualEdgePatch): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const edge = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'visual-edge' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === edgeId.toLowerCase());
+      demand(edge?.kind === 'visual-edge', 'EDGE_MISSING', 'La línea visual ya no está disponible.');
+      demand(Number.isSafeInteger(expectedRevision) && edge.value.revision === expectedRevision, 'REVISION_CONFLICT', 'La línea cambió; vuelve a cargarla antes de editar.');
+      const entityIds = this.#canvasEndpointEntities(active, workspaceId, [edge.value.sourcePlacementId, edge.value.targetPlacementId,
+        patch.sourcePlacementId ?? edge.value.sourcePlacementId, patch.targetPlacementId ?? edge.value.targetPlacementId]);
+      await this.#commitCanvasCommand(active, { command: 'a3.core.update-visual-edge', payload: { ...patch, ref: { kind: 'visual-edge', id: edge.value.id, workspaceId } } }, entityIds);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  deleteCanvasVisualEdge(sessionId: string, workspaceId: string, edgeId: string, expectedRevision: number): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const edge = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'visual-edge' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === edgeId.toLowerCase());
+      demand(edge?.kind === 'visual-edge', 'EDGE_MISSING', 'La línea visual ya no está disponible.');
+      demand(Number.isSafeInteger(expectedRevision) && edge.value.revision === expectedRevision, 'REVISION_CONFLICT', 'La línea cambió; recarga antes de eliminar.');
+      const entityIds = this.#canvasEndpointEntities(active, workspaceId, [edge.value.sourcePlacementId, edge.value.targetPlacementId]);
+      await this.#commitCanvasCommand(active, { command: 'a3.core.delete', payload: { ref: { kind: 'visual-edge', id: edge.value.id, workspaceId } } }, entityIds);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  approveCanvasEdgeDeletion(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      demand(this.options.host.authenticatedActor.kind === 'user', 'PERMISSION_DENIED', 'Solo una persona puede solicitar permisos locales.');
+      demand(await this.options.host.capabilities.setGrant({ root: active.lease.service.root, projectId: active.projectId, capability: 'delete', mode: 'approval' }),
+        'PERMISSION_DENIED', 'El permiso de eliminación no fue aprobado.');
+      return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }
   #clearExplorer(): void {
