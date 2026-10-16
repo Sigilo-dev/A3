@@ -7,7 +7,7 @@ export { migrationChain, applyMigrationChain } from './migrations.js';
 export type { MigrationScope, MigrationStep, MigrationResult } from './migrations.js';
 export { CAPABILITIES, createProjectCapabilityBroker, isProjectCapabilityBroker, parseSharedPolicyRequest } from './capabilities.js';
 export type { BrokerOptions, Capability, CapabilityDecision, GrantMode, LocalMountBinding, MountPermission, Profile, ProjectCapabilityBroker, SharedPolicyRequest } from './capabilities.js';
-export { MountPathError, inspectLocalMountFile, readMountedResource, validateMountRelativePath } from './mounts.js';
+export { MountPathError, inspectLocalMountFile, readLocalMountFile, readMountedResource, validateMountRelativePath } from './mounts.js';
 export type { MountActionPreview, MountedBytes } from './mounts.js';
 export { LocalProjectManager, LocalProjectError, validateProjectName } from './projects.js';
 export type { CanvasEntityChoice, CanvasEntitySummary, CanvasResourceDescriptor, CanvasResourceChoice, CanvasContentNodeInput, CanvasPlacementView, CanvasPlacementMove, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourcePreview, LocalCanvasWorkspace, WorkspaceViewport } from './projects.js';

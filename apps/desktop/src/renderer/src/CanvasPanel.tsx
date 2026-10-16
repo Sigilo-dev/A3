@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { applyEdgeChanges, applyNodeChanges, Background, BackgroundVariant, Handle, NodeResizer, Position, ReactFlow, SelectionMode, ViewportPortal, type Node, type NodeChange, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { CanvasEntitySummary, CanvasGroupView, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, CanvasSelection, CanvasResourcePreview, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
+import type { CanvasEntitySummary, CanvasGroupView, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, CanvasSelection, CanvasResourcePreview, FileDropNotice, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
 import { CanvasEdgeEditor, edgeAppearance, edgeTypes, toFlowEdges, type CanvasEdge, type CanvasTool } from './CanvasVisualEdges';
 import { CanvasDrawingLayer, type StrokePreview } from './CanvasDrawings';
 import { CanvasContentBody } from './CanvasContentNodes';
@@ -281,6 +281,8 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   const [contentDescription, setContentDescription] = useState('');
   const [contentAltText, setContentAltText] = useState('');
   const [contentLanguage, setContentLanguage] = useState('');
+  const [dropNotice, setDropNotice] = useState<FileDropNotice | null>(null);
+  const [dropMode, setDropMode] = useState<'copy' | 'reference' | null>('copy');
   const [viewport, setViewport] = useState<WorldViewport>({ x: 0, y: 0, zoom: 1 });
   const [origin, setOrigin] = useState({ x: 0, y: 0 });
   const [showReference, setShowReference] = useState(false);
@@ -428,6 +430,11 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     }).catch(report);
     return () => { flush(); live.current = false; clearTimeout(timer.current); };
   }, [sessionId, workspaceId]);
+  useEffect(() => window.a3?.onFileDrop((notice) => {
+    if (notice.error) { setError(notice.error); setStatus('Drop cancelado'); setDropNotice(null); return; }
+    setDropMode(notice.kind === 'folder' ? null : 'copy'); setDropNotice(notice);
+    setError(null); setStatus(notice.kind === 'folder' ? 'Elige qué hacer con la carpeta' : 'Archivo listo para copiar');
+  }), []);
   useEffect(() => {
     const host = hostRef.current; if (!host || !workspace) return;
     const wheel = (event: WheelEvent): void => {
@@ -478,6 +485,39 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     installWorkspace(result.value, placement?.id);
     if (placement) setNodes((previous) => previous.map((item) => ({ ...item, selected: item.id === placement.id })));
     setError(null); setErrorKind(null); setStatus('Nodo de contenido creado');
+  }
+  async function smartPaste(mode: 'smart' | 'text'): Promise<void> {
+    const latest = workspaceRef.current, rect = hostRef.current?.getBoundingClientRect();
+    if (!latest || !rect || !window.a3) return;
+    const position = screenToWorld({ x: rect.width / 2, y: rect.height / 2 }, current.current);
+    const result = await window.a3.canvas({ action: 'smart-paste', sessionId, workspaceId, expectedWorkspaceRevision: latest.revision, position, mode });
+    if (!result.ok) { setError(result.error.message); setStatus('Pegado cancelado'); return; }
+    const added = result.value.placements.find((placement) => !latest.placements.some((previous) => previous.id === placement.id));
+    installWorkspace(result.value, added?.id); setError(null); setErrorKind(null); setStatus(mode === 'text' ? 'Texto pegado como nodo' : 'Contenido pegado en el lienzo');
+    if (added) setNodes((previous) => previous.map((node) => ({ ...node, selected: node.id === added.id })));
+  }
+  async function commitDrop(): Promise<void> {
+    const notice = dropNotice, latest = workspaceRef.current, rect = hostRef.current?.getBoundingClientRect();
+    if (!notice?.token || !notice.files?.length || !latest || !rect || !window.a3 || !dropMode) return;
+    const position = screenToWorld({ x: notice.clientX - rect.left, y: notice.clientY - rect.top }, current.current);
+    const result = await window.a3.canvas({ action: 'drop-file', sessionId, workspaceId, expectedWorkspaceRevision: latest.revision,
+      position, token: notice.token, mode: dropMode });
+    if (!result.ok) {
+      setError(result.error.message); setStatus('Importación detenida');
+      const refreshed = await window.a3.canvas({ action: 'load', sessionId, workspaceId });
+      if (refreshed.ok) installWorkspace(refreshed.value, undefined, true);
+      return;
+    }
+    const added = result.value.placements.find((placement) => !latest.placements.some((previous) => previous.id === placement.id));
+    installWorkspace(result.value, added?.id); setError(null); setErrorKind(null); setStatus(dropMode === 'copy' ? 'Archivos copiados al proyecto' : 'Archivos referenciados');
+    if (added) setNodes((previous) => previous.map((node) => ({ ...node, selected: node.id === added.id })));
+    setDropNotice(null); setDropMode('copy');
+  }
+  async function cancelDrop(): Promise<void> {
+    const notice = dropNotice;
+    if (!notice?.token || !window.a3) { setDropNotice(null); return; }
+    const result = await window.a3.canvas({ action: 'cancel-drop', sessionId, workspaceId, token: notice.token });
+    if (result.ok) { installWorkspace(result.value); setDropNotice(null); setDropMode('copy'); setStatus('Drop cancelado · sin cambios'); }
   }
   function mutateCanvas(request: (latest: LocalCanvasWorkspace) => CanvasRequest, savedLabel = 'Organización guardada', errorCategory: 'placement' | 'drawing' = 'placement'): Promise<boolean> {
     const operation = mutationTail.current.then(async () => {
@@ -797,6 +837,7 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       <output data-canvas-zoom aria-label="Escala del lienzo">{(viewport.zoom * 100).toLocaleString('es', { maximumFractionDigits: 1 })} %</output>
       <button className="secondary" data-canvas-zoom-in disabled={!workspace || viewport.zoom >= MAX_ZOOM} onClick={() => zoom(1.2)} aria-label="Acercar">+</button>
       <button className="secondary" data-canvas-fit disabled={!workspace || !showReference} onClick={() => { const rect = hostRef.current?.getBoundingClientRect(); if (rect) update(fitContent(reference, rect), true); }}>Ajustar contenido</button>
+      <button className="quiet" data-canvas-paste-text disabled={!workspace?.canWrite} onClick={() => void smartPaste('text')}>Pegar como texto</button>
       <button className="quiet" data-canvas-save disabled={!workspace?.canWrite || status === 'Vista guardada' || status === 'Guardando vista…'} onClick={() => { failed.current = false; setError(null); flush(); }}>Guardar vista</button>
       <label>Entidad <select aria-label="Entidad para nueva representación" data-canvas-entity value={selectedEntityId || workspace?.entityChoices[0]?.id || ''} disabled={!workspace?.canWrite || !workspace.entityChoices.length}
         onChange={(event) => setSelectedEntityId(event.target.value)}>{workspace?.entityChoices.map((entity) => <option key={entity.id} value={entity.id}>{entity.title} · {entity.type}</option>)}</select></label>
@@ -910,11 +951,33 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
         if (result.ok) { installWorkspace(result.value, undefined, true); setError(null); setErrorKind(null); setStatus('Vista recargada'); }
       }); }}>Recargar workspace</button>}
     </div>}</div>}
-    <div ref={hostRef} className="canvas-host" tabIndex={0} role="region" aria-label="Lienzo del workspace" data-canvas-ready={!!workspace} data-canvas-mode={tool}
+    {dropNotice && <div className="canvas-drop-preview" role="dialog" aria-modal="true" aria-label="Vista previa de importación" data-canvas-drop-preview>
+      <strong>{dropNotice.kind === 'folder' ? 'Elige qué hacer con esta carpeta' : 'Archivo externo · vista previa'}</strong>
+      <p>{dropNotice.files?.length ?? 0} elemento(s) · {(dropNotice.files ?? []).reduce((size, item) => size + item.size, 0).toLocaleString('es')} bytes</p>
+      <ul>{dropNotice.files?.slice(0, 20).map((file) => { const destination = dropMode === 'reference' ? file.referenceDestination : dropMode === 'copy' ? file.copyDestination : `${file.copyDestination} (copiar) · ${file.referenceDestination} (referenciar)`; return <li key={file.copyDestination}><code>{file.name}</code><small>{file.size.toLocaleString('es')} bytes → <code>{destination}</code></small></li>; })}</ul>
+      <p>Acceso: A3 solicitará lectura de solo lectura para el origen. Conflicto: el destino usa un ID nuevo; el store valida que siga libre antes de escribir. Referenciar conserva los bytes originales; copiar crea recursos locales.</p>
+      <div className="canvas-drop-actions" role="group" aria-label="Acción para el drop">
+        <button type="button" data-drop-mode="copy" aria-pressed={dropMode === 'copy'} onClick={() => setDropMode('copy')}>Copiar</button>
+        <button type="button" data-drop-mode="reference" aria-pressed={dropMode === 'reference'} onClick={() => setDropMode('reference')}>Referenciar</button>
+        <button type="button" data-drop-mode="move" disabled title="El borrado externo por handle no está disponible en E1">Mover</button>
+        <button type="button" className="secondary" data-drop-confirm disabled={!dropMode || !workspace?.canWrite} onClick={() => void commitDrop()}>{dropMode === 'reference' ? 'Crear referencias' : 'Copiar al proyecto'}</button>
+        <button type="button" className="quiet" data-drop-cancel onClick={() => void cancelDrop()}>Cancelar</button>
+      </div>
+      <small>El movimiento permanece deshabilitado porque Windows no ofrece borrado seguro del origen por handle en el servicio E1.</small>
+    </div>}
+    <div ref={hostRef} className="canvas-host" tabIndex={0} role="region" aria-label="Lienzo del workspace" data-canvas-drop-target data-canvas-ready={!!workspace} data-canvas-mode={tool}
       data-viewport-x={viewport.x} data-viewport-y={viewport.y} data-viewport-zoom={viewport.zoom}
       onPointerDownCapture={beginStroke} onPointerMove={continueStroke} onPointerUpCapture={finishStroke} onPointerCancelCapture={cancelStroke}
+      onPasteCapture={(event) => {
+        if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"], .react-flow__node, .react-flow__edge')) return;
+        event.preventDefault(); event.stopPropagation(); void smartPaste('smart');
+      }}
       onKeyDownCapture={(event) => {
         if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"], summary')) return;
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'v') {
+          if (event.target instanceof Element && event.target.closest('.react-flow__node, .react-flow__edge')) return;
+          event.preventDefault(); event.stopPropagation(); void smartPaste('smart'); return;
+        }
         if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
           event.preventDefault(); event.stopPropagation(); changeHistory(event.shiftKey ? 'redo' : 'undo'); return;
         }

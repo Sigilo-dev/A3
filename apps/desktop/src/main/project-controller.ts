@@ -1,9 +1,37 @@
 import { clipboard, dialog, type BrowserWindow } from 'electron';
-import { join } from 'node:path';
-import { CONTENT_NODE_CATALOG } from '@a3/domain';
+import { lstat, realpath, readdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { basename, dirname, join, parse, relative, resolve } from 'node:path';
+import { CONTENT_NODE_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, FilesRequest, FilesResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasRequest, CanvasResult, FileDropStageResult, FilesRequest, FilesResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
+
+interface StagedDropFile { path: string; root: string; relativePath: string; mountId: string; resourceId: string; name: string; size: number; mediaType: string; }
+interface StagedDrop { files: StagedDropFile[]; kind: 'file' | 'folder'; createdAt: number; }
+const dropExtensionType: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp',
+  mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac', pdf: 'application/pdf' };
+function normalizeNativePath(path: string): string { return resolve(path).replace(/[\\/]+$/, '').toLowerCase(); }
+async function inspectDropPath(input: string): Promise<{ path: string; kind: 'file' | 'folder'; size: number; identity: string }> {
+  if (typeof input !== 'string' || !input || input.length > 32767) throw new Error('La ruta del archivo arrastrado no es válida.');
+  const absolute = resolve(input), root = parse(absolute).root;
+  if (!root || absolute === root || !/^[a-z]:[\\/]/i.test(root)) throw new Error('Arrastra un archivo o carpeta de una unidad local, no una unidad o ruta de red.');
+  const segments = absolute.slice(root.length).split(/[\\/]+/).filter(Boolean);
+  let current = root;
+  for (let index = 0; index < segments.length; index++) {
+    current = resolve(current, segments[index]!);
+    const stat = await lstat(current, { bigint: true });
+    if (stat.isSymbolicLink()) throw new Error('A3 no sigue symlinks ni junctions durante un drop.');
+    const isLast = index === segments.length - 1;
+    if (!isLast && !stat.isDirectory()) throw new Error('La ruta externa contiene un segmento que no es una carpeta.');
+    if (isLast && !stat.isFile() && !stat.isDirectory()) throw new Error('Solo se admiten archivos regulares o carpetas.');
+    const physical = await realpath(current);
+    if (normalizeNativePath(physical) !== normalizeNativePath(current)) throw new Error('A3 no sigue junctions ni rutas redirigidas durante un drop.');
+    if (isLast) return { path: absolute, kind: stat.isDirectory() ? 'folder' : 'file', size: stat.isFile() ? Number(stat.size) : 0,
+      identity: `${stat.dev.toString(16)}:${stat.ino.toString(16)}:${(stat.mode & 0o170000n).toString(16)}` };
+  }
+  throw new Error('La ruta externa no es válida.');
+}
 
 function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasContentRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -14,6 +42,11 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
   if (input.action === 'create-placement') return Object.keys(input).length === 6 && uuid.test(String(input.entityId)) && Number.isSafeInteger(input.expectedWorkspaceRevision) &&
     Number(input.expectedWorkspaceRevision) >= 1 && !!input.position && typeof input.position === 'object' && !Array.isArray(input.position) &&
     Object.keys(input.position).length === 2 && Number.isFinite((input.position as Record<string, unknown>).x) && Number.isFinite((input.position as Record<string, unknown>).y);
+  if (input.action === 'smart-paste') return Object.keys(input).length === 6 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 &&
+    ['smart', 'text'].includes(String(input.mode)) && validPoint(input.position);
+  if (input.action === 'drop-file') return Object.keys(input).length === 7 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 &&
+    uuid.test(String(input.token)) && ['copy', 'reference', 'move'].includes(String(input.mode)) && validPoint(input.position);
+  if (input.action === 'cancel-drop') return Object.keys(input).length === 4 && uuid.test(String(input.token));
   if (input.action === 'create-content-node') {
     const node = input.node as Record<string, unknown> | null;
     if (Object.keys(input).length !== 5 || !Number.isSafeInteger(input.expectedWorkspaceRevision) || Number(input.expectedWorkspaceRevision) < 1 ||
@@ -153,6 +186,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   const manager = new LocalProjectManager({ stateDirectory: join(stateDirectory, 'local-projects'), host: { authenticatedActor, capabilities },
     confirmClose: (project) => confirm('Cerrar con cambios externos o recuperación pendiente',
       `${project.name}\n${project.root}\nLos archivos y copias de recuperación se conservarán. La sesión del proyecto se cerrará antes de abrir otra.`) });
+  const dropDrafts = new Map<string, StagedDrop>();
   const chooseFolder = async (title: string): Promise<string | undefined> => {
     const parent = getWindow(); if (!parent) return undefined;
     const result = await dialog.showOpenDialog(parent, { title, properties: ['openDirectory', 'dontAddToRecent'] });
@@ -175,6 +209,98 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
     if (['copy-path', 'copy-mount-path'].includes(String(input.action)) && input.kind !== 'absolute' && input.kind !== 'relative') return false;
     return Object.keys(input).length >= shape.required.length + 1 && (!shape.optional || Object.keys(input).length <= shape.required.length + shape.optional.length + 1);
   };
+  const stageDrop = async (value: unknown): Promise<FileDropStageResult> => {
+    const fail = (code: string, message: string): FileDropStageResult => ({ ok: false, error: { code, message, recovery: 'A3 no cambió archivos. Arrastra un archivo regular o cancela la operación.' } });
+    if (!Array.isArray(value) || value.length < 1 || value.length > 20 || value.some((path) => typeof path !== 'string')) return fail('DROP_SELECTION_UNSUPPORTED', 'Arrastra hasta 20 archivos o una carpeta a la vez.');
+    try {
+      for (const [token, draft] of dropDrafts) if (Date.now() - draft.createdAt > 10 * 60_000) dropDrafts.delete(token);
+      if (dropDrafts.size >= 20) return fail('DROP_QUEUE_FULL', 'Cancela alguna vista previa de drop pendiente antes de arrastrar otro archivo.');
+      const inspected = await Promise.all((value as string[]).map((path) => inspectDropPath(path)));
+      const directories = inspected.filter((entry) => entry.kind === 'folder');
+      if (directories.length && (directories.length !== 1 || inspected.length !== 1)) return fail('DROP_SELECTION_UNSUPPORTED', 'Suelta una sola carpeta, sin mezclarla con otros elementos.');
+      const folder = directories[0];
+      const filePaths: { path: string; root: string; relativePath: string; size: number }[] = [];
+      if (folder) {
+        const visit = async (directory: string): Promise<void> => {
+          const before = await inspectDropPath(directory);
+          if (before.kind !== 'folder') throw new Error('Una carpeta cambió de identidad durante la vista previa.');
+          const entries = await readdir(directory);
+          const after = await inspectDropPath(directory);
+          if (after.kind !== 'folder' || after.identity !== before.identity) throw new Error('Una carpeta cambió durante la enumeración; no se importó.');
+          for (const name of entries.sort((a, b) => a.localeCompare(b))) {
+            const candidate = resolve(directory, name), item = await inspectDropPath(candidate);
+            if (item.kind === 'folder') await visit(candidate);
+            else filePaths.push({ path: candidate, root: folder.path, relativePath: relative(folder.path, candidate).replaceAll('\\', '/'), size: item.size });
+            if (filePaths.length > 128) throw new Error('La carpeta contiene más de 128 archivos; divide la importación.');
+          }
+        };
+        await visit(folder.path);
+      } else {
+        for (const item of inspected) filePaths.push({ path: item.path, root: dirname(item.path), relativePath: basename(item.path), size: item.size });
+      }
+      if (!filePaths.length) return fail('DROP_EMPTY_FOLDER', 'La carpeta no contiene archivos regulares para importar.');
+      const total = filePaths.reduce((sum, file) => sum + file.size, 0);
+      if (filePaths.some((file) => !Number.isSafeInteger(file.size) || file.size <= 0 || file.size > 10 * 1024 * 1024) || total > 32 * 1024 * 1024) {
+        return fail('DROP_FILE_SIZE', 'Cada archivo debe tener entre 1 byte y 10 MiB y la selección no puede superar 32 MiB.');
+      }
+      const mountRoots = new Map<string, string>();
+      const files: StagedDropFile[] = filePaths.map((file) => {
+        const rootKey = file.root.toLowerCase();
+        let mountId = mountRoots.get(rootKey);
+        if (!mountId) { mountId = randomUUID(); mountRoots.set(rootKey, mountId); }
+        const name = file.relativePath.split('/').at(-1) ?? basename(file.path);
+        const extension = name.toLowerCase().split('.').at(-1) ?? '';
+        return { ...file, mountId, resourceId: randomUUID(), name: file.relativePath, mediaType: dropExtensionType[extension] ?? 'application/octet-stream' };
+      });
+      const token = randomUUID();
+      const draft: StagedDrop = { files, kind: folder ? 'folder' : 'file', createdAt: Date.now() };
+      dropDrafts.set(token, draft);
+      return { ok: true, value: { token, kind: draft.kind, files: files.map((file) => ({ name: file.name, size: file.size,
+        copyDestination: `content/${file.resourceId}.bin`, referenceDestination: `.a3/resources/${file.resourceId}.json` })) } };
+    } catch (error) { return fail('DROP_PATH_REJECTED', error instanceof Error ? error.message : 'No se pudo validar el archivo arrastrado.'); }
+  };
+  const smartPaste = async (value: Extract<CanvasRequest, { action: 'smart-paste' }>): Promise<CanvasResult> => {
+    try {
+      if (value.mode === 'text') {
+        const text = await clipboard.readText();
+        if (!text.trim()) return { ok: false, error: { code: 'CLIPBOARD_EMPTY', message: 'El portapapeles no contiene texto.', recovery: 'Copia texto o usa Pegado inteligente.' } };
+        return { ok: true, value: await manager.createCanvasContentNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision,
+          { kind: 'short-text', title: 'Texto pegado', value: text, position: value.position }) };
+      }
+      const items = await clipboard.read();
+      let fragment: string | undefined, image: { bytes: Uint8Array; mediaType: string } | undefined;
+      for (const item of items) {
+        if (fragment === undefined && item.types.includes('application/x-a3-clipboard-fragment+json')) {
+          try { const blob = await item.getType('application/x-a3-clipboard-fragment+json'); fragment = new TextDecoder().decode(await (blob as Blob).arrayBuffer()); }
+          catch { /* Invalid custom data falls through to image, URL and text. */ }
+        }
+        if (!image) {
+          const mediaType = item.types.find((type) => /^image\/(?:png|jpeg|webp|gif|avif|bmp|tiff)$/i.test(type));
+          if (mediaType) {
+            try {
+              const blob = await item.getType(mediaType), bytes = Buffer.from(await (blob as Blob).arrayBuffer());
+              if (bytes.length > 10 * 1024 * 1024) throw new LocalProjectError('CLIPBOARD_IMAGE_TOO_LARGE', 'La imagen del portapapeles supera 10 MiB.');
+              if (bytes.length) image = { bytes: Uint8Array.from(bytes), mediaType };
+            } catch (error) { if (error instanceof LocalProjectError) throw error; }
+          }
+        }
+      }
+      const resolved = resolveSmartPastePayload({ ...(fragment !== undefined ? { fragment } : {}), ...(image ? { image } : {}), text: await clipboard.readText() });
+      if (resolved.kind === 'image') return { ok: true, value: await manager.createCanvasContentNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision,
+        { kind: 'image', title: 'Imagen pegada', position: value.position, bytes: resolved.bytes, mediaType: resolved.mediaType }) };
+      if (resolved.kind === 'text') {
+        if (!resolved.value.trim()) return { ok: false, error: { code: 'CLIPBOARD_EMPTY', message: 'El portapapeles no contiene texto, imagen o fragmento A3 válido.', recovery: 'Copia contenido y vuelve a pegar sobre el fondo del lienzo.' } };
+        return { ok: true, value: await manager.createCanvasContentNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision,
+          { kind: 'short-text', title: 'Texto pegado', value: resolved.value, position: value.position }) };
+      }
+      const kind = resolved.kind === 'image-url' ? 'image' : resolved.kind;
+      return { ok: true, value: await manager.createCanvasContentNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision,
+        { kind, title: resolved.title, url: resolved.value, position: value.position }) };
+    } catch (error) {
+      return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'PASTE_FAILED',
+        message: error instanceof Error ? error.message : 'No se pudo pegar el contenido.', recovery: 'El portapapeles no se modificó y el lienzo permanece intacto.' } };
+    }
+  };
   return {
     manager,
     async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult> {
@@ -187,6 +313,39 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'discard': return { ok: true, value: await manager.discardCanvasViewport(value.sessionId, value.workspaceId) };
           case 'create-placement': return { ok: true, value: await manager.createCanvasPlacement(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.entityId, value.position) };
           case 'create-content-node': return { ok: true, value: await manager.createCanvasContentNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.node) };
+          case 'smart-paste': return smartPaste(value);
+          case 'cancel-drop': dropDrafts.delete(value.token); return { ok: true, value: await manager.loadCanvasWorkspace(value.sessionId, value.workspaceId) };
+          case 'drop-file': {
+            if (value.mode === 'move') return { ok: false, error: { code: 'MOVE_UNAVAILABLE', message: 'Mover está deshabilitado: E1 no tiene borrado externo seguro por handle en Windows.', recovery: 'Usa Copiar o Referenciar. El archivo externo no se modificó.' } };
+            const draft = dropDrafts.get(value.token);
+            if (!draft) return { ok: false, error: { code: 'DROP_EXPIRED', message: 'La vista previa del archivo expiró.', recovery: 'Arrastra el archivo otra vez; no se modificó el proyecto.' } };
+            if (Date.now() - draft.createdAt > 10 * 60_000) { dropDrafts.delete(value.token); return { ok: false, error: { code: 'DROP_EXPIRED', message: 'La vista previa expiró después de diez minutos.', recovery: 'Arrastra los archivos otra vez; no se modificó el proyecto.' } }; }
+            const roots = new Map(draft.files.map((file) => [file.root.toLowerCase(), { root: file.root, mountId: file.mountId }]));
+            for (const entry of roots.values()) {
+              const approved = await manager.approveCanvasDropMount(value.sessionId, entry.mountId, entry.root);
+              if (!approved) return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'No se aprobó una carpeta de origen.', recovery: 'Cancela la vista previa o vuelve a aprobar el acceso. No se modificaron los archivos del proyecto.' } };
+            }
+            let next = await manager.loadCanvasWorkspace(value.sessionId, value.workspaceId);
+            let completed = 0;
+            try {
+              for (const [index, file] of draft.files.entries()) {
+                const kind = file.mediaType.startsWith('image/') ? 'image' : file.mediaType.startsWith('video/') ? 'video' : file.mediaType.startsWith('audio/') ? 'audio' : 'file';
+                next = await manager.createCanvasContentNode(value.sessionId, value.workspaceId, index ? next.revision : value.expectedWorkspaceRevision, {
+                  kind, title: file.name.split('/').at(-1)!.slice(0, 200), position: { x: value.position.x + index * 360, y: value.position.y }, mediaType: file.mediaType,
+                  resourceId: file.resourceId, dropMode: value.mode, dropMountId: file.mountId, dropPath: file.relativePath
+                });
+                completed++;
+              }
+            } catch (error) {
+              if (!completed) throw error;
+              draft.files = draft.files.slice(completed);
+              return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'DROP_PARTIAL',
+                message: `Se añadieron ${completed} elemento(s); el resto se conserva en esta vista previa. ${error instanceof Error ? error.message : ''}`,
+                recovery: 'Actualiza el lienzo y reintenta los elementos pendientes o cancela. Cada elemento agregado tiene su nodo y recurso completos.' } };
+            }
+            dropDrafts.delete(value.token);
+            return { ok: true, value: next };
+          }
           case 'duplicate-selection': return { ok: true, value: await manager.duplicateCanvasSelection(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.selection, value.mode) };
           case 'undo': return { ok: true, value: await manager.undoCanvas(value.sessionId, value.workspaceId) };
           case 'redo': return { ok: true, value: await manager.redoCanvas(value.sessionId, value.workspaceId) };
@@ -254,6 +413,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
         return { ok: false, error: { code, message, recovery: 'Conecta la unidad, revisa los permisos o localiza la carpeta. Los archivos existentes se conservaron; si hay metadatos pendientes, vuelve a abrir la carpeta para recuperarlos.' } };
       }
     },
+    stageDrop,
     async handleFiles(value: unknown): Promise<FilesResult> {
       if (!validFileRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud del explorador inválida.', recovery: 'Actualiza la vista y vuelve a seleccionar el elemento.' } };
       try {

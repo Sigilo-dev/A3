@@ -93,6 +93,34 @@ test('A3-006/008/025: typed content nodes create, render and reopen with canonic
     [...created].sort((a, b) => a.id.localeCompare(b.id)));
 });
 
+test('E2-C2: dropped media copy and reference use the broker and leave the source bytes intact', windows, async (t) => {
+  const { root, tempRoot } = await scratch(t);
+  const externalRoot = join(tempRoot, 'drop-source'); await mkdir(externalRoot, { recursive: true });
+  const source = Buffer.from([0, 3, 5, 0xff, 9]); await writeFile(join(externalRoot, 'photo.png'), source);
+  const host = await fixtureHost(root, 'drop-test', 'trabajar');
+  assert.equal(await host.capabilities.setGrant({ root, projectId: host.projectId, capability: 'mount.read', mode: 'direct' }), true);
+  const manager = new LocalProjectManager({ stateDirectory: join(tempRoot, 'catalog'), host }); t.after(() => manager.dispose());
+  const active = (await manager.openFolder(root)).active;
+  const mountId = id(980); assert.equal(await manager.approveCanvasDropMount(active.sessionId, mountId, externalRoot), true);
+  let canvas = await manager.loadCanvasWorkspace(active.sessionId, W1);
+  const copyResourceId = id(981);
+  canvas = await manager.createCanvasContentNode(active.sessionId, W1, canvas.revision, { kind: 'image', title: 'photo.png', position: { x: 100, y: 100 },
+    resourceId: copyResourceId, mediaType: 'image/png', dropMode: 'copy', dropMountId: mountId, dropPath: 'photo.png' });
+  const copied = canvas.entities.find((entity) => entity.title === 'photo.png');
+  assert.deepEqual(Buffer.from((await manager.loadCanvasContent(active.sessionId, W1, copied.id, copyResourceId)).bytes), source);
+  assert.deepEqual(await readFile(join(externalRoot, 'photo.png')), source);
+  const referenceResourceId = id(982);
+  canvas = await manager.createCanvasContentNode(active.sessionId, W1, canvas.revision, { kind: 'image', title: 'referenced.png', position: { x: 500, y: 100 },
+    resourceId: referenceResourceId, mediaType: 'image/png', dropMode: 'reference', dropMountId: mountId, dropPath: 'photo.png' });
+  const referenced = canvas.entities.find((entity) => entity.contentResourceId === referenceResourceId);
+  assert.equal(referenced.contentResource.kind, 'mounted-file');
+  assert.deepEqual(Buffer.from((await manager.loadCanvasContent(active.sessionId, W1, referenced.id, referenceResourceId)).bytes), source);
+  assert.deepEqual(await readFile(join(externalRoot, 'photo.png')), source, 'reference never changes the source');
+  const beforeCancel = canvas.placements.length;
+  // Cancelling a staged preview invokes no create command, so neither node nor resource is committed.
+  assert.equal((await manager.loadCanvasWorkspace(active.sessionId, W1)).placements.length, beforeCancel);
+});
+
 test('missing resource bytes report an unavailable preview while fallback data and visual connections remain intact', windows, async (t) => {
   let cleanup;
   const { root, tempRoot } = await scratch({ after: (callback) => { cleanup = callback; } }); const host = await fixtureHost(root, 'missing-content');

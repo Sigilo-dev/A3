@@ -1069,6 +1069,23 @@ export class ProjectService {
         }
         const resources: Resource[] = [];
         for (const effect of domain.contentEffects) {
+          if (effect.kind === 'create-binary') {
+            const target = getRecord(domain.nextSnapshot, { kind: 'resource', id: effect.resourceId });
+            if (target?.kind !== 'resource' || target.value.kind !== 'project-file' || target.value.path !== effect.path ||
+                target.value.mediaType !== effect.mediaType || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(effect.bytesBase64)) {
+              return failure([issue(effect.path, 'schema', 'resource-binary-create-effect-invalid', 'El efecto debe crear bytes que coincidan con el Resource local.')]);
+            }
+            const bytes = Buffer.from(effect.bytesBase64, 'base64');
+            if (!bytes.length || bytes.length > 32 * 1024 * 1024 || bytes.toString('base64') !== effect.bytesBase64) {
+              return failure([issue(effect.path, 'schema', 'resource-binary-create-effect-invalid', 'Los bytes locales están vacíos, son demasiado grandes o no usan base64 canónico.')]);
+            }
+            this.#sourcePath(effect.path);
+            try { await absentPath(this.root, effect.path); }
+            catch (error) { if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error; }
+            images.push({ path: effect.path, bytes: Uint8Array.from(bytes), ref: refOf(target) });
+            resources.push(target.value);
+            continue;
+          }
           if (effect.kind === 'create') {
             const target = getRecord(domain.nextSnapshot, { kind: 'resource', id: effect.resourceId });
             if (target?.kind !== 'resource' || target.value.kind !== 'project-file' || target.value.path !== effect.path || typeof effect.content !== 'string') {

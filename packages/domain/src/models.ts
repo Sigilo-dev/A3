@@ -115,7 +115,9 @@ export interface DuplicateSelection {
 export type CreateContentNodeSource =
   | { kind: 'inline'; resourceId: UUID; path: string; mediaType: string; content: string }
   | { kind: 'url'; resourceId: UUID; url: string }
-  | { kind: 'existing-resource'; resourceId: UUID };
+  | { kind: 'existing-resource'; resourceId: UUID }
+  | { kind: 'binary'; resourceId: UUID; path: string; mediaType: string; bytesBase64: string }
+  | { kind: 'mounted-file'; resourceId: UUID; mountId: UUID; path: string; mediaType: string };
 export interface CreateContentNode {
   workspaceId: UUID; entityId: UUID; placementId: UUID; kind: ContentNodeKind; title: string;
   position: Point; properties: ExtensionMap; source: CreateContentNodeSource;
@@ -156,6 +158,7 @@ export interface EnvelopeBase {
 export type DomainCommand = { [K in CommandName]: EnvelopeBase & { command: K; payload: Payloads[K] } }[CommandName];
 export type ContentEffect =
   | { kind: 'create'; resourceId: UUID; path: string; content: string }
+  | { kind: 'create-binary'; resourceId: UUID; path: string; mediaType: string; bytesBase64: string }
   | { kind: 'copy'; sourceId: UUID; targetId: UUID; expectedHash: string }
   | { kind: 'remove'; resourceId: UUID; path: string; expectedHash: string }
   | { kind: 'move'; resourceId: UUID; before: ResourceLocation; after: ResourceLocation; expectedHash: string };

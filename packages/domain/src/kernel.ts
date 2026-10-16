@@ -253,6 +253,27 @@ function createContentNode(draft: Draft, payload: Payloads['a3.core.create-conte
     }
     newResource = { kind: 'resource', value: { schemaVersion: '1.0.0', id: resourceId, revision: 1,
       kind: 'remote-url', url: url.href, ...(definition.source === 'url' ? { mediaType: definition.mediaType } : {}), extensions: {} } };
+  } else if (payload.source.kind === 'binary') {
+    const source = payload.source;
+    const expectedMedia = payload.kind === 'image' ? /^image\/[a-z0-9.+-]+$/i : payload.kind === 'video' ? /^video\/[a-z0-9.+-]+$/i :
+      payload.kind === 'audio' ? /^audio\/[a-z0-9.+-]+$/i : payload.kind === 'file' ? /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i : /^$/;
+    if (!['image', 'video', 'audio', 'file'].includes(payload.kind) || source.path !== `content/${resourceId}.bin` ||
+        !expectedMedia.test(source.mediaType) || !source.bytesBase64.length || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(source.bytesBase64) ||
+        source.bytesBase64.length > 44_739_244) fail('invalid-content-source', `El nodo ${definition.label} requiere bytes locales válidos y limitados.`);
+    newResource = { kind: 'resource', value: { schemaVersion: '1.0.0', id: resourceId, revision: 1,
+      kind: 'project-file', path: source.path, mediaType: source.mediaType, extensions: {} } };
+    draft.effects.push({ kind: 'create-binary', resourceId, path: source.path, mediaType: source.mediaType, bytesBase64: source.bytesBase64 });
+  } else if (payload.source.kind === 'mounted-file') {
+    const source = payload.source;
+    const validPath = typeof source.path === 'string' && source.path.length <= 1024 && !source.path.startsWith('/') && !source.path.includes('\\') &&
+      source.path.split('/').every((part) => !!part && part !== '.' && part !== '..' && !/[<>:"|?*\x00-\x1f]/.test(part));
+    const expectedMedia = payload.kind === 'image' ? /^image\/[a-z0-9.+-]+$/i : payload.kind === 'video' ? /^video\/[a-z0-9.+-]+$/i :
+      payload.kind === 'audio' ? /^audio\/[a-z0-9.+-]+$/i : payload.kind === 'file' ? /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i : /^$/;
+    if (!['image', 'video', 'audio', 'file'].includes(payload.kind) || !UUID_PATTERN.test(source.mountId) || !validPath || !expectedMedia.test(source.mediaType)) {
+      fail('invalid-content-source', `El nodo ${definition.label} requiere una referencia de archivo local válida.`);
+    }
+    newResource = { kind: 'resource', value: { schemaVersion: '1.0.0', id: resourceId, revision: 1,
+      kind: 'mounted-file', mountId: source.mountId, path: source.path, mediaType: source.mediaType, extensions: {} } };
   } else {
     if (payload.source.kind !== 'existing-resource') fail('invalid-content-source', `El nodo ${definition.label} requiere un recurso existente.`);
     const sourceResource = draft.require({ kind: 'resource', id: resourceId });

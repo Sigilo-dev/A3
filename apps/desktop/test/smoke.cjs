@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { mkdir, writeFile, readFile, rename, lstat, cp } = require('node:fs/promises');
 const { dirname, join } = require('node:path');
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, clipboard } = require('electron');
 
 const [mode, entry, profile, screenshot] = process.argv.slice(2);
 const expectedURL = new URL(process.env.ELECTRON_RENDERER_URL || 'a3://desktop/index.html').href;
@@ -40,7 +40,7 @@ async function healthy() {
   assert.equal(probe.process, 'undefined');
   assert.equal(probe.require, 'undefined');
   assert.equal(probe.ipcRenderer, 'undefined');
-  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'files', 'canvas']);
+  assert.deepEqual(probe.bridge, ['getAppInfo', 'projects', 'files', 'canvas', 'onFileDrop']);
   assert.equal(probe.url, expectedURL);
   const preferences = win.webContents.getLastWebPreferences();
   for (const [name, value] of Object.entries({ nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, webSecurity: true })) {
@@ -181,7 +181,7 @@ async function healthy() {
   await click('[data-section="files"]'); await click('[data-section="canvas"]');
   await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
   assert.deepEqual(await readViewport(), beforeResize, 'reopening workspace preserves exact camera values');
-  assert.equal(await js("document.querySelectorAll('.react-flow__node, .react-flow__edge').length"), 0);
+  assert.equal(await js("document.querySelectorAll('.react-flow__node, .react-flow__edge').length"), 0, 'empty initial workspace stays empty during viewport checks');
   const canvasState = await js("window.a3.projects({ action: 'list' })");
   const canvasActive = canvasState.value.active; const canvasWorkspaceId = canvasActive.workspaces[0].id;
   const malformedCanvas = await js(`window.a3.canvas({ action: 'stage', sessionId: '${canvasActive.sessionId}', workspaceId: '${canvasWorkspaceId}', expectedRevision: 1, viewport: { x: null, y: 0, zoom: 1 } })`);
@@ -203,6 +203,18 @@ async function healthy() {
   await click('[data-section="files"]'); await click('[data-section="canvas"]');
   await waitFor("document.querySelector('[data-canvas-ready]')?.dataset.canvasReady === 'true'");
   assert.deepEqual(await readViewport(), extensive);
+
+  const paste = async () => {
+    await js("document.querySelector('.canvas-host').focus()");
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] });
+  };
+  await clipboard.writeText('https://youtu.be/dQw4w9WgXcQ'); await paste();
+  await waitFor("(async () => (await (async () => { const p=(await window.a3.projects({action:'list'})).value.active; return (await window.a3.canvas({action:'load',sessionId:p.sessionId,workspaceId:p.workspaces[0].id})).value.entities; })()).some((entity) => entity.type === 'a3.content.youtube'))()");
+  assert.equal(networkRequests.length, 0, 'YouTube creates a fallback card without a metadata or thumbnail request');
+  await clipboard.writeText('Texto de portapapeles'); await click('[data-canvas-paste-text]');
+  await waitFor("(async () => (await (async () => { const p=(await window.a3.projects({action:'list'})).value.active; return (await window.a3.canvas({action:'load',sessionId:p.sessionId,workspaceId:p.workspaces[0].id})).value.entities; })()).some((entity) => entity.type === 'a3.content.short-text' && entity.title === 'Texto pegado'))()");
+  assert.equal(await js("document.querySelectorAll('.react-flow__node').length"), 2, `YouTube and paste-as-text each create one node; status=${await js("document.querySelector('[data-canvas-status]')?.textContent")}, error=${await js("document.querySelector('[role=alert]')?.textContent")}`);
 
   // Open an isolated E0 fixture to exercise real persisted placements and fallback cards.
   await click('[data-section="projects"]'); await click('[data-close-project]'); await waitFor("!document.querySelector('[data-active-project]')");

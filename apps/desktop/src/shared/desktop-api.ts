@@ -7,11 +7,15 @@ export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
 export const PROJECTS_CHANNEL = 'a3.projects:command';
 export const FILES_CHANNEL = 'a3.files:command';
 export const CANVAS_CHANNEL = 'a3.canvas:command';
+export const DROP_STAGE_CHANNEL = 'a3.canvas:stage-drop';
 export type CanvasRequest =
   | { action: 'load' | 'flush' | 'discard' | 'approve-edge-delete' | 'approve-drawing-delete' | 'approve-history-delete'; sessionId: string; workspaceId: string }
   | { action: 'stage'; sessionId: string; workspaceId: string; expectedRevision: number; viewport: WorkspaceViewport }
   | { action: 'create-placement'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; entityId: string; position: { x: number; y: number } }
   | { action: 'create-content-node'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; node: CanvasContentNodeInput }
+  | { action: 'smart-paste'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; position: { x: number; y: number }; mode: 'smart' | 'text' }
+  | { action: 'drop-file'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; position: { x: number; y: number }; token: string; mode: 'copy' | 'reference' | 'move' }
+  | { action: 'cancel-drop'; token: string; sessionId: string; workspaceId: string }
   | { action: 'duplicate-selection'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; selection: CanvasSelection; mode: 'content' | 'representation' }
   | { action: 'undo' | 'redo'; sessionId: string; workspaceId: string }
   | { action: 'update-placement'; sessionId: string; workspaceId: string; placementId: string; expectedRevision: number;
@@ -33,6 +37,8 @@ export type CanvasRequest =
 export type CanvasContentRequest = { action: 'content'; sessionId: string; workspaceId: string; entityId: string; resourceId: string; purpose?: 'preview' | 'playback' };
 export type CanvasResult = { ok: true; value: LocalCanvasWorkspace } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasContentResult = { ok: true; value: import('@a3/project-store').CanvasResourcePreview } | { ok: false; error: { code: string; message: string; recovery: string } };
+export type FileDropNotice = { token: string; kind?: 'file' | 'folder'; files?: readonly { name: string; size: number; copyDestination: string; referenceDestination: string }[]; clientX: number; clientY: number; error?: string };
+export type FileDropStageResult = { ok: true; value: { token: string; kind: 'file' | 'folder'; files: readonly { name: string; size: number; copyDestination: string; referenceDestination: string }[] } } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type ProjectsRequest =
   | { action: 'list' | 'open' }
   | { action: 'create'; name: string }
@@ -74,4 +80,5 @@ export interface DesktopAPI {
   files(request: FilesRequest): Promise<FilesResult>;
   canvas(request: CanvasContentRequest): Promise<CanvasContentResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;
+  onFileDrop(listener: (notice: FileDropNotice) => void): () => void;
 }

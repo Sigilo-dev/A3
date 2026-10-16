@@ -11,7 +11,7 @@ import { acquireOwnership, projectIdentity, type Ownership } from './ownership.j
 import { jsonBytes, ProgressLog, progressProtocol, transactionRoot } from './progress.js';
 import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
-import { inspectLocalMountFile, validateMountRelativePath } from './mounts.js';
+import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
 import type { ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -60,7 +60,8 @@ export interface CanvasResourceDescriptor { id: string; kind: 'project-file' | '
 export interface CanvasResourceChoice extends CanvasResourceDescriptor {}
 export interface CanvasContentNodeInput {
   kind: ContentNodeKind; title: string; position: { x: number; y: number }; value?: string; url?: string; resourceId?: string;
-  description?: string; altText?: string; language?: string;
+  description?: string; altText?: string; language?: string; bytes?: Uint8Array; mediaType?: string; mountId?: string; mountedPath?: string;
+  dropMode?: 'copy' | 'reference'; dropMountId?: string; dropPath?: string;
 }
 export interface CanvasEntityChoice { id: string; type: string; typeVersion: string; title: string; }
 export interface CanvasPlacementView {
@@ -109,7 +110,7 @@ function historyRequiresDelete(event: ReversibleCanvasCommand, direction: 'undo'
     return !!source && !target;
   });
   const removesResource = event.contentEffects.some((effect) => direction === 'undo'
-    ? effect.kind === 'create' || effect.kind === 'copy'
+    ? effect.kind === 'create' || effect.kind === 'create-binary' || effect.kind === 'copy'
     : effect.kind === 'remove');
   return removesRecord || removesResource;
 }
@@ -618,6 +619,7 @@ export class LocalProjectManager {
     });
   }
   createCanvasContentNode(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, input: CanvasContentNodeInput): Promise<LocalCanvasWorkspace> {
+    const captured = input?.bytes ? { ...input, bytes: Uint8Array.from(input.bytes) } : input;
     return this.#queue(async () => {
       const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
       const view = this.#canvasWorkspace(sessionId, workspaceId);
@@ -628,7 +630,8 @@ export class LocalProjectManager {
       demand(typeof input.title === 'string' && input.title.trim().length > 0 && input.title.trim().length <= 200 &&
         input.position && Number.isFinite(input.position.x) && Number.isFinite(input.position.y), 'INVALID_CONTENT_NODE', 'El título y la posición del nodo deben ser válidos.');
       const definition = contentNodeDefinition(input.kind), snapshot = active.lease.service.state.project.snapshot;
-      const entityId = randomUUID(), placementId = randomUUID(), resourceId = randomUUID();
+      const entityId = randomUUID(), placementId = randomUUID(), resourceId = input.dropMode ? input.resourceId ?? randomUUID() : randomUUID();
+      demand(uuid.test(resourceId), 'INVALID_CONTENT_RESOURCE', 'El identificador del recurso no es válido.');
       const absent: DocumentRef[] = [{ kind: 'entity', id: entityId }, { kind: 'placement', id: placementId, workspaceId }];
       const properties: ExtensionMap = {};
       for (const [key, value] of [['a3.content.description', input.description], ['a3.content.alt-text', input.altText], ['a3.content.language', input.language]] as const) {
@@ -645,6 +648,38 @@ export class LocalProjectManager {
       } else if (definition.source === 'url' || input.kind === 'image' && input.url !== undefined) {
         demand(typeof input.url === 'string' && input.url.length <= 2048, 'INVALID_CONTENT_URL', 'Escribe una URL absoluta válida.');
         source = { kind: 'url', resourceId, url: input.url };
+        absent.push({ kind: 'resource', id: resourceId });
+      } else if (captured.dropMode || captured.dropMountId || captured.dropPath) {
+        demand(['image', 'video', 'audio', 'file'].includes(input.kind) && ['copy', 'reference'].includes(captured.dropMode ?? '') &&
+          uuid.test(captured.dropMountId ?? '') && typeof captured.dropPath === 'string', 'INVALID_DROP_SOURCE', 'La selección externa ya no es válida.');
+        const relativePath = validateMountRelativePath(captured.dropPath!).join('/');
+        const decision = await this.options.host.capabilities.authorizeCapabilities(active.lease.service.root, this.options.host.authenticatedActor,
+          active.projectId, ['mount.read'], 'canvas.drop.' + captured.dropMode, 'apply');
+        demand(decision.allowed, 'PERMISSION_DENIED', 'El broker denegó la lectura del archivo externo.');
+        const binding = this.options.host.capabilities.getLocalMount({ root: active.lease.service.root, projectId: active.projectId, mountId: captured.dropMountId! });
+        demand(binding?.status === 'available', 'MOUNT_APPROVAL_REQUIRED', 'Aprueba o vuelve a localizar la carpeta de origen.');
+        const external = await readLocalMountFile(binding, relativePath, 10 * 1024 * 1024);
+        const mediaType = captured.mediaType ?? 'application/octet-stream';
+        source = captured.dropMode === 'copy'
+          ? { kind: 'binary', resourceId, path: `content/${resourceId}.bin`, mediaType, bytesBase64: Buffer.from(external.bytes).toString('base64') }
+          : { kind: 'mounted-file', resourceId, mountId: captured.dropMountId!, path: relativePath, mediaType };
+        absent.push({ kind: 'resource', id: resourceId });
+      } else if (captured.bytes) {
+        demand(['image', 'video', 'audio', 'file'].includes(input.kind) && captured.bytes.length > 0 && captured.bytes.length <= 10 * 1024 * 1024 &&
+          typeof captured.mediaType === 'string', 'INVALID_CONTENT_SOURCE', 'El archivo debe ser un medio compatible de hasta 10 MiB.');
+        source = { kind: 'binary', resourceId, path: `content/${resourceId}.bin`, mediaType: captured.mediaType!, bytesBase64: Buffer.from(captured.bytes).toString('base64') };
+        absent.push({ kind: 'resource', id: resourceId });
+      } else if (captured.mountId || captured.mountedPath) {
+        demand(['image', 'video', 'audio', 'file'].includes(input.kind) && uuid.test(captured.mountId ?? '') && typeof captured.mountedPath === 'string',
+          'INVALID_MOUNTED_RESOURCE', 'La referencia externa no identifica un archivo montado válido.');
+        const relativePath = validateMountRelativePath(captured.mountedPath! ).join('/');
+        const decision = await this.options.host.capabilities.authorizeCapabilities(active.lease.service.root, this.options.host.authenticatedActor,
+          active.projectId, ['mount.read'], 'canvas.drop.reference', 'apply');
+        demand(decision.allowed, 'PERMISSION_DENIED', 'El broker denegó la lectura del archivo externo.');
+        const binding = this.options.host.capabilities.getLocalMount({ root: active.lease.service.root, projectId: active.projectId, mountId: captured.mountId! });
+        demand(binding?.status === 'available', 'MOUNT_APPROVAL_REQUIRED', 'Aprueba o vuelve a localizar la carpeta de origen.');
+        await readLocalMountFile(binding, relativePath, 10 * 1024 * 1024);
+        source = { kind: 'mounted-file', resourceId, mountId: captured.mountId!, path: relativePath, mediaType: captured.mediaType ?? 'application/octet-stream' };
         absent.push({ kind: 'resource', id: resourceId });
       } else {
         demand(typeof input.resourceId === 'string' && uuid.test(input.resourceId), 'RESOURCE_REQUIRED', `Selecciona un recurso para ${definition.label}.`);
@@ -822,6 +857,17 @@ export class LocalProjectManager {
       catch { return { entityId, resourceId, text: null, state: 'binary', mediaType }; }
     });
   }
+  approveCanvasDropMount(sessionId: string, mountId: string, selectedRoot: string): Promise<boolean> {
+    return this.#queue(async () => {
+      const active = this.#active;
+      demand(active && active.sessionId === sessionId && uuid.test(mountId), 'STALE_SESSION', 'El proyecto cambió antes de aprobar el archivo externo.');
+      const approved = await this.options.host.capabilities.approveLocalMount({ root: active.lease.service.root, projectId: active.projectId,
+        mountId, selectedRoot, permission: 'read-only' });
+      if (!approved) return false;
+      return this.options.host.capabilities.setGrant({ root: active.lease.service.root, projectId: active.projectId,
+        capability: 'mount.read', mode: 'direct' });
+    });
+  }
   async #commitCanvasCommand(active: ActiveProjectBinding, operation: Pick<DomainCommand, 'command' | 'payload'>, entityIds: string[], absent?: DocumentRef | readonly DocumentRef[], expectedContentHashes: { resourceId: string; hash: string }[] = []): Promise<void> {
     const absentRefs = !absent ? [] : Array.isArray(absent) ? absent : [absent];
     const payload = operation.payload as unknown as Record<string, unknown>;
@@ -884,9 +930,10 @@ export class LocalProjectManager {
     const snapshot = active.lease.service.state.project.snapshot;
     const effects: ContentEffect[] = [];
     for (const effect of event.contentEffects) {
-      if (effect.kind === 'create' || effect.kind === 'copy') {
-        const resourceId = effect.kind === 'create' ? effect.resourceId : effect.targetId;
-        const expectedHash = effect.kind === 'create' ? sha256(Buffer.from(effect.content, 'utf8')) : effect.expectedHash;
+      if (effect.kind === 'create' || effect.kind === 'create-binary' || effect.kind === 'copy') {
+        const resourceId = effect.kind === 'copy' ? effect.targetId : effect.resourceId;
+        const expectedHash = effect.kind === 'create' ? sha256(Buffer.from(effect.content, 'utf8')) :
+          effect.kind === 'create-binary' ? sha256(Buffer.from(effect.bytesBase64, 'base64')) : effect.expectedHash;
         const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === resourceId.toLowerCase());
         demand(resource?.kind === 'resource' && resource.value.kind === 'project-file', 'REVISION_CONFLICT', 'El recurso que creó el comando ya no está disponible para deshacer.');
         const opened = await active.lease.service.openResource(resourceId);

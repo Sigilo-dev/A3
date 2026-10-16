@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CONTENT_NODE_CATALOG, prepareCommand, reversibleCanvasCommand } from '../dist/src/index.js';
+import { CONTENT_NODE_CATALOG, classifyPastedContent, parseA3ClipboardFragment, prepareCommand, resolveSmartPastePayload, reversibleCanvasCommand } from '../dist/src/index.js';
 import { fixture, context, id, W1, R1, request, success } from './fixture.mjs';
 
 test('A3-006/008/025: built-in content nodes create canonical records and a reversible workspace event', () => {
@@ -39,4 +39,37 @@ test('content node creation rejects active schemes and does not let an external 
   assert.equal(result.ok, false);
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.detail === 'invalid-content-url'));
   assert.deepEqual(state, before);
+});
+
+test('E2-C2: smart paste classifies safe YouTube, image and web references without lookup', () => {
+  assert.deepEqual(classifyPastedContent('https://youtu.be/dQw4w9WgXcQ'), { kind: 'youtube', value: 'https://youtu.be/dQw4w9WgXcQ', title: 'YouTube · dQw4w9WgXcQ' });
+  assert.equal(classifyPastedContent('https://cdn.example.test/photo.PNG?size=large').kind, 'image-url');
+  assert.equal(classifyPastedContent('https://example.test/reference').kind, 'web-link');
+  assert.equal(classifyPastedContent('javascript:alert(1)').kind, 'text');
+  assert.equal(classifyPastedContent('https://user:secret@example.test/').kind, 'text');
+  assert.deepEqual(parseA3ClipboardFragment(JSON.stringify({ format: 'a3-clipboard-fragment', version: 1, kind: 'text', value: 'Idea' })), { kind: 'text', value: 'Idea' });
+  assert.equal(parseA3ClipboardFragment('{"format":"a3-clipboard-fragment","version":99,"kind":"text","value":"x"}'), undefined);
+  const image = { bytes: Uint8Array.from([137, 80, 78, 71]), mediaType: 'image/png' };
+  assert.deepEqual(resolveSmartPastePayload({ fragment: JSON.stringify({ format: 'a3-clipboard-fragment', version: 1, kind: 'text', value: 'Fragmento A3' }), image, text: 'https://example.test/' }),
+    { kind: 'text', value: 'Fragmento A3' }, 'valid A3 payload has first priority');
+  assert.deepEqual(resolveSmartPastePayload({ image, text: 'https://example.test/' }), { kind: 'image', ...image }, 'binary image precedes plain URL text');
+  assert.equal(resolveSmartPastePayload({ text: 'https://youtu.be/dQw4w9WgXcQ' }).kind, 'youtube');
+  assert.deepEqual(resolveSmartPastePayload({ text: 'A sentence' }), { kind: 'text', value: 'A sentence' });
+});
+
+test('E2-C2: binary paste creates a local media resource and mounted paste keeps a reference descriptor', () => {
+  let state = fixture();
+  for (const [offset, kind, source] of [
+    [700, 'image', { kind: 'binary', resourceId: id(701), path: `content/${id(701)}.bin`, mediaType: 'image/png', bytesBase64: 'aGVsbG8=' }],
+    [710, 'file', { kind: 'mounted-file', resourceId: id(711), mountId: id(712), path: 'asset.png', mediaType: 'image/png' }]
+  ]) {
+    const resourceId = id(offset + 1), entityId = id(offset), placementId = id(offset + 2);
+    const result = success(prepareCommand(state, request(state, 'a3.core.create-content-node', { workspaceId: W1, kind, entityId, placementId, title: 'Dropped', position: { x: 0, y: 0 }, properties: {}, source },
+      [{ kind: 'entity', id: entityId }, { kind: 'resource', id: resourceId }, { kind: 'placement', id: placementId, workspaceId: W1 }], { scope: { entityIds: [entityId] } }), context()));
+    state = result.nextSnapshot;
+    assert.equal(result.contentEffects[0]?.kind, offset === 700 ? 'create-binary' : undefined);
+  }
+  const resources = state.records.filter((record) => record.kind === 'resource');
+  assert.ok(resources.some((record) => record.value.kind === 'project-file' && record.value.mediaType === 'image/png'));
+  assert.ok(resources.some((record) => record.value.kind === 'mounted-file' && record.value.mountId === id(712)));
 });
