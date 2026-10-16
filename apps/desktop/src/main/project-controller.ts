@@ -7,12 +7,13 @@ import { basename, dirname, join, parse, relative, resolve } from 'node:path';
 import { CONTENT_NODE_CATALOG, CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_RELATION_KINDS, IOT_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { validIotCircuitOperation } from '@a3/domain/iot-circuit';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { CanvasContentRequest, CanvasContentResult, CanvasMermaidImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasMermaidImportResult, CanvasPlantUmlResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
 import { validCanvasView, validPageView } from '@a3/project-store';
 import type { WorkspaceSessionRequest, WorkspaceSessionResult } from '../shared/desktop-api';
 import type { NavigationRequest, NavigationResult } from '../shared/desktop-api';
 import { validateShortcuts } from '@a3/domain';
+import { PLANTUML_ARTIFACT_FILE, PlantUmlRenderer } from './plantuml-renderer';
 
 function validNavigationRequest(value: unknown): value is NavigationRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -77,6 +78,7 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
   const input = value as Record<string, unknown>;
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (typeof input.action !== 'string' || typeof input.sessionId !== 'string' || typeof input.workspaceId !== 'string' || !uuid.test(input.sessionId) || !uuid.test(input.workspaceId)) return false;
+  if (input.action === 'plantuml-render') return Object.keys(input).length === 4 && uuid.test(String(input.sourceEntityId));
   if (input.action === 'mermaid-import-preview') return Object.keys(input).length === 4 && uuid.test(String(input.sourceEntityId));
   if (input.action === 'mermaid-import-apply') return Object.keys(input).length === 5 && uuid.test(String(input.token)) && ['source', 'a3-model'].includes(String(input.authority));
   if (input.action === 'uml') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 && validUmlOperation(input.operation);
@@ -282,7 +284,7 @@ function validRequest(value: unknown): value is ProjectsRequest {
     typeof input[key] === 'string' && (input[key].length > 0 || input.action === 'draft-name' && key === 'name') && input[key].length <= (key === 'name' ? 120 : 64));
 }
 
-export function createProjectController(stateDirectory: string, getWindow: () => BrowserWindow | null) {
+export function createProjectController(stateDirectory: string, getWindow: () => BrowserWindow | null, plantumlArtifactPath = join(stateDirectory, PLANTUML_ARTIFACT_FILE)) {
   const authenticatedActor = { kind: 'user' as const, id: 'desktop-local-user' };
   const confirm = async (message: string, detail: string): Promise<boolean> => {
     const parent = getWindow(); if (!parent) return false;
@@ -296,6 +298,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   const manager = new LocalProjectManager({ stateDirectory: join(stateDirectory, 'local-projects'), host: { authenticatedActor, capabilities },
     confirmClose: (project) => confirm('Cerrar con cambios externos o recuperación pendiente',
       `${project.name}\n${project.root}\nLos archivos y copias de recuperación se conservarán. La sesión del proyecto se cerrará antes de abrir otra.`) });
+  const plantumlRenderer = new PlantUmlRenderer({ artifactPath: plantumlArtifactPath, installDirectory: join(stateDirectory, 'diagram-engines', 'plantuml') });
   const dropDrafts = new Map<string, StagedDrop>();
   const chooseFolder = async (title: string): Promise<string | undefined> => {
     const parent = getWindow(); if (!parent) return undefined;
@@ -414,10 +417,11 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
-    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasMermaidImportResult> {
+    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasMermaidImportResult | CanvasPlantUmlResult> {
       if (!validCanvasRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de lienzo inválida.', recovery: 'Reabre el workspace.' } };
       try {
         switch (value.action) {
+          case 'plantuml-render': return { ok: true, value: await plantumlRenderer.render(await manager.preparePlantUmlRender(value.sessionId, value.workspaceId, value.sourceEntityId)) };
           case 'mermaid-import-preview': return { ok: true, value: await manager.previewCanvasMermaidImport(value.sessionId, value.workspaceId, value.sourceEntityId) };
           case 'mermaid-import-apply': return { ok: true, value: await manager.applyCanvasMermaidImport(value.sessionId, value.workspaceId, value.token, value.authority) };
           case 'load': return { ok: true, value: await manager.loadCanvasWorkspace(value.sessionId, value.workspaceId) };

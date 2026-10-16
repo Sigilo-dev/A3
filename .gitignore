@@ -4,6 +4,7 @@ node_modules/
 **/.a3/local/
 apps/desktop/out/
 apps/desktop/dist/
+apps/desktop/resources/plantuml/*.jar
 packages/domain/dist/
 packages/domain/.generated/
 packages/project-store/dist/

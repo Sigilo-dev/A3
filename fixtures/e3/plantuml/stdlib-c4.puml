@@ -1,0 +1,8 @@
+@startuml
+!include <C4/C4_Container>
+Person(user, "User")
+System_Boundary(sys, "A3") {
+  Container(app, "App", "Electron")
+}
+Rel(user, app, "uses")
+@enduml

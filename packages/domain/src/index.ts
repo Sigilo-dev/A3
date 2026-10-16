@@ -5,6 +5,7 @@ export * from './er.js';
 export * from './iot.js';
 export * from './iot-circuit.js';
 export * from './mermaid-source.js';
+export * from './plantuml-source.js';
 export * from './mermaid-import.js';
 export { prepareCommand, revalidatePlan, reversibleCanvasCommand } from './kernel.js';
 export { CONTENT_NODE_CATALOG, classifyPastedContent, contentNodeDefinition, isBuiltinContentNodeType, parseA3ClipboardFragment, resolveSmartPastePayload } from './content-nodes.js';

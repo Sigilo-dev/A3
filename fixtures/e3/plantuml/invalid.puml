@@ -1,0 +1,5 @@
+@startuml
+class Idea {
+  +id: string
+  +broken(
+@enduml

@@ -1,0 +1,9 @@
+@startuml
+skinparam shadowing false
+class Idea {
+  +id: string
+  +title: string
+}
+class Workspace
+Idea "1" --> "1..*" Workspace : se organiza en
+@enduml

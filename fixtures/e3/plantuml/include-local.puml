@@ -1,0 +1,4 @@
+@startuml
+!include includes/common.puml
+Idea --> SharedConcept
+@enduml

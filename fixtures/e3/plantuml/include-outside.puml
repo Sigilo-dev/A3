@@ -1,0 +1,4 @@
+@startuml
+!include ../../outside/secret.puml
+Idea --> Secret
+@enduml

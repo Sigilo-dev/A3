@@ -40,6 +40,7 @@ export type CodeRequest =
 export type CodeResult = { ok: true; value: import('@a3/project-store').CodeDocument } | { ok: false; error: { code: string; message: string; recovery: string } };
 export const DROP_STAGE_CHANNEL = 'a3.canvas:stage-drop';
 export type CanvasRequest =
+  | { action: 'plantuml-render'; sessionId: string; workspaceId: string; sourceEntityId: string }
   | { action: 'mermaid-import-preview'; sessionId: string; workspaceId: string; sourceEntityId: string }
   | { action: 'mermaid-import-apply'; sessionId: string; workspaceId: string; token: string; authority: 'source' | 'a3-model' }
   | { action: 'uml'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; operation: UmlOperation }
@@ -86,6 +87,10 @@ export type MarkdownRequest =
 export type MarkdownResult = { ok: true; value: import('@a3/project-store').MarkdownDocument | import('@a3/project-store').MarkdownAsset } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasResult = { ok: true; value: LocalCanvasWorkspace } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasMermaidImportResult = { ok: true; value: import('@a3/project-store').CanvasMermaidImportPreview } | { ok: false; error: { code: string; message: string; recovery: string } };
+export type CanvasPlantUmlRenderOutcome =
+  | { state: 'rendered'; svg: string; sourceHash: string; rendererVersion: string; javaVersion: string }
+  | { state: 'invalid' | 'timeout' | 'unavailable' | 'too-large'; message: string; line?: number; sourceHash?: string };
+export type CanvasPlantUmlResult = { ok: true; value: CanvasPlantUmlRenderOutcome } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasContentResult = { ok: true; value: import('@a3/project-store').CanvasResourcePreview } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type FileDropNotice = { token: string; kind?: 'file' | 'folder'; files?: readonly { name: string; size: number; copyDestination: string; referenceDestination: string }[]; clientX: number; clientY: number; error?: string };
 export type FileDropStageResult = { ok: true; value: { token: string; kind: 'file' | 'folder'; files: readonly { name: string; size: number; copyDestination: string; referenceDestination: string }[] } } | { ok: false; error: { code: string; message: string; recovery: string } };
@@ -132,6 +137,7 @@ export interface DesktopAPI {
   navigation(request: NavigationRequest): Promise<NavigationResult>;
   files(request: FilesRequest): Promise<FilesResult>;
   canvas(request: Extract<CanvasRequest, { action: 'mermaid-import-preview' }>): Promise<CanvasMermaidImportResult>;
+  canvas(request: Extract<CanvasRequest, { action: 'plantuml-render' }>): Promise<CanvasPlantUmlResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;
   canvas(request: CanvasContentRequest): Promise<CanvasContentResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;

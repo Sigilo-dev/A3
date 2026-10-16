@@ -10,6 +10,7 @@ export const CONTENT_NODE_CATALOG = [
   { kind: 'file', type: 'a3.content.file', label: 'Archivo', source: 'resource', mediaType: 'application/octet-stream' },
   { kind: 'code', type: 'a3.content.code', label: 'Código', source: 'inline', mediaType: 'text/plain', extension: '.txt' },
   { kind: 'mermaid', type: 'a3.diagram.mermaid', label: 'Diagrama Mermaid · fuente', source: 'inline', mediaType: 'text/plain', extension: '.mmd' },
+  { kind: 'plantuml', type: 'a3.diagram.plantuml', label: 'Diagrama PlantUML · fuente', source: 'inline', mediaType: 'text/plain', extension: '.puml' },
   { kind: 'drawing', type: 'a3.core.drawing', label: 'Dibujo', source: 'inline', mediaType: 'application/vnd.a3.drawing+json', extension: '.a3draw.json' }
 ] as const;
 

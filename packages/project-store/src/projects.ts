@@ -7,10 +7,11 @@ import { umlData, umlKind, validUmlOperation, type UmlChange, type UmlOperation 
 import { projectUmlCanvas, type CanvasUmlState } from './uml-canvas.js';
 import { erData, erTable, validErOperation, type ErChange, type ErOperation } from '@a3/domain';
 import { MERMAID_SOURCE_TYPE, mermaidSourceProperties } from '@a3/domain/mermaid-source';
+import { PLANTUML_SOURCE_LIMIT, PLANTUML_SOURCE_TYPE, plantUmlSourceProperties, supportsPlantUmlSourceRenderer } from '@a3/domain/plantuml-source';
 import { buildMermaidImportRecords, parseMermaidImport, requiredMermaidMapping, type MermaidImportGraph, type MermaidImportIdentityMap, type MermaidImportIssue } from '@a3/domain/mermaid-import';
 import { projectErCanvas, type CanvasErState } from './er-canvas.js';
 import { randomUUID } from 'node:crypto';
-import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, isIotComponent, iotCatalogEntry, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
@@ -96,6 +97,8 @@ export interface CanvasPlacementViewPatch { id: string; expectedRevision: number
 export interface CanvasSelectionRef { id: string; expectedRevision: number; }
 export interface CanvasSelection { placements: CanvasSelectionRef[]; drawings: CanvasSelectionRef[]; groups: CanvasSelectionRef[]; }
 export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; mediaType?: string; bytes?: Uint8Array; }
+/** Main-process-only read context for the pinned renderer; never expose its absolute paths to the renderer. */
+export interface PlantUmlRenderInput { source: string; sourceHash: string; workingDirectory: string; includeRoots: readonly string[]; }
 export interface CanvasMermaidImportItem { key: string; kind: string; title: string; action: 'create' | 'update' | 'unchanged' | 'conflict'; }
 export interface CanvasMermaidImportPreview {
   token: string; sourceEntityId: string; sourceRevision: number; resourceId: string; family: MermaidImportGraph['family']; mode: 'new' | 'update';
@@ -890,20 +893,27 @@ export class LocalProjectManager {
       if (input.kind === 'mermaid') {
         Object.assign(properties, mermaidSourceProperties());
       }
+      if (input.kind === 'plantuml') {
+        Object.assign(properties, plantUmlSourceProperties());
+      }
       let source: CreateContentNodeSource;
-      if (definition.source === 'inline' && !(input.kind === 'mermaid' && input.resourceId)) {
-        demand(typeof input.value === 'string' && input.value.length <= 1_000_000, 'INVALID_CONTENT_SOURCE', 'Escribe contenido de hasta 1 MB para el nodo.');
+      if (definition.source === 'inline' && !(['mermaid', 'plantuml'].includes(input.kind) && input.resourceId)) {
+        demand(typeof input.value === 'string' && (input.kind === 'plantuml'
+          ? Buffer.byteLength(input.value, 'utf8') <= PLANTUML_SOURCE_LIMIT : input.value.length <= 1_000_000),
+        'INVALID_CONTENT_SOURCE', input.kind === 'plantuml' ? `La fuente PlantUML debe ocupar como máximo ${PLANTUML_SOURCE_LIMIT} bytes.` : 'Escribe contenido de hasta 1 MB para el nodo.');
         source = { kind: 'inline', resourceId, path: `content/${resourceId}${definition.extension}`, mediaType: definition.mediaType, content: input.value };
         absent.push({ kind: 'resource', id: resourceId });
       } else if (definition.source === 'url' || input.kind === 'image' && input.url !== undefined) {
         demand(typeof input.url === 'string' && input.url.length <= 2048, 'INVALID_CONTENT_URL', 'Escribe una URL absoluta válida.');
         source = { kind: 'url', resourceId, url: input.url };
         absent.push({ kind: 'resource', id: resourceId });
-      } else if (input.kind === 'mermaid' && input.resourceId) {
-        demand(uuid.test(input.resourceId), 'INVALID_MERMAID_RESOURCE', 'El recurso Mermaid seleccionado no tiene una identidad válida.');
+      } else if (['mermaid', 'plantuml'].includes(input.kind) && input.resourceId) {
+        demand(uuid.test(input.resourceId), 'INVALID_DIAGRAM_RESOURCE', 'El recurso fuente seleccionado no tiene una identidad válida.');
         const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === input.resourceId!.toLowerCase());
         const sourcePath = resource && resource.value.kind !== 'remote-url' ? resource.value.path : '';
-        demand(resource && resource.value.kind !== 'remote-url' && /\.(?:mmd|mermaid)$/i.test(sourcePath), 'INVALID_MERMAID_RESOURCE', 'Selecciona un archivo Mermaid local o montado con extensión .mmd o .mermaid.');
+        const allowedExtension = input.kind === 'mermaid' ? /\.(?:mmd|mermaid)$/i : /\.(?:puml|plantuml)$/i;
+        demand(resource && resource.value.kind !== 'remote-url' && allowedExtension.test(sourcePath), 'INVALID_DIAGRAM_RESOURCE',
+          input.kind === 'mermaid' ? 'Selecciona un archivo Mermaid local o montado con extensión .mmd o .mermaid.' : 'Selecciona un archivo PlantUML local o montado con extensión .puml o .plantuml.');
         source = { kind: 'existing-resource', resourceId: resource.value.id };
       } else if (captured.dropMode || captured.dropMountId || captured.dropPath) {
         demand(['image', 'video', 'audio', 'file'].includes(input.kind) && ['copy', 'reference'].includes(captured.dropMode ?? '') &&
@@ -1103,7 +1113,8 @@ export class LocalProjectManager {
       // Renderer receives bounded transient bytes for small image previews or explicit media playback;
       // A3 never writes a preview copy beside the original resource.
       const isMermaidSource = entity.value.type === MERMAID_SOURCE_TYPE && entity.value.properties['a3.diagram.authority'] === 'source';
-      const limit = purpose === 'playback' ? 32 * 1024 * 1024 : mediaType.startsWith('image/') ? 4 * 1024 * 1024 : isMermaidSource ? 1024 * 1024 : 64 * 1024;
+      const isPlantUmlSource = entity.value.type === PLANTUML_SOURCE_TYPE && entity.value.properties['a3.diagram.authority'] === 'source';
+      const limit = purpose === 'playback' ? 32 * 1024 * 1024 : mediaType.startsWith('image/') ? 4 * 1024 * 1024 : isMermaidSource ? 1024 * 1024 : isPlantUmlSource ? PLANTUML_SOURCE_LIMIT : 64 * 1024;
       const opened = await active.lease.service.openResource(resourceId, limit);
       if (!opened.ok) {
         const tooLarge = opened.diagnostics.some((item) => item.detail.includes('read-limit') || item.detail.includes('size-limit') || item.detail.includes('resource-too-large'));
@@ -1112,6 +1123,54 @@ export class LocalProjectManager {
       if (purpose === 'playback' || mediaType.startsWith('image/')) return { entityId, resourceId, text: null, state: 'binary', mediaType, bytes: opened.value.bytes };
       try { return { entityId, resourceId, text: new TextDecoder('utf-8', { fatal: true }).decode(opened.value.bytes), state: 'ready', mediaType }; }
       catch { return { entityId, resourceId, text: null, state: 'binary', mediaType }; }
+    });
+  }
+  preparePlantUmlRender(sessionId: string, workspaceId: string, sourceEntityId: string): Promise<PlantUmlRenderInput> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const snapshot = active.lease.service.state.project.snapshot;
+      const entity = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === sourceEntityId.toLowerCase());
+      demand(entity?.kind === 'entity' && supportsPlantUmlSourceRenderer(entity.value.type, entity.value.typeVersion, entity.value.properties) &&
+        typeof entity.value.contentResourceId === 'string' && snapshot.records.some((record) => record.kind === 'placement' && record.workspaceId === workspaceId && record.value.entityId.toLowerCase() === sourceEntityId.toLowerCase()),
+      'PLANTUML_SOURCE_MISSING', 'La fuente PlantUML no está en este workspace o su versión/autoridad no está reconocida; el contenido se conserva.');
+      const resource = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === entity.value.contentResourceId!.toLowerCase());
+      demand(resource && resource.value.kind !== 'remote-url' && /\.(?:puml|plantuml)$/i.test(resource.value.path),
+        'PLANTUML_SOURCE_UNAVAILABLE', 'La vista PlantUML requiere un recurso de texto local o montado con extensión .puml o .plantuml.');
+      const opened = await active.lease.service.openResource(resource.value.id, PLANTUML_SOURCE_LIMIT);
+      demand(opened.ok, opened.diagnostics[0]?.code ?? 'PLANTUML_SOURCE_UNAVAILABLE', opened.diagnostics.map((item) => item.message).join('\n'));
+      let source: string;
+      try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(opened.value.bytes); }
+      catch { throw new LocalProjectError('PLANTUML_SOURCE_ENCODING', 'La fuente no es UTF-8 válida; sus bytes originales permanecen intactos.'); }
+      const projectRoot = await realpath(active.lease.service.root);
+      const includeRoots = new Set<string>([projectRoot]);
+      let workingDirectory = projectRoot;
+      if (resource.value.kind === 'project-file') {
+        const sourcePath = await checkedPath(projectRoot, resource.value.path, 'file');
+        workingDirectory = dirname(sourcePath);
+      } else {
+        const binding = this.options.host.capabilities.getLocalMount({ root: active.lease.service.root, projectId: active.projectId, mountId: resource.value.mountId });
+        demand(binding?.status === 'available' && await inspectLocalMountFile(binding, resource.value.path) === 'available',
+          'PLANTUML_SOURCE_UNAVAILABLE', 'La raíz del diagrama montado falta, cambió o contiene una ruta enlazada; vuelve a aprobar el montaje.');
+        const segments = validateMountRelativePath(resource.value.path);
+        workingDirectory = dirname(resolve(binding.canonicalRoot, ...segments));
+        includeRoots.add(binding.canonicalRoot);
+      }
+        const mountResources = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'resource' }> & { value: import('@a3/domain').Resource & { kind: 'mounted-file' } } => record.kind === 'resource' && record.value.kind === 'mounted-file');
+      for (const mountResource of mountResources) {
+        if (includeRoots.size >= 16) break;
+        const decision = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+          projectId: active.projectId, operation: 'read-resource', paths: [], refs: [refOf(mountResource)], resources: [mountResource.value] });
+        if (!decision.allowed) continue;
+        const binding = this.options.host.capabilities.getLocalMount({ root: active.lease.service.root, projectId: active.projectId, mountId: mountResource.value.mountId });
+        if (binding?.status !== 'available') continue;
+        const physical = await realpath(binding.canonicalRoot).catch(() => '');
+        const stat = await lstat(binding.canonicalRoot).catch(() => undefined);
+        if (!physical || !stat?.isDirectory() || stat.isSymbolicLink() || physical.toLowerCase() !== binding.canonicalRoot.toLowerCase()) continue;
+        includeRoots.add(binding.canonicalRoot);
+      }
+      demand(includeRoots.size <= 16 && ![...includeRoots].some((path) => path.includes(';') || /[\r\n\0]/.test(path)),
+        'PLANTUML_INCLUDE_ROOT_LIMIT', 'Hay demasiadas raíces o una ruta no representable de forma segura para los includes locales.');
+      return { source, sourceHash: opened.value.sha256, workingDirectory, includeRoots: [...includeRoots] };
     });
   }
   previewCanvasMermaidImport(sessionId: string, workspaceId: string, sourceEntityId: string): Promise<CanvasMermaidImportPreview> {

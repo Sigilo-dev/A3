@@ -298,6 +298,7 @@ function initialContentValue(kind: ContentNodeKind): string {
   if (kind === 'short-text') return 'Escribe una idea breve.';
   if (kind === 'code') return '// Nuevo fragmento\n';
   if (kind === 'mermaid') return 'flowchart TD\n  A[Idea] --> B[Proyecto]\n';
+  if (kind === 'plantuml') return '@startuml\nclass Idea\nclass Proyecto\nIdea --> Proyecto\n@enduml\n';
   if (kind === 'drawing') return '{"schemaVersion":"1.0.0","strokes":[]}\n';
   return '';
 }
@@ -317,6 +318,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
   const [selectedEntityId, setSelectedEntityId] = useState('');
   const [contentKind, setContentKind] = useState<ContentNodeKind>('page');
   const [mermaidSourceMode, setMermaidSourceMode] = useState<'inline' | 'resource'>('inline');
+  const [plantumlSourceMode, setPlantumlSourceMode] = useState<'inline' | 'resource'>('inline');
   const [contentTitle, setContentTitle] = useState('Nueva página');
   const [contentValue, setContentValue] = useState('# Nueva página\n\n');
   const [contentUrl, setContentUrl] = useState('');
@@ -325,6 +327,10 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
   const [contentDescription, setContentDescription] = useState('');
   const [contentAltText, setContentAltText] = useState('');
   const [contentLanguage, setContentLanguage] = useState('');
+  const isSourceDiagram = contentKind === 'mermaid' || contentKind === 'plantuml';
+  const sourceDiagramMode = contentKind === 'mermaid' ? mermaidSourceMode : plantumlSourceMode;
+  const sourceDiagramExtension = contentKind === 'mermaid' ? /\.(?:mmd|mermaid)$/i : /\.(?:puml|plantuml)$/i;
+  const sourceDiagramExtensionLabel = contentKind === 'mermaid' ? '.mmd o .mermaid' : '.puml o .plantuml';
   const [dropNotice, setDropNotice] = useState<FileDropNotice | null>(null);
   const [dropMode, setDropMode] = useState<'copy' | 'reference' | null>('copy');
   const [viewport, setViewport] = useState<WorldViewport>({ x: 0, y: 0, zoom: 1 });
@@ -527,7 +533,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     const definition = contentNodeDefinition(contentKind);
     const node = { kind: contentKind, title: contentTitle, position: screenToWorld({ x: rect.width / 2, y: rect.height / 2 }, current.current),
       description: contentDescription, altText: contentAltText, language: contentLanguage,
-      ...(definition.source === 'inline' && !(contentKind === 'mermaid' && mermaidSourceMode === 'resource') ? { value: contentValue } : definition.source === 'url' || contentKind === 'image' && contentImageSource === 'url'
+      ...(definition.source === 'inline' && !(isSourceDiagram && sourceDiagramMode === 'resource') ? { value: contentValue } : definition.source === 'url' || contentKind === 'image' && contentImageSource === 'url'
         ? { url: contentUrl } : { resourceId: contentResourceId }) };
     const result = await window.a3.canvas({ action: 'create-content-node', sessionId, workspaceId, expectedWorkspaceRevision: workspace.revision, node });
     if (!result.ok) { setErrorKind('placement'); setError(`${result.error.code}: ${result.error.message} ${result.error.recovery}`); setStatus('Nodo sin guardar'); return; }
@@ -1080,17 +1086,18 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
         <div className="canvas-insert-node-form">
           <label>Tipo <select data-content-kind value={contentKind} disabled={!workspace?.canWrite} onChange={(event) => {
             const kind = event.target.value as ContentNodeKind; setContentKind(kind); setContentTitle(`Nuevo ${contentNodeDefinition(kind).label.toLowerCase()}`); setContentValue(initialContentValue(kind)); setContentImageSource('resource');
-            setMermaidSourceMode('inline');
+            setMermaidSourceMode('inline'); setPlantumlSourceMode('inline');
           }}>{CONTENT_NODE_CATALOG.map((item) => <option key={item.kind} value={item.kind}>{item.label}</option>)}</select></label>
           <label>Título <input data-content-title value={contentTitle} maxLength={200} disabled={!workspace?.canWrite} onChange={(event) => setContentTitle(event.target.value)} /></label>
-          {contentKind === 'mermaid' && <label>Origen de Mermaid <select data-mermaid-source-mode value={mermaidSourceMode} disabled={!workspace?.canWrite} onChange={(event) => {
-            const mode = event.target.value as 'inline' | 'resource'; setMermaidSourceMode(mode);
-            if (mode === 'resource') setContentResourceId(workspace?.resourceChoices.find((resource) => resource.kind !== 'remote-url' && /\.(?:mmd|mermaid)$/i.test(resource.label))?.id ?? '');
-          }}><option value="inline">Crear fuente .mmd nueva</option><option value="resource">Usar recurso Mermaid existente</option></select></label>}
-          {contentKind === 'mermaid' && mermaidSourceMode === 'resource' ? <label>Recurso fuente <select data-content-resource value={contentResourceId} disabled={!workspace?.canWrite || !(workspace?.resourceChoices.some((resource) => resource.kind !== 'remote-url' && /\.(?:mmd|mermaid)$/i.test(resource.label)))}
-            onChange={(event) => setContentResourceId(event.target.value)}><option value="">Selecciona un .mmd o .mermaid</option>{workspace?.resourceChoices.filter((resource) => resource.kind !== 'remote-url' && /\.(?:mmd|mermaid)$/i.test(resource.label)).map((resource) => <option key={resource.id} value={resource.id}>{resource.label}</option>)}</select></label> :
-            contentKind === 'page' || contentKind === 'short-text' || contentKind === 'code' || contentKind === 'drawing' || contentKind === 'mermaid'
-              ? <label className="canvas-content-source">{contentKind === 'mermaid' ? 'Fuente Mermaid' : 'Fuente'} <textarea data-content-value value={contentValue} maxLength={1_000_000} disabled={!workspace?.canWrite} onChange={(event) => setContentValue(event.target.value)} /></label>
+          {isSourceDiagram && <label>Origen de {contentKind === 'mermaid' ? 'Mermaid' : 'PlantUML'} <select data-diagram-source-mode value={sourceDiagramMode} disabled={!workspace?.canWrite} onChange={(event) => {
+            const mode = event.target.value as 'inline' | 'resource';
+            if (contentKind === 'mermaid') setMermaidSourceMode(mode); else setPlantumlSourceMode(mode);
+            if (mode === 'resource') setContentResourceId(workspace?.resourceChoices.find((resource) => resource.kind !== 'remote-url' && sourceDiagramExtension.test(resource.label))?.id ?? '');
+          }}><option value="inline">Crear fuente {contentKind === 'mermaid' ? '.mmd' : '.puml'} nueva</option><option value="resource">Usar recurso existente</option></select></label>}
+          {isSourceDiagram && sourceDiagramMode === 'resource' ? <label>Recurso fuente <select data-content-resource value={contentResourceId} disabled={!workspace?.canWrite || !(workspace?.resourceChoices.some((resource) => resource.kind !== 'remote-url' && sourceDiagramExtension.test(resource.label)))}
+            onChange={(event) => setContentResourceId(event.target.value)}><option value="">Selecciona {sourceDiagramExtensionLabel}</option>{workspace?.resourceChoices.filter((resource) => resource.kind !== 'remote-url' && sourceDiagramExtension.test(resource.label)).map((resource) => <option key={resource.id} value={resource.id}>{resource.label}</option>)}</select></label> :
+            contentKind === 'page' || contentKind === 'short-text' || contentKind === 'code' || contentKind === 'drawing' || contentKind === 'mermaid' || contentKind === 'plantuml'
+              ? <label className="canvas-content-source">{contentKind === 'mermaid' ? 'Fuente Mermaid' : contentKind === 'plantuml' ? 'Fuente PlantUML' : 'Fuente'} <textarea data-content-value value={contentValue} maxLength={contentKind === 'plantuml' ? 256 * 1024 : 1_000_000} disabled={!workspace?.canWrite} onChange={(event) => setContentValue(event.target.value)} /></label>
             : contentKind === 'youtube' || contentKind === 'web-link'
               ? <label>URL <input data-content-url type="url" value={contentUrl} maxLength={2048} placeholder="https://…" disabled={!workspace?.canWrite} onChange={(event) => setContentUrl(event.target.value)} /></label>
               : contentKind === 'image' ? <>
@@ -1107,9 +1114,9 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
           {contentKind === 'code' && <label>Lenguaje <input data-content-language value={contentLanguage} maxLength={80} disabled={!workspace?.canWrite} onChange={(event) => setContentLanguage(event.target.value)} /></label>}
           <button className="secondary" data-canvas-create-content disabled={!workspace?.canWrite || !contentTitle.trim() ||
             (['youtube', 'web-link'].includes(contentKind) && !contentUrl.trim()) || contentKind === 'image' && (contentImageSource === 'url' ? !contentUrl.trim() : !contentResourceId) ||
-            (['video', 'audio', 'file'].includes(contentKind) && !contentResourceId) || contentKind === 'mermaid' && mermaidSourceMode === 'resource' && !contentResourceId}
+            (['video', 'audio', 'file'].includes(contentKind) && !contentResourceId) || isSourceDiagram && sourceDiagramMode === 'resource' && !contentResourceId}
             onClick={() => void createContentNode()}>Insertar</button>
-          {contentKind === 'mermaid' && mermaidSourceMode === 'resource' && !workspace?.resourceChoices.some((resource) => resource.kind !== 'remote-url' && /\.(?:mmd|mermaid)$/i.test(resource.label)) && <small>Crea o incorpora un archivo .mmd desde Archivos y vuelve a seleccionar el recurso; A3 conservará esos bytes.</small>}
+          {isSourceDiagram && sourceDiagramMode === 'resource' && !workspace?.resourceChoices.some((resource) => resource.kind !== 'remote-url' && sourceDiagramExtension.test(resource.label)) && <small>Crea o incorpora un archivo {sourceDiagramExtensionLabel} desde Archivos y vuelve a seleccionar el recurso; A3 conservará esos bytes.</small>}
           {['youtube', 'web-link'].includes(contentKind) && <small>Se guarda una referencia; A3 no consulta ni descarga la URL.</small>}
           {['image', 'video', 'audio', 'file'].includes(contentKind) && !workspace?.resourceChoices.length && <small>Crea o incorpora un recurso desde Archivos y vuelve a abrir este catálogo.</small>}
         </div>

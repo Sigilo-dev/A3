@@ -8,12 +8,14 @@
   "type": "module",
   "main": "out/main/index.cjs",
   "scripts": {
-    "predev": "npm run build --workspace @a3/domain && npm run build --workspace @a3/project-store",
+    "predev": "npm run prepare:plantuml && npm run build --workspace @a3/domain && npm run build --workspace @a3/project-store",
     "dev": "electron-vite dev",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "pretypecheck": "npm run build --workspace @a3/domain && npm run build --workspace @a3/project-store",
     "build": "npm run typecheck && electron-vite build",
+    "prepare:plantuml": "node scripts/prepare-plantuml.mjs",
+    "prebuild": "npm run prepare:plantuml",
     "pack:win": "npm run build && electron-builder --win --x64 --dir --publish never",
     "test:smoke": "node test/run-smoke.mjs",
     "test:canvas": "node --test test/viewport.test.mjs",
@@ -26,7 +28,8 @@
     "test:er": "node test/run-er.mjs",
     "test:iot": "node test/run-iot.mjs",
     "test:mermaid": "node --test test/mermaid-source.test.mjs",
-    "test:mermaid:smoke": "node test/run-mermaid.mjs"
+    "test:mermaid:smoke": "node test/run-mermaid.mjs",
+    "test:plantuml": "npm run build --workspace @a3/domain && npm run prepare:plantuml && node --experimental-strip-types --experimental-transform-types --test test/plantuml-renderer.test.mjs"
   },
   "devDependencies": {
     "@a3/project-store": "0.1.0-dev.0",
@@ -42,6 +45,11 @@
     "react-dom": "19.3.1",
     "typescript": "7.0.2",
     "vite": "8.3.4"
+  },
+  "build": {
+    "extraResources": [
+      { "from": "resources/plantuml/plantuml-mit-1.2026.8.jar", "to": "plantuml/plantuml-mit-1.2026.8.jar" }
+    ]
   },
   "dependencies": {
     "@codemirror/lang-cpp": "6.0.3",

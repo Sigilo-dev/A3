@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
 import { createProjectController } from './project-controller';
+import { PLANTUML_ARTIFACT_FILE } from './plantuml-renderer';
 import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL } from '../shared/desktop-api';
 
 const APP_URL = 'a3://desktop/index.html';
@@ -94,7 +95,10 @@ async function startDesktop(): Promise<void> {
   const development = url !== APP_URL;
   await access(preloadPath);
   if (!development) await access(join(rendererRoot, 'index.html'));
-  projects = createProjectController(app.getPath('userData'), () => mainWindow);
+  const plantumlArtifactPath = app.isPackaged
+    ? join(process.resourcesPath, 'plantuml', PLANTUML_ARTIFACT_FILE)
+    : join(app.getAppPath(), 'resources', 'plantuml', PLANTUML_ARTIFACT_FILE);
+  projects = createProjectController(app.getPath('userData'), () => mainWindow, plantumlArtifactPath);
 
   const shellSession = session.fromPartition('persist:a3-shell');
   shellSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

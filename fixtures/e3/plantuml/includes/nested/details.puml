@@ -1,0 +1,4 @@
+class SharedConcept {
+  +label: string
+}
+class NestedIncludeProof
