@@ -8,7 +8,7 @@ E2-A2 añade [placements y tarjetas de entidad al lienzo](placement-nodes.md); E
 
 - Desde E2-A3, botón central o Espacio+arrastrar desplazan el lienzo; el botón izquierdo selecciona por rectángulo. La rueda y el desplazamiento de dos dedos también desplazan; Shift+rueda vertical desplaza horizontalmente. Ctrl/Cmd+rueda o el evento de pellizco de trackpad hace zoom sobre el cursor. Se normalizan deltas en píxeles, líneas y páginas.
 - Los botones +/− y teclas +/− hacen zoom alrededor del centro. Con el lienzo enfocado, las flechas desplazan 40 píxeles CSS. El rango interactivo es 5–800 %, con escala inicial de 100 %.
-- La cuadrícula inicial tiene 20 unidades de mundo, snap desactivado y guías de origen activadas. No hay herramientas de nodos, conectores ni dibujo en este corte.
+- La cuadrícula inicial tiene 20 unidades de mundo, snap desactivado y guías de origen activadas. E2-A2 renderiza placements; E2-A3 añade líneas visuales; E2-B1 añade anotaciones vectoriales persistentes. El detalle del dibujo está en [dibujo vectorial persistente](freehand-drawing.md).
 - «Referencia de prueba» muestra dos formas SVG aisladas. «Ajustar contenido» se activa para esa geometría y solo se ejecuta al pedirlo. La referencia no se guarda, y un workspace sin geometría mantiene fit desactivado. Cambiar tamaño de ventana no mueve la cámara ni ajusta contenido.
 - La interfaz indica escala, origen visible y guardado. Si guardar falla, se puede reintentar o descartar el cambio de vista. Solo lectura permite navegación temporal; un perfil que permita preparar cambios puede requerir aprobación humana al guardarlos.
 
@@ -30,7 +30,7 @@ Desde la raíz: `npm ci`, `npm run build`, `npm test`, `npm run test:desktop`. L
 
 Equipo observado el 2026-10-15: Windows 10 Pro 10.0.19045 x64, AMD Ryzen 7 3700X, aproximadamente 32 GiB de RAM; Electron 44.7.2 / Chromium 152.0.7977.149. Pruebas ejecutadas con perfiles y carpetas temporales. El host no es el equipo de referencia Windows 11 de §26; no se declara aceptación de FPS, consumo, 1.000 nodos ni de un trackpad físico concreto. Tampoco se valida instalador de publicación o corte de energía.
 
-React Flow genera un chunk diferido de aproximadamente 188 kB JS y 15.3 kB CSS sin gzip en el build local; no se carga al iniciar en Proyectos. No se inicia ningún proceso auxiliar para el lienzo. A3-006 y A3-007 tienen evidencia parcial de navegación/geometría; selección, herramientas de nodos, trazos, historial y presión siguen pendientes de sus respectivos bloques.
+React Flow y el renderer del lienzo se cargan en un chunk diferido; no se cargan al iniciar en Proyectos. No se inicia ningún proceso auxiliar para el lienzo. A3-006 y A3-007 tienen evidencia automatizada parcial de viewport, selección, placements, conexiones visuales y trazos; grupos, primitivas geométricas independientes, historial común y presión física quedan pendientes. El estilo de boceto Rough.js para trazos se conserva al reabrir.
 
 ## Dependencias y licencias
 

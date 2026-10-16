@@ -2,7 +2,7 @@ import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir } from 'no
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { defaultRegistry, revisionsOf, validateSnapshot, type DocumentRef, type DomainCommand, type DomainRecord, type Entity, type Placement, type Project, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
+import { defaultRegistry, revisionsOf, validateSnapshot, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type Entity, type Placement, type Project, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
@@ -44,12 +44,15 @@ export interface CanvasPlacementView {
 }
 export type CanvasVisualEdgeView = Pick<VisualEdge, 'id' | 'revision' | 'sourcePlacementId' | 'targetPlacementId' | 'label' | 'waypoints' | 'style'>;
 export type CanvasVisualEdgePatch = Partial<Pick<VisualEdge, 'sourcePlacementId' | 'targetPlacementId' | 'label' | 'waypoints' | 'style'>>;
+export type CanvasDrawingView = Pick<Drawing, 'id' | 'revision' | 'points' | 'parameters' | 'style'>;
+export type CanvasDrawingPatch = Omit<Partial<Pick<Drawing, 'points' | 'parameters' | 'style'>>, 'parameters'> & { parameters?: Partial<DrawingParameters> };
 export interface CanvasPlacementMove { id: string; expectedRevision: number; position: { x: number; y: number }; }
 export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; }
 export interface LocalCanvasWorkspace {
   sessionId: string; workspaceId: string; name: string; revision: number;
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
-  placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[]; canDeleteEdges: boolean;
+  placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[]; drawings: readonly CanvasDrawingView[];
+  canDeleteEdges: boolean; canDeleteDrawings: boolean; canConvertDrawings: boolean;
 }
 export interface LocalExplorerEntry extends Omit<ExplorerDirectoryPage['entries'][number], 'path' | 'identity'> { id: string; path: string; }
 export interface LocalExplorerMount extends Omit<ExplorerMountEntry, 'resourceId'> { id: string; }
@@ -382,10 +385,20 @@ export class LocalProjectManager {
         label: value.label, waypoints: value.waypoints, style: value.style }));
     const deletion = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
       projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: ['delete', 'diagram.edit'], stage: 'prepare' });
+    const drawingDeletion = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+      projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [],
+      requiredCapabilities: ['delete', 'diagram.edit'], stage: 'prepare' });
+    const drawingConversion = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+      projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [],
+      requiredCapabilities: ['document.edit', 'diagram.edit'], stage: 'prepare' });
+    const drawings = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'drawing' }> => record.kind === 'drawing' && record.workspaceId === workspaceId)
+      .map(({ value }) => ({ id: value.id, revision: value.revision, points: value.points, parameters: value.parameters, style: value.style }));
     const draft = this.#viewportDrafts.get(workspaceId);
     const { x, y, zoom } = draft?.viewport ?? workspace.viewport;
-    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, placements, visualEdges,
+    return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, placements, visualEdges, drawings,
       canDeleteEdges: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && deletion.allowed,
+      canDeleteDrawings: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && drawingDeletion.allowed,
+      canConvertDrawings: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && drawingConversion.allowed,
       canWrite: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && edit.allowed };
   }
   loadCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
@@ -483,9 +496,10 @@ export class LocalProjectManager {
       catch { return { entityId, resourceId, text: null, state: 'binary' }; }
     });
   }
-  async #commitCanvasCommand(active: ActiveProjectBinding, operation: Pick<DomainCommand, 'command' | 'payload'>, entityIds: string[], absent?: DocumentRef): Promise<void> {
+  async #commitCanvasCommand(active: ActiveProjectBinding, operation: Pick<DomainCommand, 'command' | 'payload'>, entityIds: string[], absent?: DocumentRef | readonly DocumentRef[]): Promise<void> {
+    const absentRefs = !absent ? [] : Array.isArray(absent) ? absent : [absent];
     const prepared = await active.lease.service.prepare({ operationId: randomUUID(), projectId: active.projectId, actor: this.options.host.authenticatedActor,
-      ...operation, expectedRevisions: [...revisionsOf(active.lease.service.state.project.snapshot), ...(absent ? [{ ...absent, revision: null }] : [])],
+      ...operation, expectedRevisions: [...revisionsOf(active.lease.service.state.project.snapshot), ...absentRefs.map((ref) => ({ ...ref, revision: null }))],
       expectedContentHashes: [], scope: { entityIds: [...new Set(entityIds)] } });
     demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'CANVAS_COMMAND_FAILED', prepared.diagnostics.map((item) => item.message).join('\n'));
     const committed = await active.lease.service.commit(prepared.value);
@@ -551,6 +565,69 @@ export class LocalProjectManager {
       demand(this.options.host.authenticatedActor.kind === 'user', 'PERMISSION_DENIED', 'Solo una persona puede solicitar permisos locales.');
       demand(await this.options.host.capabilities.setGrant({ root: active.lease.service.root, projectId: active.projectId, capability: 'delete', mode: 'approval' }),
         'PERMISSION_DENIED', 'El permiso de eliminación no fue aprobado.');
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  approveCanvasDrawingDeletion(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      demand(this.options.host.authenticatedActor.kind === 'user', 'PERMISSION_DENIED', 'Solo una persona puede solicitar permisos locales.');
+      demand(await this.options.host.capabilities.setGrant({ root: active.lease.service.root, projectId: active.projectId, capability: 'delete', mode: 'approval' }),
+        'PERMISSION_DENIED', 'El permiso de eliminación no fue aprobado.');
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  createCanvasDrawing(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number,
+    points: DrawingPoint[], parameters: DrawingParameters, style: Drawing['style'] = {}): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision,
+        'REVISION_CONFLICT', 'El workspace cambió; recarga antes de guardar el trazo.');
+      const id = randomUUID();
+      const record: DomainRecord = { kind: 'drawing', workspaceId, value: { schemaVersion: '1.0.0', id, revision: 1,
+        points, parameters, style, extensions: {} } };
+      await this.#commitCanvasCommand(active, { command: 'a3.core.create-document', payload: { record } }, [], { kind: 'drawing', workspaceId, id });
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  updateCanvasDrawing(sessionId: string, workspaceId: string, drawingId: string, expectedRevision: number, patch: CanvasDrawingPatch): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const drawing = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'drawing' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === drawingId.toLowerCase());
+      demand(drawing?.kind === 'drawing', 'DRAWING_MISSING', 'El trazo ya no está disponible en este workspace.');
+      demand(Number.isSafeInteger(expectedRevision) && drawing.value.revision === expectedRevision, 'REVISION_CONFLICT', 'El trazo cambió; recárgalo antes de editar.');
+      await this.#commitCanvasCommand(active, { command: 'a3.core.update-drawing', payload: { ...patch, ref: { kind: 'drawing', id: drawing.value.id, workspaceId } } }, []);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  deleteCanvasDrawing(sessionId: string, workspaceId: string, drawingId: string, expectedRevision: number): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const drawing = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'drawing' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === drawingId.toLowerCase());
+      demand(drawing?.kind === 'drawing', 'DRAWING_MISSING', 'El trazo ya no está disponible en este workspace.');
+      demand(Number.isSafeInteger(expectedRevision) && drawing.value.revision === expectedRevision, 'REVISION_CONFLICT', 'El trazo cambió; recárgalo antes de borrarlo.');
+      await this.#commitCanvasCommand(active, { command: 'a3.core.delete', payload: { ref: { kind: 'drawing', id: drawing.value.id, workspaceId } } }, []);
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  createCanvasDrawingNode(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number,
+    drawings: { id: string; expectedRevision: number }[]): Promise<LocalCanvasWorkspace> {
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision,
+        'REVISION_CONFLICT', 'El workspace cambió; recarga antes de convertir los trazos.');
+      demand(Array.isArray(drawings) && drawings.length > 0 && drawings.length <= 256 &&
+        new Set(drawings.map((drawing) => drawing.id.toLowerCase())).size === drawings.length, 'INVALID_DRAWING_SELECTION', 'Selecciona trazos únicos del workspace.');
+      const snapshot = active.lease.service.state.project.snapshot;
+      for (const selected of drawings) {
+        const drawing = snapshot.records.find((record) => record.kind === 'drawing' && record.workspaceId === workspaceId && record.value.id.toLowerCase() === selected.id.toLowerCase());
+        demand(drawing?.kind === 'drawing' && drawing.value.revision === selected.expectedRevision, 'REVISION_CONFLICT', 'Uno de los trazos cambió; recarga la selección antes de convertirla.');
+      }
+      const entityId = randomUUID(), resourceId = randomUUID(), placementId = randomUUID();
+      await this.#commitCanvasCommand(active, { command: 'a3.core.convert-drawings-to-node', payload: { workspaceId, drawingIds: drawings.map(({ id }) => id),
+        entityId, resourceId, placementId, title: drawings.length === 1 ? 'Dibujo' : `Dibujo (${drawings.length})` } }, [entityId], [
+        { kind: 'entity', id: entityId }, { kind: 'resource', id: resourceId }, { kind: 'placement', id: placementId, workspaceId }
+      ]);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }

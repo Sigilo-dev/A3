@@ -2,7 +2,7 @@ import { memo } from 'react';
 import { BaseEdge, MarkerType, getBezierPath, getSmoothStepPath, getStraightPath, type Edge, type EdgeProps } from '@xyflow/react';
 import type { CanvasVisualEdgePatch, CanvasVisualEdgeView, LocalCanvasWorkspace } from '../../shared/desktop-api';
 
-export type CanvasTool = 'select' | 'connect' | 'text';
+export type CanvasTool = 'select' | 'connect' | 'text' | 'draw';
 type EdgeData = { view: CanvasVisualEdgeView; origin: { x: number; y: number } };
 export type CanvasEdge = Edge<EdgeData, 'a3Visual'>;
 export function edgeAppearance(style: CanvasVisualEdgeView['style']) {

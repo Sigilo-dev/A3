@@ -18,6 +18,7 @@ ajv.addFormat('absolute-url', (value: string) => {
 for (const schema of Object.values(schemas)) ajv.addSchema(schema as AnySchemaObject);
 const scopedKinds = new Set(['placement', 'visual-edge', 'relation-view', 'group', 'drawing']);
 const e1Kinds = new Set(['group', 'collection', 'variable-set', 'node-type', 'relation-type']);
+const e2Kinds = new Set(['drawing']);
 const recordKinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
 
 export function validateDefinition(kind: 'node-type' | 'relation-type', value: unknown): Diagnostic[] {
@@ -66,14 +67,7 @@ export function validateRegistry(registry: TypeRegistry): Diagnostic[] {
 
 function validateShape(kind: string, value: unknown): Diagnostic[] {
   if (!isJson(value)) return [diagnostic('non-json-data', 'Los datos deben ser JSON finito, sin ciclos ni accessors.')];
-  if (kind === 'drawing') {
-    const validator = ajv.getSchema('https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid')!;
-    const extensions = ajv.getSchema('https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions')!;
-    return isObject(value) && validator(value.id) && value.schemaVersion === '1.0.0' &&
-      Number.isSafeInteger(value.revision) && Number(value.revision) > 0 && extensions(value.extensions)
-      ? [] : [diagnostic('invalid-drawing-header', 'La identidad del trazo no es válida.')];
-  }
-  const version = e1Kinds.has(kind) ? 'e1' : 'e0';
+  const version = e2Kinds.has(kind) ? 'e2' : e1Kinds.has(kind) ? 'e1' : 'e0';
   const validator = ajv.getSchema(`https://sigilo-dev.github.io/A3/schemas/${version}/${kind}.schema.json`);
   if (!validator) return [diagnostic('unknown-document-kind', 'El tipo de documento no está soportado.')];
   if (validator(value)) return [];

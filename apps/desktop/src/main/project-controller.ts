@@ -41,8 +41,47 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
       (!('label' in patch) || typeof patch.label === 'string') && (!('waypoints' in patch) || Array.isArray(patch.waypoints) && patch.waypoints.every(validPoint)) &&
       (!('style' in patch) || !!patch.style && typeof patch.style === 'object' && !Array.isArray(patch.style));
   }
-  return ['load', 'flush', 'discard', 'approve-edge-delete'].includes(String(input.action)) && Object.keys(input).length === 3;
+  if (input.action === 'create-drawing') return (Object.keys(input).length === 6 || Object.keys(input).length === 7) &&
+    Object.keys(input).every((key) => ['action', 'sessionId', 'workspaceId', 'expectedWorkspaceRevision', 'points', 'parameters', 'style'].includes(key)) &&
+    Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 && validDrawingPoints(input.points) &&
+    validDrawingParameters(input.parameters, false) && (!('style' in input) || validStyle(input.style));
+  if (input.action === 'update-drawing') {
+    if (Object.keys(input).length !== 6 || !uuid.test(String(input.drawingId)) || !Number.isSafeInteger(input.expectedRevision) || Number(input.expectedRevision) < 1 ||
+        !input.patch || typeof input.patch !== 'object' || Array.isArray(input.patch)) return false;
+    const patch = input.patch as Record<string, unknown>;
+    return Object.keys(patch).length > 0 && Object.keys(patch).every((key) => ['points', 'parameters', 'style'].includes(key)) &&
+      (!('points' in patch) || validDrawingPoints(patch.points)) && (!('parameters' in patch) || validDrawingParameters(patch.parameters, true)) &&
+      (!('style' in patch) || validStyle(patch.style));
+  }
+  if (input.action === 'delete-drawing') return Object.keys(input).length === 5 && uuid.test(String(input.drawingId)) &&
+    Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) >= 1;
+  if (input.action === 'convert-drawings-to-node') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedWorkspaceRevision) &&
+    Number(input.expectedWorkspaceRevision) >= 1 && Array.isArray(input.drawings) && input.drawings.length > 0 && input.drawings.length <= 256 &&
+    input.drawings.every((item: unknown) => !!item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length === 2 &&
+      uuid.test(String((item as Record<string, unknown>).id)) && Number.isSafeInteger((item as Record<string, unknown>).expectedRevision) &&
+      Number((item as Record<string, unknown>).expectedRevision) >= 1);
+  return ['load', 'flush', 'discard', 'approve-edge-delete', 'approve-drawing-delete'].includes(String(input.action)) && Object.keys(input).length === 3;
 }
+function validDrawingPoints(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0 && value.length <= 100000 && value.every((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+    const point = item as Record<string, unknown>;
+    return Object.keys(point).every((key) => ['x', 'y', 'pressure'].includes(key)) && Number.isFinite(point.x) && Number.isFinite(point.y) &&
+      (!('pressure' in point) || Number.isFinite(point.pressure) && Number(point.pressure) >= 0 && Number(point.pressure) <= 1);
+  });
+}
+function validDrawingParameters(value: unknown, partial: boolean): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const params = value as Record<string, unknown>, allowed = ['size', 'thinning', 'smoothing', 'streamline', 'simulatePressure'];
+  if (Object.keys(params).some((key) => !allowed.includes(key)) || !Object.keys(params).length) return false;
+  if (!partial && allowed.some((key) => !Object.hasOwn(params, key))) return false;
+  return (!('size' in params) || Number.isFinite(params.size) && Number(params.size) > 0 && Number(params.size) <= 512) &&
+    (!('thinning' in params) || Number.isFinite(params.thinning) && Number(params.thinning) >= -1 && Number(params.thinning) <= 1) &&
+    (!('smoothing' in params) || Number.isFinite(params.smoothing) && Number(params.smoothing) >= 0 && Number(params.smoothing) <= 1) &&
+    (!('streamline' in params) || Number.isFinite(params.streamline) && Number(params.streamline) >= 0 && Number(params.streamline) <= 1) &&
+    (!('simulatePressure' in params) || typeof params.simulatePressure === 'boolean');
+}
+function validStyle(value: unknown): boolean { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function validPoint(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const point = value as Record<string, unknown>;
@@ -111,7 +150,12 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'create-visual-edge': return { ok: true, value: await manager.createCanvasVisualEdge(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.sourcePlacementId, value.targetPlacementId) };
           case 'update-visual-edge': return { ok: true, value: await manager.updateCanvasVisualEdge(value.sessionId, value.workspaceId, value.edgeId, value.expectedRevision, value.patch) };
           case 'delete-visual-edge': return { ok: true, value: await manager.deleteCanvasVisualEdge(value.sessionId, value.workspaceId, value.edgeId, value.expectedRevision) };
+          case 'create-drawing': return { ok: true, value: await manager.createCanvasDrawing(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.points, value.parameters, value.style) };
+          case 'update-drawing': return { ok: true, value: await manager.updateCanvasDrawing(value.sessionId, value.workspaceId, value.drawingId, value.expectedRevision, value.patch) };
+          case 'delete-drawing': return { ok: true, value: await manager.deleteCanvasDrawing(value.sessionId, value.workspaceId, value.drawingId, value.expectedRevision) };
+          case 'convert-drawings-to-node': return { ok: true, value: await manager.createCanvasDrawingNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.drawings) };
           case 'approve-edge-delete': return { ok: true, value: await manager.approveCanvasEdgeDeletion(value.sessionId, value.workspaceId) };
+          case 'approve-drawing-delete': return { ok: true, value: await manager.approveCanvasDrawingDeletion(value.sessionId, value.workspaceId) };
         }
       } catch (error) {
         return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'IO_FAILED', message: error instanceof LocalProjectError ? error.message : 'No se pudo completar la operación del lienzo.',

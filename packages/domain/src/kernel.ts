@@ -1,6 +1,6 @@
 import { canonical, copy, diagnostic, freeze, getRecord, isJson, isObject, refKey, refOf, revisionsOf, sameId, UUID_PATTERN } from './data.js';
 import { findRelationType, validateDefinition, validateRecord, validateRegistry, validateSnapshot } from './validation.js';
-import type { CommandContext, ContentEffect, Diagnostic, DocumentKinds, DocumentRef, DomainCommand, DomainRecord, DomainSnapshot, DuplicateSelection, ExpectedRevision, NodeTypeChange, Outcome, Payloads, PreparedPlan, RecordChange, RecordKind, Resource, ResourceLocation, TypeRegistry } from './models.js';
+import type { CommandContext, ContentEffect, Diagnostic, DocumentKinds, DocumentRef, DomainCommand, DomainRecord, DomainSnapshot, DuplicateSelection, ExpectedRevision, NodeTypeChange, Outcome, Payloads, PreparedPlan, RecordChange, RecordKind, ReversibleCanvasCommand, Resource, ResourceLocation, TypeRegistry } from './models.js';
 
 class DomainFault extends Error {
   constructor(readonly diagnostic: Diagnostic) { super(diagnostic.message); }
@@ -9,7 +9,7 @@ function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnost
   throw new DomainFault(diagnostic(detail, message, ref, code));
 }
 const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity',
-  'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-visual-edge', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-collection-members',
+  'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-visual-edge', 'a3.core.update-drawing', 'a3.core.convert-drawings-to-node', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-collection-members',
   'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
 const kinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
 const scoped = new Set(['placement', 'visual-edge', 'relation-view', 'group', 'drawing']);
@@ -131,7 +131,7 @@ function changesBetween(before: DomainSnapshot, after: DomainSnapshot) {
 
 function deleteRecord(draft: Draft, payload: Payloads['a3.core.delete']): void {
   const selected = draft.require(payload.ref);
-  if (selected.kind === 'project' || selected.kind === 'drawing') fail('unsupported-delete', 'La eliminación de este documento corresponde al host o E2.', payload.ref);
+  if (selected.kind === 'project') fail('unsupported-delete', 'La eliminación del proyecto corresponde al host.', payload.ref);
   if (selected.kind === 'resource' && draft.snapshot.records.some((r) => r.kind === 'entity' && r.value.contentResourceId && sameId(r.value.contentResourceId, selected.value.id))) {
     fail('resource-in-use', 'El recurso tiene entidades que lo usan; conserva la fuente.', payload.ref);
   }
@@ -169,6 +169,38 @@ function deleteRecord(draft: Draft, payload: Payloads['a3.core.delete']): void {
     }
   }
   draft.snapshot.records = draft.snapshot.records.filter((r) => !removed.has(refKey(refOf(r))));
+}
+
+function convertDrawingsToNode(draft: Draft, payload: Payloads['a3.core.convert-drawings-to-node']): void {
+  if (Object.keys(payload).some((key) => !['workspaceId', 'drawingIds', 'entityId', 'resourceId', 'placementId', 'title'].includes(key)) ||
+      !UUID_PATTERN.test(payload.workspaceId) || !Array.isArray(payload.drawingIds) || !payload.drawingIds.length || payload.drawingIds.length > 256 ||
+      new Set(payload.drawingIds.map((id) => id.toLowerCase())).size !== payload.drawingIds.length ||
+      ![payload.entityId, payload.resourceId, payload.placementId].every((id) => UUID_PATTERN.test(id)) ||
+      typeof payload.title !== 'string' || !payload.title.trim() || payload.title.length > 120) {
+    fail('invalid-drawing-conversion', 'La conversión requiere trazos, título e identidades válidas.');
+  }
+  const selected = payload.drawingIds.map((id) => {
+    const record = draft.require({ kind: 'drawing', id, workspaceId: payload.workspaceId });
+    if (record.kind !== 'drawing') fail('wrong-document-kind', 'La selección debe contener trazos del mismo workspace.');
+    return record;
+  });
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, pointCount = 0;
+  for (const record of selected) for (const point of record.value.points) {
+    if (++pointCount > 100000) fail('drawing-conversion-size-limit', 'La conversión admite hasta 100000 puntos totales por nodo.');
+    minX = Math.min(minX, point.x); minY = Math.min(minY, point.y); maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
+  }
+  const asset = { schemaVersion: '1.0.0', strokes: selected.map((record) => ({ ...copy(record.value), sourceDrawingId: record.value.id })) };
+  const path = `assets/drawings/${payload.resourceId}.json`;
+  const resource: DomainRecord = { kind: 'resource', value: { schemaVersion: '1.0.0', id: payload.resourceId, revision: 1,
+    kind: 'project-file', path, mediaType: 'application/vnd.a3.drawing+json', extensions: {} } };
+  const entity: DomainRecord = { kind: 'entity', value: { schemaVersion: '1.0.0', id: payload.entityId, revision: 1, type: 'a3.core.drawing', typeVersion: '1.0.0',
+    title: payload.title.trim(), contentResourceId: payload.resourceId, tags: [],
+    properties: { 'a3.drawing.stroke-count': selected.length }, ports: [], bindings: {}, extensions: {} } };
+  const placement: DomainRecord = { kind: 'placement', workspaceId: payload.workspaceId, value: { schemaVersion: '1.0.0', id: payload.placementId, revision: 1,
+    entityId: payload.entityId, position: { x: minX, y: minY }, size: { width: Math.max(180, Math.min(720, maxX - minX + 24)), height: Math.max(130, Math.min(560, maxY - minY + 24)) }, style: {}, extensions: {} } };
+  draft.add(resource); draft.add(entity); draft.add(placement);
+  draft.effects.push({ kind: 'create', resourceId: payload.resourceId, path, content: canonical(asset) + '\n' });
+  for (const record of selected) deleteRecord(draft, { ref: refOf(record) });
 }
 
 function moveGroup(draft: Draft, ref: DocumentRef, offset: { x: number; y: number }): void {
@@ -298,7 +330,7 @@ function apply(draft: Draft): void {
       draft.add({ kind: 'workspace', value: request.payload.workspace });
       break;
     case 'a3.core.create-document':
-      if (request.payload.record.kind === 'project' || request.payload.record.kind === 'drawing') fail('unsupported-create', 'Usa el constructor de proyecto; E2 administra trazos.');
+      if (request.payload.record.kind === 'project') fail('unsupported-create', 'Usa el constructor de proyecto.');
       draft.add(request.payload.record);
       break;
     case 'a3.core.set-workspace-viewport': {
@@ -390,6 +422,25 @@ function apply(draft: Draft): void {
       });
       break;
     }
+    case 'a3.core.update-drawing': {
+      const { points, parameters, style, ref } = request.payload;
+      if (ref.kind !== 'drawing' || Object.keys(request.payload).some((key) => !['ref', 'points', 'parameters', 'style'].includes(key)) ||
+          (!points && !parameters && !style)) fail('invalid-drawing-patch', 'El patch debe editar geometría, parámetros o estilo del trazo.', ref);
+      if (points !== undefined && (!Array.isArray(points) || points.length < 1 || points.length > 100000)) {
+        fail('invalid-drawing-points', 'El trazo requiere entre 1 y 100000 puntos.', ref);
+      }
+      if (parameters !== undefined && (!isObject(parameters) || Object.keys(parameters).some((key) => !['size', 'thinning', 'smoothing', 'streamline', 'simulatePressure'].includes(key)))) {
+        fail('invalid-drawing-parameters', 'Los parámetros del trazo contienen campos no editables.', ref);
+      }
+      if (style !== undefined && !isObject(style)) fail('invalid-drawing-style', 'El estilo debe ser un mapa namespaced.', ref);
+      draft.edit(ref, 'drawing', (value) => {
+        if (points) value.points = copy(points);
+        if (parameters) value.parameters = { ...value.parameters, ...copy(parameters) };
+        if (style) value.style = { ...value.style, ...copy(style) };
+      });
+      break;
+    }
+    case 'a3.core.convert-drawings-to-node': convertDrawingsToNode(draft, request.payload); break;
     case 'a3.core.move-resource': {
       const ref: DocumentRef = { kind: 'resource', id: request.payload.resourceId };
       const record = draft.require(ref);
@@ -551,4 +602,24 @@ export function revalidatePlan(plan: PreparedPlan, current: DomainSnapshot, cont
     if (result.ok && canonical(result.value) !== canonical(plan)) return { ok: false, diagnostics: [diagnostic('plan-modified', 'La propuesta no coincide con su cálculo validado.')] };
     return result;
   } catch { return { ok: false, diagnostics: [diagnostic('invalid-plan', 'La propuesta no se puede revalidar.')] }; }
+}
+
+/** Project committed domain changes into the reversible event format consumed by the shared E2-B3 canvas history. */
+export function reversibleCanvasCommand(plan: PreparedPlan, workspaceId: string): ReversibleCanvasCommand {
+  if (!UUID_PATTERN.test(workspaceId)) throw new TypeError('workspaceId debe ser UUID.');
+  for (const change of plan.changes) {
+    if (change.ref.kind === 'workspace' && !sameId(change.ref.id, workspaceId)) {
+      throw new TypeError('Un evento reversible de canvas no puede incluir otro workspace.');
+    }
+    if (change.ref.workspaceId !== undefined && !sameId(change.ref.workspaceId, workspaceId)) {
+      throw new TypeError('Un evento reversible de canvas no puede incluir otro workspace.');
+    }
+    for (const record of [change.before, change.after]) {
+      if (record && 'workspaceId' in record && !sameId(record.workspaceId, workspaceId)) {
+        throw new TypeError('Un evento reversible de canvas no puede incluir otro workspace.');
+      }
+    }
+  }
+  return freeze(copy({ operationId: plan.operationId, projectId: plan.projectId, workspaceId,
+    command: plan.request.command, changes: plan.changes, contentEffects: plan.contentEffects }));
 }

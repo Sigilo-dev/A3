@@ -281,7 +281,8 @@ test('group cycles are rejected; moving a nested selection transforms shared mem
   assert.equal(find(plan.nextSnapshot, 'placement', P1).value.position.x, before.x + 10);
   assert.equal(find(plan.nextSnapshot, 'placement', P1).value.position.y, before.y + 20);
   assert.equal(find(plan.nextSnapshot, 'placement', P1).value.revision, 2);
-  const record = { kind: 'drawing', workspaceId: W1, value: freshDocument(42, { futureGeometry: true }) };
+  const record = { kind: 'drawing', workspaceId: W1, value: freshDocument(42, { points: [{ x: 1, y: 2 }],
+    parameters: { size: 4, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: true }, style: {}, futureGeometry: true }) };
   state.records.push(record);
   find(state, 'group', id(40)).value.members.push({ kind: 'drawing', id: id(42) });
   rejection(run(state, 'a3.core.move-group', { ref: { kind: 'group', id: id(40), workspaceId: W1 }, offset: { x: 10, y: 20 } }), 'drawing-geometry-unavailable');

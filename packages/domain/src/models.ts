@@ -36,6 +36,16 @@ export interface VisualEdge extends Document {
 export interface RelationView extends Document {
   relationId: UUID; sourcePlacementId: UUID; targetPlacementId: UUID; waypoints: Point[]; style: ExtensionMap;
 }
+export interface DrawingPoint extends Point { pressure?: number; }
+export interface DrawingParameters extends OpenData {
+  size: number; thinning: number; smoothing: number; streamline: number; simulatePressure: boolean;
+}
+/** Workspace annotation source. Rendered outlines are derived from these points and parameters. */
+export interface Drawing extends Document {
+  points: DrawingPoint[]; parameters: DrawingParameters; style: ExtensionMap;
+}
+export interface DrawingAssetStroke extends OpenData { sourceDrawingId: UUID; points: DrawingPoint[]; parameters: DrawingParameters; style: ExtensionMap; }
+export interface DrawingAsset extends OpenData { schemaVersion: string; strokes: DrawingAssetStroke[]; }
 export interface GroupMember extends OpenData { kind: 'placement' | 'group' | 'drawing'; id: UUID; }
 export interface Group extends Document { name: string; members: GroupMember[]; }
 export interface Collection extends Document { name: string; entityIds: UUID[]; }
@@ -71,7 +81,7 @@ export interface GlobalDocuments {
 export interface ScopedDocuments {
   placement: Placement; 'visual-edge': VisualEdge; 'relation-view': RelationView; group: Group;
   // Only identity/revision are understood here; E2 owns drawing geometry.
-  drawing: Document;
+  drawing: Drawing;
 }
 export type DocumentKinds = GlobalDocuments & ScopedDocuments;
 export type RecordKind = keyof DocumentKinds;
@@ -112,6 +122,8 @@ export type Payloads = {
   'a3.core.move-placements': { workspaceId: UUID; placements: { id: UUID; position: Point }[] };
   'a3.core.update-placement-view': { ref: DocumentRef; position?: Point; size?: Pick<Placement['size'], 'width' | 'height'>; style?: ExtensionMap };
   'a3.core.update-visual-edge': { ref: DocumentRef; sourcePlacementId?: UUID; targetPlacementId?: UUID; label?: string; waypoints?: Point[]; style?: ExtensionMap };
+  'a3.core.update-drawing': { ref: DocumentRef; points?: DrawingPoint[]; parameters?: Partial<DrawingParameters>; style?: ExtensionMap };
+  'a3.core.convert-drawings-to-node': { workspaceId: UUID; drawingIds: UUID[]; entityId: UUID; resourceId: UUID; placementId: UUID; title: string };
   'a3.core.move-resource': { resourceId: UUID; location: ResourceLocation };
   'a3.core.move-group': { ref: DocumentRef; offset: Point };
   'a3.core.set-group-members': { ref: DocumentRef; members: GroupMember[] };
@@ -130,6 +142,7 @@ export interface EnvelopeBase {
 }
 export type DomainCommand = { [K in CommandName]: EnvelopeBase & { command: K; payload: Payloads[K] } }[CommandName];
 export type ContentEffect =
+  | { kind: 'create'; resourceId: UUID; path: string; content: string }
   | { kind: 'copy'; sourceId: UUID; targetId: UUID; expectedHash: string }
   | { kind: 'move'; resourceId: UUID; before: ResourceLocation; after: ResourceLocation; expectedHash: string };
 export interface RecordChange { ref: DocumentRef; before: DomainRecord | null; after: DomainRecord | null; }
@@ -156,6 +169,11 @@ export interface PreparedPlan {
   requestFingerprint: string; baseFingerprint: string;
   readSet: ExpectedRevision[]; changes: RecordChange[]; nodeTypeChanges: NodeTypeChange[]; contentEffects: ContentEffect[];
   nextSnapshot: DomainSnapshot; nextRegistry: TypeRegistry;
+}
+/** One committed canvas command's domain changes, ready for the single E2-B3 history to consume. */
+export interface ReversibleCanvasCommand {
+  operationId: UUID; projectId: UUID; workspaceId: UUID; command: CommandName;
+  changes: readonly RecordChange[]; contentEffects: readonly ContentEffect[];
 }
 // The E1-C/D writer must revalidate under its lock and confirm the ledger atomically.
 export interface ProjectCommitPort {

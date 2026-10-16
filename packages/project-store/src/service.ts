@@ -1062,6 +1062,18 @@ export class ProjectService {
         }
         const resources: Resource[] = [];
         for (const effect of domain.contentEffects) {
+          if (effect.kind === 'create') {
+            const target = getRecord(domain.nextSnapshot, { kind: 'resource', id: effect.resourceId });
+            if (target?.kind !== 'resource' || target.value.kind !== 'project-file' || target.value.path !== effect.path || typeof effect.content !== 'string') {
+              return failure([issue(effect.path, 'schema', 'resource-create-effect-invalid', 'El efecto debe crear un recurso local que coincida con su descriptor.')]);
+            }
+            this.#sourcePath(effect.path);
+            try { await absentPath(this.root, effect.path); }
+            catch (error) { if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error; }
+            images.push({ path: effect.path, bytes: Buffer.from(effect.content, 'utf8'), ref: refOf(target) });
+            resources.push(target.value);
+            continue;
+          }
           const sourceId = effect.kind === 'copy' ? effect.sourceId : effect.resourceId;
           const source = getRecord(scan.project.snapshot, { kind: 'resource', id: sourceId });
           const target = getRecord(domain.nextSnapshot, { kind: 'resource', id: effect.kind === 'copy' ? effect.targetId : effect.resourceId });

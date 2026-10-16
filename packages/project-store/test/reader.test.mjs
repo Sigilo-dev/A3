@@ -220,15 +220,18 @@ test('non portable resource descriptor is a schema error before native path reso
   assert.ok(doc.diagnostics.some((d) => d.stage === 'schema' && d.pointer === '/path'));
   assert.ok(!project.diagnostics.some((d) => d.stage === 'io' && d.path.includes('outside')));
 });
-test('opaque drawings preserve bytes for inspection and are never rewritten', async (t) => {
+test('editable drawings validate vector points and an untouched no-op preserves source bytes', async (t) => {
   const { root } = await scratch(t);
   const folder = `.a3/workspaces/${W1}/drawings`;
   await mkdir(join(root, folder));
-  const source = Buffer.from(json({ schemaVersion: '1.0.0', id: id(90), revision: 1, extensions: {}, geometry: { unknown: 'retained' } }));
+  const source = Buffer.from(json({ schemaVersion: '1.0.0', id: id(90), revision: 1, extensions: {}, points: [{ x: 10.125, y: -4.5, pressure: 0.72 }],
+    parameters: { size: 4, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: false }, style: {}, geometry: { unknown: 'retained' } }));
   await writeFile(join(root, folder, `${id(90)}.json`), source);
   const project = await readProject(root);
-  assert.equal(project.mode, 'read-only');
+  assert.equal(project.mode, 'ready');
   const doc = project.documents.find((d) => d.location.kind === 'drawing');
+  assert.equal(doc.status, 'valid'); assert.equal(doc.record.value.points[0].pressure, 0.72);
   assert.deepEqual(Buffer.from(doc.originalBytes()), source);
-  assert.equal(encodeDocument(doc).ok, false);
+  const noOp = encodeDocument(doc);
+  assert.equal(noOp.ok, true); assert.equal(noOp.changed, false); assert.deepEqual(Buffer.from(noOp.bytes), source);
 });

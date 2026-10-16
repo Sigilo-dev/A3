@@ -81,7 +81,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid #c3ed82; outline-offs
 .canvas-help { font-size: 11px; color: #aab7c2; margin: 8px 0; line-height: 1.5; }
 .canvas-host { position: relative; flex: 1; min-height: 240px; border: 1px solid #33413b; border-radius: 6px; overflow: hidden; touch-action: none; overscroll-behavior: contain; }
 .canvas-host:focus-visible { outline: 2px solid #c3ed82; }
-.canvas-guides, .canvas-reference { position: absolute; overflow: visible; pointer-events: none; }
+.canvas-guides, .canvas-reference, .canvas-drawing-layer { position: absolute; overflow: visible; pointer-events: none; }
+.canvas-drawing-path { pointer-events: visiblePainted; cursor: pointer; }
+.canvas-host[data-canvas-mode="draw"] { cursor: crosshair; }
+.canvas-host[data-canvas-mode="select"] .canvas-drawing-path { cursor: pointer; }
 .canvas-guides line { stroke: #8baf78; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: .5; }
 .canvas-reference rect { fill: #20332c; stroke: #9bc279; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .canvas-reference text { fill: #e8edf0; font-size: 14px; }

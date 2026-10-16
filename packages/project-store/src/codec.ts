@@ -62,9 +62,7 @@ export function decodeDocument(location: DocumentLocation, input: Uint8Array): D
           diagnostics.push(...errors);
           if (!errors.length) {
             record = freeze(candidate);
-            status = location.kind === 'drawing' ? 'read-only' : 'valid';
-            if (status === 'read-only') diagnostics.push(issue(location.path, 'compatibility', 'opaque-drawing',
-              'Solo se conoce el encabezado del dibujo; su geometría no se reescribe.', { severity: 'warning' }));
+            status = 'valid';
           }
         }
       }
@@ -99,7 +97,6 @@ export function serializeRecord(location: DocumentLocation, record: DomainRecord
   if (unsupported) return { ok: false, diagnostics: [unsupported] };
   if (diagnostics.length) return { ok: false, diagnostics };
   if (hasNegativeZero(record.value)) return { ok: false, diagnostics: [issue(location.path, 'compatibility', 'number-not-lossless', 'El JSON canónico no puede conservar -0; usa un valor representable explícito.')] };
-  if (record.kind === 'drawing') return { ok: false, diagnostics: [issue(location.path, 'compatibility', 'opaque-drawing', 'No hay codec de geometría para dibujos.')] };
   return { ok: true, bytes: Buffer.from(canonicalJson(record.value as JsonValue) + '\n', 'utf8'), changed: true, record, diagnostics: [] };
 }
 

@@ -3,7 +3,9 @@ import { applyEdgeChanges, applyNodeChanges, Background, BackgroundVariant, Hand
 import '@xyflow/react/dist/style.css';
 import type { CanvasEntitySummary, CanvasPlacementView, CanvasRequest, CanvasVisualEdgePatch, LocalCanvasWorkspace, LocalProjectSession } from '../../shared/desktop-api';
 import { CanvasEdgeEditor, edgeTypes, toFlowEdges, type CanvasEdge, type CanvasTool } from './CanvasVisualEdges';
+import { CanvasDrawingLayer, type StrokePreview } from './CanvasDrawings';
 import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffset, panViewport, renderOrigin, screenToWorld, toVisualViewport, wheelViewport, worldToScreen, zoomAt, type WorldViewport } from '../../shared/world-viewport';
+import type { Drawing, DrawingParameters, DrawingPoint } from '@a3/domain';
 
 // Navigation reference only: no Entity, Placement, drawing or React Flow node is created.
 const reference = { x: 120, y: 110, width: 550, height: 220 };
@@ -46,6 +48,8 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
     </div>
   </article>;
 }) };
+const defaultDrawingParameters: DrawingParameters = { size: 4, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: true };
+interface ActiveStroke { pointerId: number; pointerType: string; hasPressure: boolean; points: DrawingPoint[]; }
 
 function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: number }, onResizeEnd: CanvasNodeData['onResizeEnd'], tool: CanvasTool, previous: CanvasNode[] = [], force = false): CanvasNode[] {
   const entities = new Map(workspace.entities.map((entity) => [entity.id.toLowerCase(), entity]));
@@ -81,14 +85,15 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
   const [tool, setTool] = useState<CanvasTool>('select');
   const toolRef = useRef(tool); toolRef.current = tool;
-  const [selection, setSelection] = useState<{ nodeIds: string[]; edgeIds: string[] }>({ nodeIds: [], edgeIds: [] });
+  const [selection, setSelection] = useState<{ nodeIds: string[]; edgeIds: string[]; drawingIds: string[] }>({ nodeIds: [], edgeIds: [], drawingIds: [] });
+  const [strokePreview, setStrokePreview] = useState<StrokePreview | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState('');
   const [viewport, setViewport] = useState<WorldViewport>({ x: 0, y: 0, zoom: 1 });
   const [origin, setOrigin] = useState({ x: 0, y: 0 });
   const [showReference, setShowReference] = useState(false);
   const [status, setStatus] = useState('Abriendo…');
   const [error, setError] = useState<string | null>(null);
-  const [errorKind, setErrorKind] = useState<'viewport' | 'placement' | null>(null);
+  const [errorKind, setErrorKind] = useState<'viewport' | 'placement' | 'drawing' | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const live = useRef(true);
   const current = useRef(viewport);
@@ -104,6 +109,7 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const frame = useRef<number | undefined>(undefined);
   const failed = useRef(false);
+  const activeStroke = useRef<ActiveStroke | null>(null);
 
   function installWorkspace(next: LocalCanvasWorkspace, _changedPlacementId?: string, force = false): void {
     workspaceRef.current = next;
@@ -144,7 +150,8 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   }, []);
   const handleSelectionChange = useCallback(({ nodes: selectedNodes, edges: selectedEdges }: { nodes: CanvasNode[]; edges: CanvasEdge[] }): void => {
     const nodeIds = selectedNodes.map((node) => node.id), edgeIds = selectedEdges.map((edge) => edge.id);
-    setSelection((previous) => previous.nodeIds.join() === nodeIds.join() && previous.edgeIds.join() === edgeIds.join() ? previous : { nodeIds, edgeIds });
+    setSelection((previous) => previous.nodeIds.join() === nodeIds.join() && previous.edgeIds.join() === edgeIds.join()
+      ? previous : { nodeIds, edgeIds, drawingIds: [] });
   }, []);
   useEffect(() => {
     if (tool === 'text') hostRef.current?.parentElement?.querySelector<HTMLInputElement>('[data-edge-label]')?.focus();
@@ -254,18 +261,18 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     if (id) setNodes((previous) => previous.map((node) => ({ ...node, selected: node.id === id })));
     setError(null); setErrorKind(null); setStatus('Representación creada');
   }
-  function mutateCanvas(request: (latest: LocalCanvasWorkspace) => CanvasRequest): Promise<boolean> {
+  function mutateCanvas(request: (latest: LocalCanvasWorkspace) => CanvasRequest, savedLabel = 'Organización guardada', errorCategory: 'placement' | 'drawing' = 'placement'): Promise<boolean> {
     const operation = mutationTail.current.then(async () => {
       const latest = workspaceRef.current; if (!latest || !window.a3) return false;
       try {
         const result = await window.a3.canvas(request(latest));
         if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
         workspaceRef.current = result.value;
-        if (live.current) { installWorkspace(result.value); setError(null); setErrorKind(null); setStatus('Organización guardada'); }
+        if (live.current) { installWorkspace(result.value); setError(null); setErrorKind(null); setStatus(savedLabel); }
         return true;
       } catch (cause) {
         if (!live.current) return false;
-        setErrorKind('placement'); setError(cause instanceof Error ? cause.message : 'No se pudo guardar la organización.'); setStatus('Cambio sin guardar');
+        setErrorKind(errorCategory); setError(cause instanceof Error ? cause.message : 'No se pudo guardar el cambio.'); setStatus('Cambio sin guardar');
         try {
           const result = await window.a3.canvas({ action: 'load', sessionId, workspaceId });
           if (live.current && result.ok) installWorkspace(result.value, undefined, true);
@@ -275,6 +282,65 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     });
     mutationTail.current = operation;
     return operation;
+  }
+  function selectDrawing(id: string, event: React.MouseEvent<SVGElement> | React.KeyboardEvent<SVGElement>): void {
+    const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+    setSelection((previous) => {
+      const next = additive ? previous.drawingIds.includes(id) ? previous.drawingIds.filter((item) => item !== id) : [...previous.drawingIds, id] : [id];
+      return { nodeIds: [], edgeIds: [], drawingIds: next };
+    });
+    setNodes((previous) => previous.map((node) => node.selected ? { ...node, selected: false } : node));
+    setEdges((previous) => previous.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
+  }
+  function appendStroke(event: React.PointerEvent<HTMLDivElement>): void {
+    const stroke = activeStroke.current, host = hostRef.current;
+    if (!stroke || stroke.pointerId !== event.pointerId || !host) return;
+    const native = event.nativeEvent;
+    const samples = native.getCoalescedEvents?.() ?? [];
+    const points = samples.length ? [...samples] : [native];
+    const last = points.at(-1);
+    if (!last || last.clientX !== native.clientX || last.clientY !== native.clientY) points.push(native);
+    const rect = host.getBoundingClientRect();
+    for (const sample of points) {
+      const world = screenToWorld({ x: sample.clientX - rect.left, y: sample.clientY - rect.top }, current.current);
+      const hasPressure = stroke.pointerType !== 'mouse' && Number.isFinite(sample.pressure) && sample.pressure > 0;
+      if (hasPressure) stroke.hasPressure = true;
+      const point: DrawingPoint = { ...world, ...(hasPressure ? { pressure: sample.pressure } : {}) };
+      const previous = stroke.points.at(-1);
+      if (!previous || previous.x !== point.x || previous.y !== point.y || previous.pressure !== point.pressure) stroke.points.push(point);
+    }
+    setStrokePreview({ points: [...stroke.points], parameters: { ...defaultDrawingParameters, simulatePressure: !stroke.hasPressure }, color: '#c3ed82' });
+  }
+  function beginStroke(event: React.PointerEvent<HTMLDivElement>): void {
+    if (toolRef.current !== 'draw' || !writable.current || !workspaceRef.current || event.button !== 0) return;
+    event.preventDefault(); event.stopPropagation();
+    activeStroke.current = { pointerId: event.pointerId, pointerType: event.pointerType, hasPressure: false, points: [] };
+    setSelection({ nodeIds: [], edgeIds: [], drawingIds: [] });
+    setNodes((previous) => previous.map((node) => node.selected ? { ...node, selected: false } : node));
+    setEdges((previous) => previous.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Synthetic test input and older touch drivers may not expose capture. */ }
+    appendStroke(event);
+  }
+  function continueStroke(event: React.PointerEvent<HTMLDivElement>): void {
+    if (!activeStroke.current) return;
+    event.preventDefault(); event.stopPropagation(); appendStroke(event);
+  }
+  function finishStroke(event: React.PointerEvent<HTMLDivElement>): void {
+    const stroke = activeStroke.current;
+    if (!stroke || stroke.pointerId !== event.pointerId) return;
+    event.preventDefault(); event.stopPropagation(); appendStroke(event); activeStroke.current = null; setStrokePreview(null);
+    const parameters = { ...defaultDrawingParameters, simulatePressure: !stroke.hasPressure };
+    const existing = new Set(workspaceRef.current?.drawings.map((drawing) => drawing.id) ?? []);
+    void mutateCanvas((latest) => ({ action: 'create-drawing', sessionId, workspaceId, expectedWorkspaceRevision: latest.revision,
+      points: stroke.points, parameters, style: { 'a3.ui.stroke.color': '#c3ed82' } }), 'Trazo guardado', 'drawing').then((ok) => {
+      if (!ok || !live.current) return;
+      const created = workspaceRef.current?.drawings.find((drawing) => !existing.has(drawing.id));
+      if (created) { setSelection({ nodeIds: [], edgeIds: [], drawingIds: [created.id] }); setStatus('Trazo guardado'); }
+    });
+  }
+  function cancelStroke(event: React.PointerEvent<HTMLDivElement>): void {
+    if (!activeStroke.current || activeStroke.current.pointerId !== event.pointerId) return;
+    activeStroke.current = null; setStrokePreview(null);
   }
   function createVisualEdge(sourcePlacementId: string, targetPlacementId: string): void {
     const before = new Set(workspaceRef.current?.visualEdges.map((edge) => edge.id));
@@ -292,6 +358,30 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
     return mutateCanvas((latest) => ({ action: 'delete-visual-edge', sessionId, workspaceId, edgeId,
       expectedRevision: latest.visualEdges.find((edge) => edge.id === edgeId)?.revision ?? 0 }));
   }
+  function deleteDrawing(drawingId: string): Promise<boolean> {
+    return mutateCanvas((latest) => ({ action: 'delete-drawing', sessionId, workspaceId, drawingId,
+      expectedRevision: latest.drawings.find((drawing) => drawing.id === drawingId)?.revision ?? 0 }), 'Trazo eliminado', 'drawing').then((ok) => {
+        if (ok && live.current) setSelection((previous) => ({ ...previous, drawingIds: previous.drawingIds.filter((id) => id !== drawingId) }));
+        return ok;
+      });
+  }
+  function updateDrawing(drawingId: string, patch: { parameters?: Partial<DrawingParameters>; style?: Drawing['style'] }): void {
+    void mutateCanvas((latest) => ({ action: 'update-drawing', sessionId, workspaceId, drawingId,
+      expectedRevision: latest.drawings.find((drawing) => drawing.id === drawingId)?.revision ?? 0, patch }), 'Parámetros del trazo guardados', 'drawing');
+  }
+  function convertDrawingsToNode(): void {
+    const existingPlacements = new Set(workspaceRef.current?.placements.map((placement) => placement.id) ?? []);
+    void mutateCanvas((latest) => ({ action: 'convert-drawings-to-node', sessionId, workspaceId, expectedWorkspaceRevision: latest.revision,
+      drawings: selection.drawingIds.flatMap((id) => {
+        const drawing = latest.drawings.find((item) => item.id === id);
+        return drawing ? [{ id, expectedRevision: drawing.revision }] : [];
+      }) }), 'Nodo Dibujo creado', 'drawing').then((ok) => {
+        if (!ok || !live.current) return;
+        const placement = workspaceRef.current?.placements.find((item) => !existingPlacements.has(item.id));
+        setSelection({ nodeIds: placement ? [placement.id] : [], edgeIds: [], drawingIds: [] });
+        if (placement) setNodes((previous) => previous.map((node) => ({ ...node, selected: node.id === placement.id })));
+      });
+  }
   function moveNodes(moved: CanvasNode[]): void {
     const origin = originRef.current;
     const positions = moved.filter((node) => node.draggable).map((node) => ({ id: node.id, position: { x: node.position.x + origin.x, y: node.position.y + origin.y } }));
@@ -300,7 +390,9 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       expectedRevision: latest.placements.find((placement) => placement.id === item.id)?.revision ?? 0 })) }));
   }
   const selectedPlacement = selection.nodeIds.length === 1 ? workspace?.placements.find((item) => item.id === selection.nodeIds[0]) : undefined;
-  const selectedEdge = selection.edgeIds.length === 1 && selection.nodeIds.length === 0 ? workspace?.visualEdges.find((item) => item.id === selection.edgeIds[0]) : undefined;
+  const selectedEdge = selection.edgeIds.length === 1 && selection.nodeIds.length === 0 && selection.drawingIds.length === 0 ? workspace?.visualEdges.find((item) => item.id === selection.edgeIds[0]) : undefined;
+  const selectedDrawing = selection.drawingIds.length === 1 && selection.nodeIds.length === 0 && selection.edgeIds.length === 0
+    ? workspace?.drawings.find((item) => item.id === selection.drawingIds[0]) : undefined;
   const visual = toVisualViewport(viewport, origin);
   const topLeft = screenToWorld({ x: 0, y: 0 }, viewport);
   const referenceScreen = worldToScreen(reference, viewport);
@@ -308,9 +400,10 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
   return <>
     <div className="canvas-tools" role="toolbar" aria-label="Herramienta del lienzo">
       <button data-canvas-tool="select" aria-pressed={tool === 'select'} onClick={() => setTool('select')}>Seleccionar (V)</button>
+      <button data-canvas-tool="draw" aria-pressed={tool === 'draw'} disabled={!workspace?.canWrite} onClick={() => { setSelection({ nodeIds: [], edgeIds: [], drawingIds: [] }); setTool('draw'); }}>Dibujar a mano (D)</button>
       <button data-canvas-tool="connect" aria-pressed={tool === 'connect'} onClick={() => setTool('connect')}>Dibujar conexión (C)</button>
       <button data-canvas-tool="text" aria-pressed={tool === 'text'} onClick={() => setTool('text')}>Editar etiqueta (T)</button>
-      <span data-canvas-selection role="status">{selection.nodeIds.length} nodos y {selection.edgeIds.length} líneas seleccionados</span>
+      <span data-canvas-selection role="status">{selection.nodeIds.length} nodos, {selection.edgeIds.length} líneas y {selection.drawingIds.length} trazos seleccionados</span>
     </div>
     <div className="canvas-toolbar" aria-label="Navegación del lienzo">
       <button className="secondary" data-canvas-zoom-out disabled={!workspace || viewport.zoom <= MIN_ZOOM} onClick={() => zoom(1 / 1.2)} aria-label="Alejar">−</button>
@@ -331,34 +424,67 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
       {selectedPlacement && <button className="quiet" data-canvas-lock disabled={!workspace?.canWrite} aria-pressed={selectedPlacement.style['a3.ui.locked'] === true}
         onClick={() => void persistPlacement(selectedPlacement.id, { style: { 'a3.ui.locked': selectedPlacement.style['a3.ui.locked'] !== true } })}>
         {selectedPlacement.style['a3.ui.locked'] === true ? 'Desbloquear nodo' : 'Bloquear nodo'}</button>}
+      {selection.drawingIds.length > 0 && <><span>{selection.drawingIds.length} trazo(s)</span>
+        <button className="quiet" data-canvas-convert-drawing disabled={!workspace?.canConvertDrawings} onClick={convertDrawingsToNode}>Convertir selección a nodo Dibujo</button>
+        <button className="quiet" data-canvas-delete-drawings disabled={!workspace?.canDeleteDrawings} onClick={() => { for (const id of selection.drawingIds) void deleteDrawing(id); }}>Borrar trazos seleccionados</button>
+        {!workspace?.canDeleteDrawings && <button className="quiet" data-canvas-request-drawing-delete onClick={() => void mutateCanvas(() => ({ action: 'approve-drawing-delete', sessionId, workspaceId }))}>Solicitar permiso para borrar</button>}
+      </>}
     </div>
-    <p className="canvas-help">Seleccionar: clic, Shift/Ctrl+clic o rectángulo · Desplazar: botón central, Espacio+arrastrar o rueda · Flechas: mover selección; sin selección, desplazar vista · Tab/Enter: navegar y seleccionar · Supr: quitar líneas · Esc: cancelar. Cuadrícula: 20 · Snap: apagado.</p>
+    {selectedDrawing && <div className="canvas-drawing-properties" aria-label="Parámetros del trazo" key={`${selectedDrawing.id}:${selectedDrawing.revision}`}>
+      <label>Grosor <input data-drawing-size type="number" min="0.1" max="512" step="0.5" defaultValue={selectedDrawing.parameters.size} disabled={!workspace?.canWrite}
+        onBlur={(event) => { const size = Number(event.currentTarget.value); if (Number.isFinite(size) && size > 0 && size <= 512 && size !== selectedDrawing.parameters.size) updateDrawing(selectedDrawing.id, { parameters: { size } }); }} /></label>
+      <label>Variación <input type="number" min="-1" max="1" step="0.1" defaultValue={selectedDrawing.parameters.thinning} disabled={!workspace?.canWrite}
+        onBlur={(event) => { const thinning = Number(event.currentTarget.value); if (Number.isFinite(thinning) && thinning >= -1 && thinning <= 1 && thinning !== selectedDrawing.parameters.thinning) updateDrawing(selectedDrawing.id, { parameters: { thinning } }); }} /></label>
+      <label>Suavizado <input type="number" min="0" max="1" step="0.1" defaultValue={selectedDrawing.parameters.smoothing} disabled={!workspace?.canWrite}
+        onBlur={(event) => { const smoothing = Number(event.currentTarget.value); if (Number.isFinite(smoothing) && smoothing >= 0 && smoothing <= 1 && smoothing !== selectedDrawing.parameters.smoothing) updateDrawing(selectedDrawing.id, { parameters: { smoothing } }); }} /></label>
+      <label>Flujo <input type="number" min="0" max="1" step="0.1" defaultValue={selectedDrawing.parameters.streamline} disabled={!workspace?.canWrite}
+        onBlur={(event) => { const streamline = Number(event.currentTarget.value); if (Number.isFinite(streamline) && streamline >= 0 && streamline <= 1 && streamline !== selectedDrawing.parameters.streamline) updateDrawing(selectedDrawing.id, { parameters: { streamline } }); }} /></label>
+      <label>Color <input data-drawing-color type="color" value={typeof selectedDrawing.style['a3.ui.stroke.color'] === 'string' ? String(selectedDrawing.style['a3.ui.stroke.color']) : '#c3ed82'} disabled={!workspace?.canWrite}
+        onChange={(event) => updateDrawing(selectedDrawing.id, { style: { 'a3.ui.stroke.color': event.target.value } })} /></label>
+      <label>Apariencia <select data-drawing-rendering value={selectedDrawing.style['a3.ui.stroke.rendering'] === 'rough' ? 'rough' : 'clean'} disabled={!workspace?.canWrite}
+        onChange={(event) => updateDrawing(selectedDrawing.id, { style: { 'a3.ui.stroke.rendering': event.target.value } })}>
+        <option value="clean">Limpia</option><option value="rough">Boceto · Rough.js</option>
+      </select></label>
+      {selectedDrawing.style['a3.ui.stroke.rendering'] === 'rough' && <label>Intensidad de boceto <input data-drawing-roughness type="number" min="0.1" max="4" step="0.1"
+        defaultValue={Number(selectedDrawing.style['a3.ui.stroke.roughness'] ?? 1.25)} disabled={!workspace?.canWrite}
+        onBlur={(event) => { const roughness = Number(event.currentTarget.value); if (Number.isFinite(roughness) && roughness >= 0.1 && roughness <= 4 && roughness !== Number(selectedDrawing.style['a3.ui.stroke.roughness'] ?? 1.25)) updateDrawing(selectedDrawing.id, { style: { 'a3.ui.stroke.roughness': roughness } }); }} /></label>}
+      <label><input type="checkbox" checked={selectedDrawing.parameters.simulatePressure} disabled={!workspace?.canWrite}
+        onChange={(event) => updateDrawing(selectedDrawing.id, { parameters: { simulatePressure: event.target.checked } })} /> Simular presión</label>
+    </div>}
+    <p className="canvas-help">Seleccionar: clic, Shift/Ctrl+clic o rectángulo · Dibujar: clic y arrastrar (D) · Desplazar: botón central, Espacio+arrastrar o rueda · Flechas: mover selección; sin selección, desplazar vista · Tab/Enter: navegar y seleccionar · Supr: borrar trazos o líneas con permiso · Esc: cancelar. Cuadrícula: 20 · Snap: apagado.</p>
     {tool === 'text' && !selectedEdge && <p className="canvas-help">Selecciona una línea visual para editar su etiqueta. Las entidades conservan su contenido compartido.</p>}
     {error && <div className="error" role="alert" data-canvas-error>{error}{workspace?.canWrite && <div className="input-row">
       {errorKind === 'viewport' && <><button className="quiet" onClick={() => { failed.current = false; setError(null); setErrorKind(null); flush(); }}>Reintentar guardar vista</button>
         <button className="quiet" onClick={() => void discard()}>Descartar cambio de vista</button></>}
-      {errorKind === 'placement' && <button className="quiet" onClick={() => { void window.a3?.canvas({ action: 'load', sessionId, workspaceId }).then((result) => {
+      {(errorKind === 'placement' || errorKind === 'drawing') && <button className="quiet" onClick={() => { void window.a3?.canvas({ action: 'load', sessionId, workspaceId }).then((result) => {
         if (result.ok) { installWorkspace(result.value, undefined, true); setError(null); setErrorKind(null); setStatus('Vista recargada'); }
       }); }}>Recargar workspace</button>}
     </div>}</div>}
     <div ref={hostRef} className="canvas-host" tabIndex={0} role="region" aria-label="Lienzo del workspace" data-canvas-ready={!!workspace} data-canvas-mode={tool}
-      data-viewport-x={viewport.x} data-viewport-y={viewport.y} data-viewport-zoom={viewport.zoom} onKeyDownCapture={(event) => {
+      data-viewport-x={viewport.x} data-viewport-y={viewport.y} data-viewport-zoom={viewport.zoom}
+      onPointerDownCapture={beginStroke} onPointerMove={continueStroke} onPointerUpCapture={finishStroke} onPointerCancelCapture={cancelStroke}
+      onKeyDownCapture={(event) => {
         if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"], summary')) return;
         if (event.key === 'Escape') {
           event.preventDefault(); event.stopPropagation(); setTool('select');
           setNodes((previous) => previous.map((node) => node.selected ? { ...node, selected: false } : node));
-          setEdges((previous) => previous.map((edge) => edge.selected ? { ...edge, selected: false } : edge)); return;
+          setEdges((previous) => previous.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
+          setSelection({ nodeIds: [], edgeIds: [], drawingIds: [] }); activeStroke.current = null; setStrokePreview(null); return;
         }
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && tool === 'select') {
           event.preventDefault(); event.stopPropagation(); setNodes((previous) => previous.map((node) => ({ ...node, selected: true })));
-          setEdges((previous) => previous.map((edge) => ({ ...edge, selected: true }))); return;
+          setEdges((previous) => previous.map((edge) => ({ ...edge, selected: true })));
+          setSelection({ nodeIds: nodes.map((node) => node.id), edgeIds: edges.map((edge) => edge.id), drawingIds: workspace?.drawings.map((drawing) => drawing.id) ?? [] }); return;
         }
-        if (!event.ctrlKey && !event.metaKey && ['v', 'c', 't'].includes(event.key.toLowerCase())) {
-          event.preventDefault(); setTool(({ v: 'select', c: 'connect', t: 'text' } as const)[event.key.toLowerCase() as 'v' | 'c' | 't']); return;
+        if (!event.ctrlKey && !event.metaKey && ['v', 'c', 't', 'd'].includes(event.key.toLowerCase())) {
+          event.preventDefault(); setTool(({ v: 'select', c: 'connect', t: 'text', d: 'draw' } as const)[event.key.toLowerCase() as 'v' | 'c' | 't' | 'd']); return;
         }
         if (event.key === 'Delete') {
           event.preventDefault(); event.stopPropagation();
-          if (workspace?.canDeleteEdges) void (async () => { for (const edge of edges.filter((edge) => edge.selected)) await deleteVisualEdge(edge.id); })();
+          void (async () => {
+            if (workspace?.canDeleteDrawings) for (const id of selection.drawingIds) await deleteDrawing(id);
+            if (workspace?.canDeleteEdges) for (const edge of edges.filter((edge) => edge.selected)) await deleteVisualEdge(edge.id);
+          })();
           return;
         }
         const delta: Record<string, { x: number; y: number }> = { ArrowLeft: { x: 40, y: 0 }, ArrowRight: { x: -40, y: 0 }, ArrowUp: { x: 0, y: 40 }, ArrowDown: { x: 0, y: -40 } };
@@ -398,6 +524,7 @@ function CanvasWorkspace({ sessionId, workspaceId }: { sessionId: string; worksp
             <rect x="0" y="0" width="170" height="72" rx="8" /><rect x="380" y="130" width="170" height="72" rx="8" />
             <text x="14" y="32">Referencia A</text><text x="394" y="162">Referencia B</text>
           </svg>}
+          <CanvasDrawingLayer drawings={workspace.drawings} origin={origin} tool={tool} selectedIds={selection.drawingIds} preview={strokePreview} onSelect={selectDrawing} />
         </ViewportPortal>
       </ReactFlow>}
     </div>
