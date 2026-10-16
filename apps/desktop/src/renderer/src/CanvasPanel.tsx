@@ -12,6 +12,9 @@ import { matchesShortcut, useShortcuts } from './shortcuts';
 import { useTextPrompt } from './TextInputDialog';
 import { ConceptualInspector } from './ConceptualInspector';
 import { C4Inspector } from './C4Inspector';
+import { UmlInspector } from './UmlInspector';
+import { UmlElementsContext, UmlNodeBody } from './UmlNodeBody';
+import type { UmlOperation } from '@a3/domain/uml';
 import { C4_CATALOG, c4Data, type C4Operation } from '@a3/domain/c4';
 const CodeOpenContext = createContext<((target: CodeEditorTarget) => void) | undefined>(undefined);
 const ContentVersionContext = createContext(0);
@@ -96,6 +99,7 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
     <header className="canvas-entity-header"><strong>{data.entity.title || data.entity.type}{data.placement.style['a3.ui.locked'] === true ? ' · Bloqueado' : ''}</strong><small>{data.entity.type}@{data.entity.typeVersion}</small></header>
     {!data.entity.typeAvailable && <p className="canvas-fallback-label">Tipo o paquete no instalado · propiedades conservadas</p>}
     <div className="canvas-entity-body nodrag nopan nowheel">
+      <UmlNodeBody entity={data.entity} />
       {data.entity.ports.length > 0 && <div className="canvas-ports" aria-label="Puertos">{data.entity.ports.map((port) => <span key={port.id} title={port.id}>{port.label || port.id}</span>)}</div>}
       {properties && <details><summary>Propiedades</summary><pre>{properties}</pre></details>}
       {data.entity.c4Category && <section className={`c4-node c4-node-${data.entity.c4Category}`} data-c4-category={data.entity.c4Category} data-c4-parent={c4Data(data.entity)?.parentId}>
@@ -912,6 +916,25 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     }
     return actions;
   }
+  function changeUml(operation: UmlOperation): void {
+    const before = new Set(workspaceRef.current?.placements.map((p) => p.id) ?? []);
+    if (operation.action === 'create-element' || operation.action === 'show-element') {
+      const rect = hostRef.current?.getBoundingClientRect(); if (!rect) return;
+      const center = screenToWorld({ x: rect.width / 2, y: rect.height / 2 }, current.current), occupied = workspaceRef.current?.placements ?? [];
+      let position = center;
+      for (let slot = 0; slot <= occupied.length + 16; slot++) {
+        position = { x: center.x + slot % 3 * 380, y: center.y + Math.floor(slot / 3) * 320 };
+        if (!occupied.some((p) => position.x < p.position.x + p.size.width && position.x + 340 > p.position.x && position.y < p.position.y + p.size.height && position.y + 280 > p.position.y)) break;
+      }
+      operation = { ...operation, position };
+    }
+    const captured = operation;
+    void mutateCanvas((state) => ({ action: 'uml', sessionId, workspaceId, expectedWorkspaceRevision: state.revision, operation: captured }), 'Cambio UML guardado').then((ok) => {
+      if (!ok || !['create-element', 'show-element'].includes(captured.action)) return;
+      const added = workspaceRef.current?.placements.find((p) => !before.has(p.id));
+      if (added) { setSelection({ nodeIds: [added.id], groupIds: [], edgeIds: [], drawingIds: [] }); setNodes((nodes) => nodes.map((n) => ({ ...n, selected: n.id === added.id }))); }
+    });
+  }
   function changeC4(operation: C4Operation): void {
     const before = new Set(workspaceRef.current?.placements.map((p) => p.id) ?? []);
     if (operation.action === 'create-element' || operation.action === 'show-element') {
@@ -1171,7 +1194,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
         else if (event.key === '+' || event.key === '=') { event.preventDefault(); zoom(1.2); }
         else if (event.key === '-') { event.preventDefault(); zoom(1 / 1.2); }
       }}>
-      {workspace && <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} viewport={visual} defaultViewport={visual} minZoom={Math.min(MIN_ZOOM, viewport.zoom)} maxZoom={MAX_ZOOM}
+      {workspace && <UmlElementsContext.Provider value={workspace.uml.elements}><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} viewport={visual} defaultViewport={visual} minZoom={Math.min(MIN_ZOOM, viewport.zoom)} maxZoom={MAX_ZOOM}
         edgeTypes={edgeTypes} panOnDrag={[1]} panActivationKeyCode="Space" zoomOnScroll={false} zoomOnPinch={false} panOnScroll={false} zoomOnDoubleClick={false} zoomActivationKeyCode={null}
         selectionOnDrag={tool === 'select'} selectionKeyCode="Shift" multiSelectionKeyCode={['Shift', 'Control', 'Meta']} selectionMode={SelectionMode.Partial}
         snapToGrid={false} snapGrid={[GRID_SIZE, GRID_SIZE]} nodesDraggable={workspace.canWrite && tool === 'select'} nodesConnectable={workspace.canWrite && tool === 'connect'}
@@ -1202,7 +1225,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
           {canvasGroupLayout && <CanvasCollapsedEdges workspace={workspace} origin={origin} endpointMap={canvasGroupLayout.edgeEndpoints} layouts={canvasGroupLayout.layouts} />}
           <CanvasDrawingLayer drawings={visibleDrawings} origin={origin} tool={tool} selectedIds={selection.drawingIds} preview={strokePreview} onSelect={selectDrawing} />
         </ViewportPortal>
-      </ReactFlow>}
+      </ReactFlow></UmlElementsContext.Provider>}
     </div>
     <div className="canvas-status"><span data-canvas-status role="status">{status}</span><span data-canvas-node-count>{visiblePlacementCount} representaciones · Origen visible: {topLeft.x.toLocaleString('es', { maximumFractionDigits: 2 })}, {topLeft.y.toLocaleString('es', { maximumFractionDigits: 2 })}</span></div>
     {workspace && <CanvasEdgeEditor workspace={workspace} edge={selectedEdge} tool={tool} onCreate={createVisualEdge} onUpdate={updateVisualEdge} onDelete={(id) => void deleteVisualEdge(id)}
@@ -1211,6 +1234,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
       onCreateNode={addConceptualNode} onUpdateNode={updateConceptualNode} onCreateRelation={createConceptualRelation}
       onUpdateRelation={updateConceptualRelation} onDeleteRelation={deleteConceptualRelation} />}
     {workspace && <C4Inspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onOperation={changeC4} onOpenWorkspace={onOpenWorkspace} />}
+    {workspace && <UmlInspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onOperation={changeUml} />}
     {showReference && <p className="canvas-help">La referencia es un fixture aislado y no se añade al proyecto.</p>}
     {menu && <ContextMenu menu={{ ...menu, actions: canvasActions() }} permissions={permissions} onClose={() => setMenu(null)} />}{promptDialog}
   </>;

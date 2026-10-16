@@ -2,6 +2,8 @@ import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } 
 import { constants } from 'node:fs';
 import { c4Category, isC4Diagram, validC4Operation, type C4Category, type C4Change, type C4Operation } from '@a3/domain';
 import { projectC4Canvas, type CanvasC4State } from './c4-canvas.js';
+import { umlData, umlKind, validUmlOperation, type UmlChange, type UmlOperation } from '@a3/domain';
+import { projectUmlCanvas, type CanvasUmlState } from './uml-canvas.js';
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
@@ -96,6 +98,7 @@ export interface MarkdownDocument {
 export interface MarkdownAsset { reference: string; mediaType: string; bytes: Uint8Array; }
 export type MenuPermissions = Record<'read' | 'document' | 'diagram' | 'delete', { allowed: boolean; reason: string }>;
 export interface LocalCanvasWorkspace {
+  uml: CanvasUmlState;
   c4: CanvasC4State;
   sessionId: string; workspaceId: string; name: string; revision: number;
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
@@ -684,7 +687,7 @@ export class LocalProjectManager {
         title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
           ...(resources.get(value.contentResourceId.toLowerCase()) ? { contentResource: resourceDescriptor(resources.get(value.contentResourceId.toLowerCase())!) } : {}) } : {}),
         ...(c4Category(value, registry) ? { c4Category: c4Category(value, registry)! } : {}),
-        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined }));
+        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined }));
     const entityChoices = choices.filter(({ value }) => !isC4Diagram(value)).map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
     const resourceChoices = resourceRecords.map((record) => resourceDescriptor(record));
     const placementIds = new Map(placements.map((placement) => [placement.id.toLowerCase(), placement.id]));
@@ -727,6 +730,7 @@ export class LocalProjectManager {
       projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: ['delete'], stage: 'prepare' });
     return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, resourceChoices, placements, visualEdges, conceptualRelations, drawings, groups,
       c4: projectC4Canvas(snapshot, registry, workspaceId),
+      uml: projectUmlCanvas(snapshot, workspaceId),
       history: { canUndo: !!undoEvent && !history?.blocked && !undoEvent.changes.some((change) => change.ref.kind === 'workspace' && !change.before), canRedo: !!redoEvent && !history?.blocked,
         undoRequiresDelete: !!undoEvent && historyRequiresDelete(undoEvent, 'undo'), redoRequiresDelete: !!redoEvent && historyRequiresDelete(redoEvent, 'redo'),
         deleteAvailable: historyDelete.allowed },
@@ -1486,6 +1490,23 @@ export class LocalProjectManager {
       const record: DomainRecord = { kind: 'visual-edge', workspaceId, value: { schemaVersion: '1.0.0', id: randomUUID(), revision: 1,
         sourcePlacementId, targetPlacementId, label: '', waypoints: [], style: {}, extensions: {} } };
       await this.#commitCanvasCommand(active, { command: 'a3.core.create-document', payload: { record } }, entityIds, { kind: 'visual-edge', workspaceId, id: record.value.id });
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  changeCanvasUml(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, operation: UmlOperation): Promise<LocalCanvasWorkspace> {
+    const captured = structuredClone(operation);
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      demand(validUmlOperation(captured), 'UML_OPERATION_INVALID', 'La operación UML no cumple el contrato.');
+      demand(Number.isSafeInteger(expectedWorkspaceRevision) && workspace.revision === expectedWorkspaceRevision, 'REVISION_CONFLICT', 'El workspace cambió; recarga antes de editar UML.');
+      const ids: UmlChange['ids'] = { entityId: randomUUID(), placementId: randomUUID(), relationId: randomUUID(), relationViewId: randomUUID() };
+      const absent: DocumentRef[] = [];
+      if (captured.action === 'create-element') absent.push({ kind: 'entity', id: ids.entityId });
+      if (['create-element', 'show-element'].includes(captured.action)) absent.push({ kind: 'placement', id: ids.placementId, workspaceId });
+      if (captured.action === 'create-relationship') absent.push({ kind: 'relation', id: ids.relationId });
+      if (['create-relationship', 'show-relationship'].includes(captured.action)) absent.push({ kind: 'relation-view', id: ids.relationViewId, workspaceId });
+      const scope = active.lease.service.state.project.snapshot.records.flatMap((r) => r.kind === 'entity' ? [r.value.id] : []);
+      await this.#commitCanvasCommand(active, { command: 'a3.uml.change', payload: { workspaceId, operation: captured, ids } }, [...scope, ids.entityId], absent);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }

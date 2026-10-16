@@ -7,6 +7,7 @@
   "type": "module",
   "files": ["dist"],
   "exports": {
+    "./uml": { "types": "./dist/src/uml.d.ts", "import": "./dist/src/uml.js" },
     "./c4": { "types": "./dist/src/c4.d.ts", "import": "./dist/src/c4.js" },
     "./shortcuts": { "types": "./dist/src/shortcuts.d.ts", "import": "./dist/src/shortcuts.js" },
     "./conceptual-diagrams": { "types": "./dist/src/conceptual-diagrams.d.ts", "import": "./dist/src/conceptual-diagrams.js" },

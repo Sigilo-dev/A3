@@ -1,0 +1,24 @@
+{
+  "elements": [
+    { "key": "domain", "kind": "package", "title": "Pedidos", "data": { "stereotypes": ["domain"] } },
+    { "key": "base", "kind": "class", "title": "Documento", "parent": "domain", "data": { "abstract": true, "visibility": "public" } },
+    { "key": "contract", "kind": "interface", "title": "Imprimible", "parent": "domain", "data": { "methods": [{ "id": "70000000-0000-4000-8000-000000000001", "name": "imprimir", "visibility": "public", "static": false, "abstract": true, "returnType": { "name": "void" }, "parameters": [] }] } },
+    { "key": "status", "kind": "enum", "title": "Estado", "parent": "domain", "data": { "literals": [{ "id": "70000000-0000-4000-8000-000000000002", "name": "PENDIENTE", "value": "0" }, { "id": "70000000-0000-4000-8000-000000000003", "name": "ENVIADO", "value": "1" }] } },
+    { "key": "order", "kind": "class", "title": "Pedido", "parent": "domain", "data": { "description": "Un **pedido** local.", "stereotypes": ["entity"], "constraints": ["total >= 0"], "attributes": [
+      { "id": "70000000-0000-4000-8000-000000000004", "name": "estado", "visibility": "private", "static": false, "readOnly": false, "defaultValue": "PENDIENTE", "type": { "name": "Estado", "ref": "status" } },
+      { "id": "70000000-0000-4000-8000-000000000005", "name": "contador", "visibility": "protected", "static": true, "readOnly": true, "defaultValue": "0", "type": { "name": "integer" } }
+    ], "methods": [{ "id": "70000000-0000-4000-8000-000000000006", "name": "cambiarEstado", "visibility": "package", "static": false, "abstract": false, "returnType": { "name": "bool" }, "parameters": [
+      { "id": "70000000-0000-4000-8000-000000000007", "name": "nuevo", "direction": "in", "defaultValue": "", "type": { "name": "Estado", "ref": "status" } },
+      { "id": "70000000-0000-4000-8000-000000000008", "name": "resultado", "direction": "out", "defaultValue": "", "type": { "name": "string" } }
+    ] }] } },
+    { "key": "line", "kind": "class", "title": "LineaPedido", "parent": "domain", "data": {} }
+  ],
+  "relationships": [
+    { "key": "state", "kind": "association", "source": "order", "target": "status", "label": "tiene", "sourceRole": "pedidos", "sourceUpper": "*", "targetRole": "estado", "targetUpper": 1 },
+    { "key": "depends", "kind": "dependency", "source": "domain", "target": "contract", "label": "usa" },
+    { "key": "extends", "kind": "generalization", "source": "order", "target": "base", "label": "extiende" },
+    { "key": "implements", "kind": "realization", "source": "order", "target": "contract", "label": "implementa" },
+    { "key": "aggregate", "kind": "aggregation", "source": "base", "target": "line", "label": "agrupa", "targetRole": "lineas", "targetUpper": "*" },
+    { "key": "owns", "kind": "composition", "source": "order", "target": "line", "label": "contiene", "sourceRole": "pedido", "sourceUpper": 1, "targetRole": "lineas", "targetUpper": "*" }
+  ]
+}

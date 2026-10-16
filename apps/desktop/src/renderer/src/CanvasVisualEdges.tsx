@@ -1,13 +1,15 @@
 import { memo } from 'react';
 import { BaseEdge, MarkerType, getBezierPath, getSmoothStepPath, getStraightPath, type Edge, type EdgeProps } from '@xyflow/react';
-import type { CanvasC4RelationView, CanvasConceptualRelationView, CanvasVisualEdgePatch, CanvasVisualEdgeView, LocalCanvasWorkspace } from '../../shared/desktop-api';
+import type { CanvasC4RelationView, CanvasConceptualRelationView, CanvasUmlRelationView, CanvasVisualEdgePatch, CanvasVisualEdgeView, LocalCanvasWorkspace } from '../../shared/desktop-api';
+import { umlMultiplicityText } from '@a3/domain/uml';
 import type { C4Step } from '@a3/domain/c4';
 
 export type CanvasTool = 'select' | 'connect' | 'text' | 'draw';
 type EdgeData = { view: CanvasVisualEdgeView; origin: { x: number; y: number } };
 type SemanticEdgeData = { view: CanvasConceptualRelationView; origin: { x: number; y: number } };
 type C4EdgeData = { view: CanvasC4RelationView; origin: { x: number; y: number }; step?: C4Step };
-export type CanvasEdge = Edge<EdgeData | SemanticEdgeData | C4EdgeData, 'a3Visual' | 'a3Semantic' | 'a3C4'>;
+type UmlEdgeData = { view: CanvasUmlRelationView; origin: { x: number; y: number } };
+export type CanvasEdge = Edge<EdgeData | SemanticEdgeData | C4EdgeData | UmlEdgeData, 'a3Visual' | 'a3Semantic' | 'a3C4' | 'a3Uml'>;
 export function edgeAppearance(style: CanvasVisualEdgeView['style']) {
   return {
     color: typeof style['a3.ui.line.color'] === 'string' && /^#[\da-f]{6}$/i.test(style['a3.ui.line.color']) ? style['a3.ui.line.color'] : '#9bc279',
@@ -55,7 +57,13 @@ export function toFlowEdges(workspace: LocalCanvasWorkspace, origin: { x: number
     targetHandle: endpointMap.has(view.targetPlacementId.toLowerCase()) ? 'group-visual-target' : 'visual-target',
     type: 'a3C4' as const, data: { view, origin, ...(step ? { step } : {}) }, reconnectable: false, selectable: true, focusable: true,
     ariaLabel: `Relación C4: ${step ? `${step.order}. ${step.description || view.description}` : view.description}. ${view.protocol}` }));
-  return [...visualEdges, ...semanticEdges, ...c4Edges];
+  const umlEdges = workspace.uml.relationViews.map((view) => ({ id: view.id,
+    source: endpointMap.get(view.sourcePlacementId.toLowerCase()) ?? view.sourcePlacementId, target: endpointMap.get(view.targetPlacementId.toLowerCase()) ?? view.targetPlacementId,
+    sourceHandle: endpointMap.has(view.sourcePlacementId.toLowerCase()) ? 'group-visual-source' : 'visual-source',
+    targetHandle: endpointMap.has(view.targetPlacementId.toLowerCase()) ? 'group-visual-target' : 'visual-target',
+    type: 'a3Uml' as const, data: { view, origin }, reconnectable: false, selectable: true, focusable: true,
+    ariaLabel: `Relación UML ${view.kind}: ${view.data.label}. Origen ${view.data.source.role} ${umlMultiplicityText(view.data.source.multiplicity)}; destino ${view.data.target.role} ${umlMultiplicityText(view.data.target.multiplicity)}.` }));
+  return [...visualEdges, ...semanticEdges, ...c4Edges, ...umlEdges];
 }
 const VisualEdgeRenderer = memo(function VisualEdgeRenderer(props: EdgeProps<CanvasEdge>) {
   if (!props.data) return null;
@@ -102,7 +110,28 @@ const C4EdgeRenderer = memo(function C4EdgeRenderer(props: EdgeProps<CanvasEdge>
       style={{ stroke: '#a9ceff', strokeWidth: 2 }} labelStyle={{ fill: '#edf5ff' }} labelBgStyle={{ fill: '#172536' }} labelBgPadding={[6, 4]} />
   </g>;
 });
-export const edgeTypes = { a3Visual: VisualEdgeRenderer, a3Semantic: SemanticEdgeRenderer, a3C4: C4EdgeRenderer };
+const UmlEdgeRenderer = memo(function UmlEdgeRenderer(props: EdgeProps<CanvasEdge>) {
+  if (!props.data || !('data' in props.data.view)) return null;
+  const view = props.data.view, { kind, data } = view;
+  const [path, labelX, labelY] = getBezierPath(props), id = `a3-uml-${props.id}`, color = '#e2d3ff';
+  const triangle = kind === 'generalization' || kind === 'realization', diamond = kind === 'aggregation' || kind === 'composition';
+  const arrow = (markerId: string) => <marker id={markerId} markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto-start-reverse" markerUnits="userSpaceOnUse"><path d="M1,1 L11,6 L1,11" fill="none" stroke={color} strokeWidth="1.5" /></marker>;
+  const label = [data.stereotypes.map((s) => `«${s}»`).join(' '), data.label || kind, ...data.constraints.map((c) => `{${c}}`)].filter(Boolean).join(' · ');
+  return <g data-uml-relation-id={view.relationId} data-uml-relation-kind={kind}>
+    <defs>{arrow(`${id}-arrow`)}
+      <marker id={`${id}-triangle`} markerWidth="18" markerHeight="16" refX="17" refY="8" orient="auto" markerUnits="userSpaceOnUse"><path d="M1,1 L17,8 L1,15 z" fill="#171f24" stroke={color} strokeWidth="1.5" /></marker>
+      <marker id={`${id}-diamond`} markerWidth="22" markerHeight="14" refX="1" refY="7" orient="auto" markerUnits="userSpaceOnUse"><path d="M1,7 L11,1 L21,7 L11,13 z" fill={kind === 'composition' ? color : '#171f24'} stroke={color} strokeWidth="1.5" /></marker>
+    </defs>
+    <BaseEdge id={props.id} path={path} label={label} labelX={labelX} labelY={labelY} interactionWidth={22}
+      markerStart={diamond ? `url(#${id}-diamond)` : kind === 'association' && data.source.navigable ? `url(#${id}-arrow)` : undefined}
+      markerEnd={triangle ? `url(#${id}-triangle)` : kind === 'dependency' || data.target.navigable ? `url(#${id}-arrow)` : undefined}
+      style={{ stroke: color, strokeWidth: 2, strokeDasharray: ['dependency', 'realization'].includes(kind) ? '8 5' : undefined }}
+      labelStyle={{ fill: '#f0e6ff' }} labelBgStyle={{ fill: '#292235' }} labelBgPadding={[6, 4]} />
+    <text x={props.sourceX + 26} y={props.sourceY - 12} className="uml-end-label">{data.source.role} {umlMultiplicityText(data.source.multiplicity)}</text>
+    <text x={props.targetX - 26} y={props.targetY - 12} textAnchor="end" className="uml-end-label">{data.target.role} {umlMultiplicityText(data.target.multiplicity)}</text>
+  </g>;
+});
+export const edgeTypes = { a3Visual: VisualEdgeRenderer, a3Semantic: SemanticEdgeRenderer, a3C4: C4EdgeRenderer, a3Uml: UmlEdgeRenderer };
 
 export function CanvasEdgeEditor({ workspace, edge, tool, onCreate, onUpdate, onDelete, onRequestDeletePermission }: {
   workspace: LocalCanvasWorkspace; edge?: CanvasVisualEdgeView; tool: CanvasTool;

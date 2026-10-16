@@ -6,6 +6,8 @@ Tecnologías previstas: Electron, React, TypeScript, Vite, React Flow, Milkdown 
 
 E2-F2 conecta los enlaces y backlinks regenerables con focus, las referencias transaccionales al renombrar/mover, los menús de las operaciones existentes y los atajos editables. Consulta [uso, pruebas y límites](docs/e2/contextual-navigation.md).
 
+E3-B1 incorpora el modelo nativo UML de clases, interfaces, enumeraciones, paquetes y seis relaciones semánticas, con inspector, compartimentos y persistencia compartida entre vistas. Consulta [subconjunto, pruebas y límites](docs/e3/e3-b1-uml.md); la conversión/exportación de otros formatos sigue pendiente.
+
 La especificación y los prompts de planificación se mantienen localmente y no se publican. E0-A aporta contratos, JSON Schemas y fixtures comprobables, sin UI ni servicios de producción.
 
 Contratos: [dominio e invariantes](docs/e0/contracts/domain.md), [comandos y migración](docs/e0/contracts/commands-and-migrations.md), [extensiones](docs/e0/contracts/extensions.md). El trabajo realizado y los errores corregidos están en [AUDIR.md](AUDIR.md).

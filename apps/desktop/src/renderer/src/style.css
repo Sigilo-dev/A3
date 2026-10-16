@@ -354,3 +354,11 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .c4-node p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 .c4-node-boundary { border-style: dashed; background: transparent; }
 .c4-node-deployment-node, .c4-node-instance { border-color: #bd9cdb; background: #31233d; }
+.uml-node { font-family: ui-monospace, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.uml-compartment { border-bottom: 1px solid #847496; padding: 7px 0; min-height: 16px; }
+.uml-abstract { font-style: italic; }
+.uml-static { text-decoration: underline; }
+.uml-end-label { fill: #e2d3ff; font-size: 12px; paint-order: stroke; stroke: #171f24; stroke-width: 4px; }
+.uml-inspector fieldset { border: 1px solid #62536e; border-radius: 5px; min-width: 0; }
+.uml-inspector section > form, .uml-inspector details > form { border-left: 2px solid #62536e; padding: 8px; margin: 8px 0; }
+.uml-inspector input[type="checkbox"] { width: auto; }

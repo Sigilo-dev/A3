@@ -2,6 +2,8 @@ import { canonical, copy, diagnostic, freeze, getRecord, isJson, isObject, refKe
 import { findRelationType, validateDefinition, validateRecord, validateRegistry, validateSnapshot } from './validation.js';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition } from './content-nodes.js';
 import { applyC4Change } from './c4-commands.js';
+import { applyUmlChange } from './uml-commands.js';
+import { remapUmlReferences, umlData, umlKind } from './uml.js';
 import { c4Category, c4Data } from './c4.js';
 import { CONCEPTUAL_KIND_KEY, CONCEPTUAL_LABEL_KEY, CONCEPTUAL_RELATION_TYPE, CONCEPTUAL_RELATION_VERSION,
   conceptualNodeDefinition, isConceptualEntity, isConceptualNodeKind, isConceptualRelation, isConceptualRelationKind } from './conceptual-diagrams.js';
@@ -15,6 +17,7 @@ function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnost
 }
 const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity',
   'a3.c4.change',
+  'a3.uml.change',
   'a3.core.create-content-node',
   'a3.conceptual.create-node', 'a3.conceptual.update-node', 'a3.conceptual.create-relation', 'a3.conceptual.update-relation', 'a3.conceptual.delete-relation',
   'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-placement-views', 'a3.core.update-visual-edge', 'a3.core.update-drawing', 'a3.core.convert-drawings-to-node', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-group-collapsed', 'a3.core.set-collection-members',
@@ -497,6 +500,8 @@ function duplicate(draft: Draft, payload: DuplicateSelection): void {
       const c4 = c4Category(value, draft.registry) ? c4Data(value) : undefined;
       if (c4?.parentId) c4.parentId = entityId(c4.parentId);
       if (c4?.instanceOfId) c4.instanceOfId = entityId(c4.instanceOfId);
+      const uml = umlKind(value) ? umlData(value) : undefined;
+      if (uml) remapUmlReferences(uml, entityId);
       if (value.contentResourceId) {
         const resourceId = value.contentResourceId;
         let cloneId = resourceMap.get(resourceId.toLowerCase());
@@ -621,6 +626,7 @@ function applyCanvasHistory(draft: Draft, payload: Payloads['a3.core.apply-canva
 function apply(draft: Draft): void {
   const request = draft.request;
   switch (request.command) {
+    case 'a3.uml.change': applyUmlChange(draft, request.payload, fail); break;
     case 'a3.c4.change': applyC4Change(draft, request.payload, fail); break;
     case 'a3.core.create-project':
       if (draft.snapshot.records.length) fail('project-exists', 'El snapshot ya contiene un proyecto.');
