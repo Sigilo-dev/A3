@@ -11,6 +11,8 @@ import { ContextMenu, menuAt, useMenuPermissions, type MenuState, type ContextAc
 import { matchesShortcut, useShortcuts } from './shortcuts';
 import { useTextPrompt } from './TextInputDialog';
 import { ConceptualInspector } from './ConceptualInspector';
+import { C4Inspector } from './C4Inspector';
+import { C4_CATALOG, c4Data, type C4Operation } from '@a3/domain/c4';
 const CodeOpenContext = createContext<((target: CodeEditorTarget) => void) | undefined>(undefined);
 const ContentVersionContext = createContext(0);
 import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffset, panViewport, renderOrigin, screenToWorld, toVisualViewport, wheelViewport, worldToScreen, zoomAt, type WorldViewport } from '../../shared/world-viewport';
@@ -96,6 +98,12 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
     <div className="canvas-entity-body nodrag nopan nowheel">
       {data.entity.ports.length > 0 && <div className="canvas-ports" aria-label="Puertos">{data.entity.ports.map((port) => <span key={port.id} title={port.id}>{port.label || port.id}</span>)}</div>}
       {properties && <details><summary>Propiedades</summary><pre>{properties}</pre></details>}
+      {data.entity.c4Category && <section className={`c4-node c4-node-${data.entity.c4Category}`} data-c4-category={data.entity.c4Category} data-c4-parent={c4Data(data.entity)?.parentId}>
+        <small>{C4_CATALOG.find((entry) => entry.category === data.entity.c4Category)?.label}{c4Data(data.entity)?.external ? ' · Externo' : ''}</small>
+        <p>{c4Data(data.entity)?.description}</p><code>{c4Data(data.entity)?.technology}</code>
+        {c4Data(data.entity)?.instanceOfId && <p>Instancia de {c4Data(data.entity)?.instanceOfId}</p>}
+        {c4Data(data.entity)?.environment && <p>Entorno: {c4Data(data.entity)?.environment}</p>}
+      </section>}
       {data.entity.contentResourceId && <CanvasContentBody entity={data.entity} preview={preview} mediaUrl={mediaUrl} activatePlayback={() => void activatePlayback()}
         playbackBusy={playbackBusy} playbackError={playbackError} onOpenMarkdown={() => {
           if (data.entity.contentResourceId) data.onOpenMarkdown({ sessionId: data.sessionId, entityId: data.entity.id, resourceId: data.entity.contentResourceId, title: data.entity.title });
@@ -257,7 +265,8 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
   });
   return [...groupNodes, ...placementNodes];
 }
-export function CanvasPanel({ active, onOpenMarkdown, onOpenCode, contentVersion, workspaceId: controlledWorkspaceId, onWorkspaceSelect, initialViewport, onViewportChange }: { active: LocalProjectSession | null | undefined; onOpenMarkdown: (target: MarkdownEditorTarget) => void; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number;
+export function CanvasPanel({ active, onOpenMarkdown, onOpenCode, contentVersion, workspaceId: controlledWorkspaceId, onWorkspaceSelect, initialViewport, onViewportChange, onProjectsChanged }: { active: LocalProjectSession | null | undefined; onOpenMarkdown: (target: MarkdownEditorTarget) => void; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number;
+  onProjectsChanged?: () => void;
   workspaceId?: string; onWorkspaceSelect?: (id: string) => void; initialViewport?: WorldViewport | null; onViewportChange?: (view: WorldViewport) => void;
 }): React.JSX.Element {
   const [selected, setSelected] = useState('');
@@ -267,7 +276,7 @@ export function CanvasPanel({ active, onOpenMarkdown, onOpenCode, contentVersion
     <div className="canvas-heading"><h1>Lienzo</h1><label>Workspace <select aria-label="Workspace del lienzo" value={workspaceId} onChange={(event) => { if (onWorkspaceSelect) onWorkspaceSelect(event.target.value); else setSelected(event.target.value); }}>
       {active.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
     </select></label></div>
-    <CanvasWorkspace key={`${active.sessionId}:${workspaceId}`} sessionId={active.sessionId} workspaceId={workspaceId} onOpenMarkdown={onOpenMarkdown} initialViewport={initialViewport} onViewportChange={onViewportChange} />
+    <CanvasWorkspace key={`${active.sessionId}:${workspaceId}`} sessionId={active.sessionId} workspaceId={workspaceId} onOpenMarkdown={onOpenMarkdown} initialViewport={initialViewport} onViewportChange={onViewportChange} onProjectsChanged={onProjectsChanged} onOpenWorkspace={onWorkspaceSelect ?? setSelected} />
   </section></ContentVersionContext.Provider></CodeOpenContext.Provider>;
 }
 
@@ -279,7 +288,7 @@ function initialContentValue(kind: ContentNodeKind): string {
   return '';
 }
 
-function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewport, onViewportChange }: { sessionId: string; workspaceId: string; onOpenMarkdown: (target: MarkdownEditorTarget) => void; initialViewport?: WorldViewport | null; onViewportChange?: (view: WorldViewport) => void }): React.JSX.Element {
+function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewport, onViewportChange, onProjectsChanged, onOpenWorkspace }: { sessionId: string; workspaceId: string; onOpenMarkdown: (target: MarkdownEditorTarget) => void; initialViewport?: WorldViewport | null; onViewportChange?: (view: WorldViewport) => void; onProjectsChanged?: () => void; onOpenWorkspace?: (id: string) => void }): React.JSX.Element {
   const [menu, setMenu] = useState<MenuState | null>(null), permissions = useMenuPermissions(sessionId), shortcuts = useShortcuts(), [ask, promptDialog] = useTextPrompt();
   const onViewChange = useRef(onViewportChange); onViewChange.current = onViewportChange;
   const [workspace, setWorkspace] = useState<LocalCanvasWorkspace | null>(null);
@@ -903,6 +912,29 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     }
     return actions;
   }
+  function changeC4(operation: C4Operation): void {
+    const before = new Set(workspaceRef.current?.placements.map((p) => p.id) ?? []);
+    if (operation.action === 'create-element' || operation.action === 'show-element') {
+      const rect = hostRef.current?.getBoundingClientRect(); if (!rect) return;
+      const center = screenToWorld({ x: rect.width / 2, y: rect.height / 2 }, current.current), occupied = workspaceRef.current?.placements ?? [];
+      let position = center;
+      for (let slot = 0; slot <= occupied.length + 16; slot++) {
+        position = { x: center.x + slot % 3 * 340, y: center.y + Math.floor(slot / 3) * 240 };
+        if (!occupied.some((p) => position.x < p.position.x + p.size.width && position.x + 300 > p.position.x && position.y < p.position.y + p.size.height && position.y + 210 > p.position.y)) break;
+      }
+      operation = { ...operation, position };
+    }
+    const captured = operation;
+    void mutateCanvas((state) => ({ action: 'c4', sessionId, workspaceId, expectedWorkspaceRevision: state.revision, operation: captured }), 'Cambio C4 guardado')
+      .then((ok) => {
+        if (!ok) return;
+        if (captured.action === 'configure-view' && captured.newWorkspace) onProjectsChanged?.();
+        if (captured.action === 'create-element' || captured.action === 'show-element') {
+          const added = workspaceRef.current?.placements.find((p) => !before.has(p.id));
+          if (added) { setSelection({ nodeIds: [added.id], groupIds: [], edgeIds: [], drawingIds: [] }); setNodes((nodes) => nodes.map((n) => ({ ...n, selected: n.id === added.id }))); }
+        }
+      });
+  }
   function addConceptualNode(kind: ConceptualNodeKind, title: string): void {
     const rect = hostRef.current?.getBoundingClientRect(), latest = workspaceRef.current;
     if (!rect || !latest) return;
@@ -1118,7 +1150,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
           event.preventDefault(); event.stopPropagation();
           void (async () => {
             if (workspace?.canDeleteDrawings) for (const id of selection.drawingIds) await deleteDrawing(id);
-            if (workspace?.canDeleteEdges) for (const edge of edges.filter((edge) => edge.selected)) await deleteVisualEdge(edge.id);
+            if (workspace?.canDeleteEdges) for (const edge of edges.filter((edge) => edge.selected && edge.type === 'a3Visual')) await deleteVisualEdge(edge.id);
           })();
           return;
         }
@@ -1155,7 +1187,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
         onConnect={(connection) => createVisualEdge(connection.source, connection.target)}
         onReconnect={(edge, connection) => { if (edge.type === 'a3Visual') updateVisualEdge(edge.id, { sourcePlacementId: connection.source, targetPlacementId: connection.target }); }}
         ariaLabelConfig={{ 'node.a11yDescription.default': 'Pulsa Enter para seleccionar. Usa Tab para navegar y flechas para mover la selección.',
-          'edge.a11yDescription.default': 'Línea visual. Pulsa Enter para seleccionar y Supr para eliminar si tienes permiso.' }}
+          'edge.a11yDescription.default': 'Pulsa Enter para seleccionar. Las relaciones semánticas se editan en su inspector; Supr elimina solo líneas visuales con permiso.' }}
         onMoveEnd={(event) => { if (event) rebase(current.current); }}>
         <Background variant={BackgroundVariant.Lines} gap={GRID_SIZE} offset={gridOffset(origin)} color="#283532" />
         <ViewportPortal>
@@ -1178,6 +1210,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     {workspace && <ConceptualInspector workspace={workspace} entity={selectedConceptualEntity} placementId={selectedPlacement?.id}
       onCreateNode={addConceptualNode} onUpdateNode={updateConceptualNode} onCreateRelation={createConceptualRelation}
       onUpdateRelation={updateConceptualRelation} onDeleteRelation={deleteConceptualRelation} />}
+    {workspace && <C4Inspector workspace={workspace} selectedEntityId={selectedPlacement?.entityId} onOperation={changeC4} onOpenWorkspace={onOpenWorkspace} />}
     {showReference && <p className="canvas-help">La referencia es un fixture aislado y no se añade al proyecto.</p>}
     {menu && <ContextMenu menu={{ ...menu, actions: canvasActions() }} permissions={permissions} onClose={() => setMenu(null)} />}{promptDialog}
   </>;

@@ -1,4 +1,5 @@
 import { clipboard, dialog, type BrowserWindow } from 'electron';
+import { validC4Operation } from '@a3/domain';
 import { lstat, realpath, readdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, parse, relative, resolve } from 'node:path';
@@ -74,6 +75,7 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
   const input = value as Record<string, unknown>;
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (typeof input.action !== 'string' || typeof input.sessionId !== 'string' || typeof input.workspaceId !== 'string' || !uuid.test(input.sessionId) || !uuid.test(input.workspaceId)) return false;
+  if (input.action === 'c4') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedWorkspaceRevision) && Number(input.expectedWorkspaceRevision) >= 1 && validC4Operation(input.operation);
   if (input.action === 'stage') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedRevision) && Number(input.expectedRevision) >= 1 && validViewport(input.viewport);
   if (input.action === 'create-placement') return Object.keys(input).length === 6 && uuid.test(String(input.entityId)) && Number.isSafeInteger(input.expectedWorkspaceRevision) &&
     Number(input.expectedWorkspaceRevision) >= 1 && !!input.position && typeof input.position === 'object' && !Array.isArray(input.position) &&
@@ -406,6 +408,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'discard': return { ok: true, value: await manager.discardCanvasViewport(value.sessionId, value.workspaceId) };
           case 'create-placement': return { ok: true, value: await manager.createCanvasPlacement(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.entityId, value.position) };
           case 'create-content-node': return { ok: true, value: await manager.createCanvasContentNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.node) };
+          case 'c4': return { ok: true, value: await manager.changeCanvasC4(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.operation) };
           case 'create-conceptual-node': return { ok: true, value: await manager.createCanvasConceptualNode(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision, value.kind, value.title, value.position) };
           case 'update-conceptual-node': return { ok: true, value: await manager.updateCanvasConceptualNode(value.sessionId, value.workspaceId, value.entityId, value.expectedRevision, value.patch) };
           case 'create-conceptual-relation': return { ok: true, value: await manager.createCanvasConceptualRelation(value.sessionId, value.workspaceId, value.expectedWorkspaceRevision,

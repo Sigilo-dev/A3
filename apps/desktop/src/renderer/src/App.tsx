@@ -114,7 +114,9 @@ export function App(): React.JSX.Element {
         </div>
       </section></>}
       {projects?.active && <Suspense fallback={active === 'canvas' ? <p role="status">Restaurando sesión…</p> : null}><FocusWorkspace key={projects.active.sessionId} project={projects.active} visible={active === 'canvas'} onReveal={revealFocus}
-        controllerRef={focus} onOpenCode={openCode} contentVersion={contentVersion} onSaved={codeSaved} /></Suspense>}
+        controllerRef={focus} onOpenCode={openCode} contentVersion={contentVersion} onSaved={codeSaved} onProjectsChanged={() => {
+          void window.a3?.projects({ action: 'list' }).then((result) => { if (result.ok) acceptProjects(result.value); else setError(result.error.message); });
+        }} /></Suspense>}
       {active !== 'projects' && active !== 'canvas' && <section className="foundation" aria-labelledby="foundation-title">
         <div><p className="eyebrow">Primer paso</p><h2 id="foundation-title">Una base común</h2></div>
         <p>Explora las secciones desde la barra izquierda. Esta entrega prepara la ventana y la comunicación de escritorio.</p>

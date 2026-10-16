@@ -1,4 +1,4 @@
-import { lstat, readdir, rename, stat } from 'node:fs/promises';
+import { lstat, readdir, rename, rmdir, stat } from 'node:fs/promises';
 import { issue, sha256 } from './codec.js';
 import { object, parseJson } from './json.js';
 import { checkedPath, fileBytes, resolvePortablePath } from './reader.js';
@@ -447,6 +447,16 @@ async function recoverOne(root: string, journal: Journal, options: RecoveryOptio
   const finalState = await readEntryStates(root, journal, options.maxBytes);
   if (finalState.issue || finalState.states.some((state) => state !== 'before' && state !== 'restored')) return { resolved: false, blocked: true,
     diagnostic: await logConflict(root, journal, log, options, finalState.path ?? 'a3.project.json', finalState.issue ?? 'recovery-rollback-verification-failed') };
+  const created = journal.intent.extensions['a3.store.created-workspace-directories'];
+  if (Array.isArray(created)) for (const directory of created) {
+    // Only a directory explicitly planned for a new workspace, and only while empty.
+    // Never recursively remove a directory or an external editor's contents.
+    const entry = journal.intent.entries.find((e) => e.ref?.kind === 'workspace' && e.beforeHash === null && e.path === `${directory}/workspace.json` &&
+      typeof directory === 'string' && directory.endsWith(`/workspaces/${e.ref.id}`));
+    if (!entry || typeof directory !== 'string') return { resolved: false, blocked: true, diagnostic: await logConflict(root, journal, log, options, 'a3.project.json', 'recovery-workspace-directory-invalid') };
+    try { await rmdir(await checkedPath(root, directory, 'directory')); }
+    catch (error) { if (!exists(error)) return { resolved: false, blocked: true, diagnostic: await logConflict(root, journal, log, options, directory, 'recovery-workspace-directory-not-empty') }; }
+  }
   await fault(options, 'recovery-before-finalize', journal.intent.operationId);
   await appendProgress(root, log, journal, 'recovery-rolled-back', { detail: 'verified-all-before-hashes' });
   await fault(options, 'recovery-after-finalize', journal.intent.operationId);

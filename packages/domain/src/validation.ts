@@ -4,6 +4,7 @@ import { canonical, diagnostic, indexSnapshot, isJson, isObject, refKey, refOf, 
 import type { Diagnostic, DomainRecord, DomainSnapshot, Entity, Endpoint, EndpointRule, JsonValue, NodeType, Relation, RelationType, TypeRegistry, ValueType } from './models.js';
 import { resolveValidatedVariable } from './variables.js';
 import { conceptualNodeTypeDefinition, conceptualRelationType } from './conceptual-diagrams.js';
+import { c4NodeDefinition, c4RelationDefinition, isC4Category, validateC4Snapshot } from './c4.js';
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, coerceTypes: false, useDefaults: false, removeAdditional: false });
 ajv.addFormat('utc-date-time', (value: string) => {
@@ -27,6 +28,9 @@ export function validateDefinition(kind: 'node-type' | 'relation-type', value: u
   if (diagnostics.length) return diagnostics;
   if (kind === 'node-type') {
     const definition = value as NodeType;
+    if ('a3.c4.category' in definition.extensions && !isC4Category(definition.extensions['a3.c4.category'])) {
+      diagnostics.push(diagnostic('c4-category-invalid', 'El tipo personalizado debe declarar una categoría C4 soportada.'));
+    }
     if (new Set(definition.fields.map((f) => f.name)).size !== definition.fields.length ||
         new Set(definition.ports.map((p) => p.id)).size !== definition.ports.length) {
       diagnostics.push(diagnostic('duplicate-definition-member', 'Los campos y puertos deben tener identidades únicas.'));
@@ -93,9 +97,10 @@ export function validateRecord(record: unknown): Diagnostic[] {
 export const matchesValueType = (value: JsonValue, type: ValueType): boolean => type === 'json' || typeof value === type;
 const typeKey = (value: { name: string; version: string }): string => `${value.name}@${value.version}`;
 export const findNodeType = (registry: TypeRegistry, entity: Entity): NodeType | undefined =>
-  (entity.typeVersion === '1.0.0' ? conceptualNodeTypeDefinition(entity.type) : undefined) ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
+  (entity.typeVersion === '1.0.0' ? conceptualNodeTypeDefinition(entity.type) ?? c4NodeDefinition(entity.type) : undefined) ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
 export const findRelationType = (registry: TypeRegistry, relation: Relation): RelationType | undefined =>
   (relation.type === 'a3.conceptual.relationship' && relation.typeVersion === '1.0.0' ? conceptualRelationType() : undefined) ??
+  (relation.type === 'a3.c4.relationship' && relation.typeVersion === '1.0.0' ? c4RelationDefinition() : undefined) ??
   registry.relationTypes.find((d) => typeKey(d) === `${relation.type}@${relation.typeVersion}`);
 const matchesEntity = (entity: Entity, rule: EndpointRule): boolean => rule.entityTypes === '*' || rule.entityTypes.includes(entity.type);
 const endpointKey = (endpoint: Endpoint): string => endpoint.entityId.toLowerCase() + ':' + (endpoint.portId ?? '');
@@ -236,7 +241,7 @@ export function validateSnapshot(snapshot: DomainSnapshot, registry: TypeRegistr
       }
     }
   }
-  return diagnostics;
+  return [...diagnostics, ...validateC4Snapshot(snapshot, registry)];
 }
 
 export function defaultRegistry(): TypeRegistry {

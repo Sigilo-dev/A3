@@ -1,5 +1,7 @@
 import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { c4Category, isC4Diagram, validC4Operation, type C4Category, type C4Change, type C4Operation } from '@a3/domain';
+import { projectC4Canvas, type CanvasC4State } from './c4-canvas.js';
 import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
@@ -58,6 +60,7 @@ export interface LocalProjectsState {
 }
 export interface WorkspaceViewport { x: number; y: number; zoom: number; }
 export interface CanvasEntitySummary {
+  c4Category?: C4Category;
   id: string; revision: number; type: string; typeVersion: string; title: string; properties: Entity['properties']; ports: Entity['ports'];
   contentResourceId?: string; contentResource?: CanvasResourceDescriptor; typeAvailable: boolean;
 }
@@ -93,6 +96,7 @@ export interface MarkdownDocument {
 export interface MarkdownAsset { reference: string; mediaType: string; bytes: Uint8Array; }
 export type MenuPermissions = Record<'read' | 'document' | 'diagram' | 'delete', { allowed: boolean; reason: string }>;
 export interface LocalCanvasWorkspace {
+  c4: CanvasC4State;
   sessionId: string; workspaceId: string; name: string; revision: number;
   viewport: WorkspaceViewport; canWrite: boolean; pending: boolean; entities: readonly CanvasEntitySummary[]; entityChoices: readonly CanvasEntityChoice[];
   resourceChoices: readonly CanvasResourceChoice[]; placements: readonly CanvasPlacementView[]; visualEdges: readonly CanvasVisualEdgeView[];
@@ -323,7 +327,7 @@ export class LocalProjectManager {
     const projectId = value.projectId;
     demand(!expectedId || expectedId.toLowerCase() === projectId.toLowerCase(), 'PROJECT_ID_MISMATCH', 'La carpeta seleccionada pertenece a otro proyecto.');
     await this.#approve(root, projectId);
-    const candidate = await openProjectService(root, { host: this.options.host, registry: this.options.registry ?? defaultRegistry() });
+    const candidate = await openProjectService(root, { host: this.options.host, registry: this.options.registry ?? defaultRegistry(), ...(this.options.fault ? { fault: this.options.fault } : {}) });
     demand(candidate.ok, 'OPEN_FAILED', candidate.diagnostics.map((d) => `${d.path}: ${d.message}`).join('\n'));
     const name = typeof value.name === 'string' ? value.name : 'Proyecto sin nombre';
     const previous = this.#active;
@@ -668,7 +672,7 @@ export class LocalProjectManager {
     const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
     const edit = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
       projectId: active.projectId, operation: 'write', paths: [], refs: [{ kind: 'workspace', id: workspaceId }], resources: [], requiredCapabilities: ['diagram.edit'], stage: 'prepare' });
-    const snapshot = active.lease.service.state.project.snapshot;
+    const snapshot = active.lease.service.state.project.snapshot, registry = active.lease.service.typeRegistry;
     const choices = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'entity' }> => record.kind === 'entity');
     const resourceRecords = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource');
     const resources = new Map(resourceRecords.map((record) => [record.value.id.toLowerCase(), record]));
@@ -679,8 +683,9 @@ export class LocalProjectManager {
       .map(({ value }) => ({ id: value.id, revision: value.revision, type: value.type, typeVersion: value.typeVersion,
         title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
           ...(resources.get(value.contentResourceId.toLowerCase()) ? { contentResource: resourceDescriptor(resources.get(value.contentResourceId.toLowerCase())!) } : {}) } : {}),
-        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined }));
-    const entityChoices = choices.map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
+        ...(c4Category(value, registry) ? { c4Category: c4Category(value, registry)! } : {}),
+        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined }));
+    const entityChoices = choices.filter(({ value }) => !isC4Diagram(value)).map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
     const resourceChoices = resourceRecords.map((record) => resourceDescriptor(record));
     const placementIds = new Map(placements.map((placement) => [placement.id.toLowerCase(), placement.id]));
     const visualEdges = snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'visual-edge' }> => record.kind === 'visual-edge' && record.workspaceId === workspaceId)
@@ -721,7 +726,8 @@ export class LocalProjectManager {
     const historyDelete = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
       projectId: active.projectId, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: ['delete'], stage: 'prepare' });
     return { sessionId, workspaceId, name: workspace.name, revision: workspace.revision, viewport: { x, y, zoom }, pending: !!draft, entities, entityChoices, resourceChoices, placements, visualEdges, conceptualRelations, drawings, groups,
-      history: { canUndo: !!undoEvent && !history?.blocked, canRedo: !!redoEvent && !history?.blocked,
+      c4: projectC4Canvas(snapshot, registry, workspaceId),
+      history: { canUndo: !!undoEvent && !history?.blocked && !undoEvent.changes.some((change) => change.ref.kind === 'workspace' && !change.before), canRedo: !!redoEvent && !history?.blocked,
         undoRequiresDelete: !!undoEvent && historyRequiresDelete(undoEvent, 'undo'), redoRequiresDelete: !!redoEvent && historyRequiresDelete(redoEvent, 'redo'),
         deleteAvailable: historyDelete.allowed },
       canDeleteEdges: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && deletion.allowed,
@@ -1480,6 +1486,34 @@ export class LocalProjectManager {
       const record: DomainRecord = { kind: 'visual-edge', workspaceId, value: { schemaVersion: '1.0.0', id: randomUUID(), revision: 1,
         sourcePlacementId, targetPlacementId, label: '', waypoints: [], style: {}, extensions: {} } };
       await this.#commitCanvasCommand(active, { command: 'a3.core.create-document', payload: { record } }, entityIds, { kind: 'visual-edge', workspaceId, id: record.value.id });
+      return this.#canvasWorkspace(sessionId, workspaceId);
+    });
+  }
+  changeCanvasC4(sessionId: string, workspaceId: string, expectedWorkspaceRevision: number, operation: C4Operation): Promise<LocalCanvasWorkspace> {
+    const captured = structuredClone(operation);
+    return this.#queue(async () => {
+      const { active, workspace } = this.#canvasContext(sessionId, workspaceId);
+      demand(validC4Operation(captured), 'C4_OPERATION_INVALID', 'La operación C4 no cumple el contrato.');
+      demand(workspace.revision === expectedWorkspaceRevision, 'REVISION_CONFLICT', 'El workspace cambió; recarga antes de editar C4.');
+      const ids: C4Change['ids'] = { entityId: randomUUID(), placementId: randomUUID(), relationId: randomUUID(), relationViewId: randomUUID(), diagramId: randomUUID() };
+      const snapshot = active.lease.service.state.project.snapshot, absent: DocumentRef[] = [];
+      const targetWorkspace = captured.action === 'configure-view' && captured.newWorkspace ? randomUUID() : workspaceId;
+      switch (captured.action) {
+        case 'create-element': absent.push({ kind: 'entity', id: ids.entityId }, { kind: 'placement', id: ids.placementId, workspaceId }); break;
+        case 'show-element': absent.push({ kind: 'placement', id: ids.placementId, workspaceId }); break;
+        case 'create-relationship': absent.push({ kind: 'relation', id: ids.relationId }, { kind: 'relation-view', id: ids.relationViewId, workspaceId }); break;
+        case 'show-relationship': absent.push({ kind: 'relation-view', id: ids.relationViewId, workspaceId }); break;
+        case 'configure-view': {
+          if (captured.newWorkspace) absent.push({ kind: 'workspace', id: targetWorkspace });
+          const existing = !captured.newWorkspace && workspace.properties['a3.c4.diagram-id'];
+          if (typeof existing === 'string') ids.diagramId = existing;
+          else absent.push({ kind: 'entity', id: ids.diagramId });
+          break;
+        }
+      }
+      const scope = snapshot.records.flatMap((r) => r.kind === 'entity' ? [r.value.id] : []);
+      await this.#commitCanvasCommand(active, { command: 'a3.c4.change', payload: { workspaceId: targetWorkspace, operation: captured, ids } },
+        [...scope, ids.entityId, ids.diagramId], absent);
       return this.#canvasWorkspace(sessionId, workspaceId);
     });
   }

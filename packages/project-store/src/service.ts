@@ -130,7 +130,7 @@ function domainCapabilities(plan: PreparedPlan): Capability[] {
   const command = plan.request.command;
   if (command === 'a3.core.register-node-type' || command === 'a3.core.unregister-node-type') return ['package.install'];
   const caps = new Set<Capability>();
-  if (command.startsWith('a3.conceptual.')) caps.add('diagram.edit');
+  if (command.startsWith('a3.conceptual.') || command.startsWith('a3.c4.')) caps.add('diagram.edit');
   if (command === 'a3.core.delete' || plan.changes.some((change) => !change.after) || plan.contentEffects.some((effect) => effect.kind === 'remove')) caps.add('delete');
   const refs = plan.changes.map((change) => change.ref);
   if (refs.some((ref) => diagramRefKinds.has(ref.kind))) caps.add('diagram.edit');
@@ -218,6 +218,7 @@ export class ProjectService {
   #sourceRefs = new Map<string, Resource>();
   #knownProjectId: string | undefined;
   #registry: TypeRegistry;
+  get typeRegistry(): TypeRegistry { return structuredClone(this.#registry); }
   #resourceLimit: number;
   #transactionLimit: number;
   #snapshotRetentionDays: number;
@@ -1577,9 +1578,16 @@ export class ProjectService {
         return { ...c, backupPath: `${folder}/${index}.before`, stagedPath: `${folder}/${index}.staged`, candidatePath: `${folder}/${index}.candidate`, detachedPath: `${folder}/${index}.detached`,
           revisionBefore: before?.value.revision ?? null, revisionAfter: after?.value.revision ?? null };
       });
+      const createdWorkspaceDirectories: string[] = [];
+      for (const entry of entries) if (entry.ref?.kind === 'workspace' && entry.beforeHash === null) {
+        const parent = entry.path.slice(0, entry.path.lastIndexOf('/'));
+        try { await checkedPath(this.root, parent, 'directory'); }
+        catch (error) { if (errorCode(error) !== 'ENOENT') throw error; createdWorkspaceDirectories.push(parent); }
+      }
       const intent: WriteIntent = { schemaVersion: '1.0.0', protocol: progressProtocol, operationId: plan.operationId, projectId: plan.projectId,
         actor: { kind: this.options.host.authenticatedActor.kind, id: this.options.host.authenticatedActor.id }, requestHash: data.requestHash,
-        requiredCapabilities: [...data.requiredCapabilities], readSet: [...data.scan.files].map(([path, value]) => ({ path, hash: value.hash, identity: value.identity })), entries, extensions: {} };
+        requiredCapabilities: [...data.requiredCapabilities], readSet: [...data.scan.files].map(([path, value]) => ({ path, hash: value.hash, identity: value.identity })), entries,
+        extensions: createdWorkspaceDirectories.length ? { 'a3.store.created-workspace-directories': createdWorkspaceDirectories } : {} };
       log = new ProgressLog(this.root, folder); await log.intent(intent);
       await this.#fault('after-intent', plan.operationId);
       for (const image of data.images) {
@@ -1611,8 +1619,12 @@ export class ProjectService {
       const beforeReplace = await this.#withExtraPaths(await this.#scan(true), data.externalPaths ?? []);
       await this.#verifyDirectories(data.externalDirectories ?? []);
       const drift = this.#changes(data.scan, beforeReplace);
-      const newErrors = introducesErrors(data.scan.diagnostics, beforeReplace.diagnostics);
-      if (drift.length || newErrors || !data.maintenance && beforeReplace.diagnostics.some((d) => d.severity === 'error')) {
+      // Creating the destination parent exposes an empty workspace directory during staging.
+      // Ignore ONLY the absent manifest this plan will create; bytes/errors elsewhere still conflict.
+      const pendingWorkspaceManifests = new Set(entries.filter((entry) => entry.ref?.kind === 'workspace' && entry.beforeHash === null).map((entry) => entry.path));
+      const stagingDiagnostics = beforeReplace.diagnostics.filter((d) => !(d.stage === 'io' && d.detail === 'file-missing' && pendingWorkspaceManifests.has(d.path)));
+      const newErrors = introducesErrors(data.scan.diagnostics, stagingDiagnostics);
+      if (drift.length || newErrors || !data.maintenance && stagingDiagnostics.some((d) => d.severity === 'error')) {
         throw new PathError('external-conflict', drift[0] ?? 'a3.project.json');
       }
       for (const [index, entry] of entries.entries()) {

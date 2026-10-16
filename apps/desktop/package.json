@@ -20,7 +20,8 @@
     "test:code": "node --test test/code-languages.test.mjs",
     "test:focus": "node test/run-focus.mjs",
     "test:navigation": "node test/run-navigation.mjs",
-    "test:conceptual": "node test/run-conceptual.mjs"
+    "test:conceptual": "node test/run-conceptual.mjs",
+    "test:c4": "node test/run-c4.mjs"
   },
   "devDependencies": {
     "@a3/project-store": "0.1.0-dev.0",

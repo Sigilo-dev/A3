@@ -1,11 +1,13 @@
 import { memo } from 'react';
 import { BaseEdge, MarkerType, getBezierPath, getSmoothStepPath, getStraightPath, type Edge, type EdgeProps } from '@xyflow/react';
-import type { CanvasConceptualRelationView, CanvasVisualEdgePatch, CanvasVisualEdgeView, LocalCanvasWorkspace } from '../../shared/desktop-api';
+import type { CanvasC4RelationView, CanvasConceptualRelationView, CanvasVisualEdgePatch, CanvasVisualEdgeView, LocalCanvasWorkspace } from '../../shared/desktop-api';
+import type { C4Step } from '@a3/domain/c4';
 
 export type CanvasTool = 'select' | 'connect' | 'text' | 'draw';
 type EdgeData = { view: CanvasVisualEdgeView; origin: { x: number; y: number } };
 type SemanticEdgeData = { view: CanvasConceptualRelationView; origin: { x: number; y: number } };
-export type CanvasEdge = Edge<EdgeData | SemanticEdgeData, 'a3Visual' | 'a3Semantic'>;
+type C4EdgeData = { view: CanvasC4RelationView; origin: { x: number; y: number }; step?: C4Step };
+export type CanvasEdge = Edge<EdgeData | SemanticEdgeData | C4EdgeData, 'a3Visual' | 'a3Semantic' | 'a3C4'>;
 export function edgeAppearance(style: CanvasVisualEdgeView['style']) {
   return {
     color: typeof style['a3.ui.line.color'] === 'string' && /^#[\da-f]{6}$/i.test(style['a3.ui.line.color']) ? style['a3.ui.line.color'] : '#9bc279',
@@ -37,14 +39,23 @@ export function toFlowEdges(workspace: LocalCanvasWorkspace, origin: { x: number
     const existing = old.get(view.id);
     const source = endpointMap.get(view.sourcePlacementId.toLowerCase()) ?? view.sourcePlacementId;
     const target = endpointMap.get(view.targetPlacementId.toLowerCase()) ?? view.targetPlacementId;
-    if (existing?.type === 'a3Semantic' && existing.data?.view.revision === view.revision && existing.source === source &&
+    if (existing?.type === 'a3Semantic' && existing.data?.view.revision === view.revision && 'relationRevision' in existing.data.view && existing.data.view.relationRevision === view.relationRevision && existing.source === source &&
         existing.target === target && existing.data.origin.x === origin.x && existing.data.origin.y === origin.y) return existing;
     return { id: view.id, source, target, sourceHandle: endpointMap.has(view.sourcePlacementId.toLowerCase()) ? 'group-visual-source' : 'visual-source',
       targetHandle: endpointMap.has(view.targetPlacementId.toLowerCase()) ? 'group-visual-target' : 'visual-target',
       type: 'a3Semantic' as const, data: { view, origin }, reconnectable: false, selectable: true, focusable: true, selected: existing?.selected,
       ariaLabel: `Relación semántica conceptual: ${view.kind ?? 'sin tipo'}, ${view.label}.` };
   });
-  return [...visualEdges, ...semanticEdges];
+  const entries: { view: CanvasC4RelationView; step?: C4Step }[] = workspace.c4.current?.data.kind === 'dynamic'
+    ? [...workspace.c4.current.data.steps].sort((a, b) => a.order - b.order).flatMap((step) => { const view = workspace.c4.relationViews.find((r) => r.id === step.relationViewId); return view ? [{ view, step }] : []; })
+    : workspace.c4.relationViews.map((view) => ({ view }));
+  const c4Edges = entries.map(({ view, step }) => ({ id: step ? `c4-step-${step.id}` : view.id,
+    source: endpointMap.get(view.sourcePlacementId.toLowerCase()) ?? view.sourcePlacementId, target: endpointMap.get(view.targetPlacementId.toLowerCase()) ?? view.targetPlacementId,
+    sourceHandle: endpointMap.has(view.sourcePlacementId.toLowerCase()) ? 'group-visual-source' : 'visual-source',
+    targetHandle: endpointMap.has(view.targetPlacementId.toLowerCase()) ? 'group-visual-target' : 'visual-target',
+    type: 'a3C4' as const, data: { view, origin, ...(step ? { step } : {}) }, reconnectable: false, selectable: true, focusable: true,
+    ariaLabel: `Relación C4: ${step ? `${step.order}. ${step.description || view.description}` : view.description}. ${view.protocol}` }));
+  return [...visualEdges, ...semanticEdges, ...c4Edges];
 }
 const VisualEdgeRenderer = memo(function VisualEdgeRenderer(props: EdgeProps<CanvasEdge>) {
   if (!props.data) return null;
@@ -64,7 +75,7 @@ const VisualEdgeRenderer = memo(function VisualEdgeRenderer(props: EdgeProps<Can
   </g>;
 });
 const SemanticEdgeRenderer = memo(function SemanticEdgeRenderer(props: EdgeProps<CanvasEdge>) {
-  if (!props.data || 'waypoints' in props.data.view) return null;
+  if (!props.data || 'waypoints' in props.data.view || !('label' in props.data.view)) return null;
   const { view } = props.data;
   const [path, labelX, labelY] = getBezierPath(props);
   const palette: Record<string, string> = { composition: '#e8b47a', dependency: '#82b8dc', cause: '#ed8d83', association: '#a9d395' };
@@ -80,7 +91,18 @@ const SemanticEdgeRenderer = memo(function SemanticEdgeRenderer(props: EdgeProps
       labelStyle={{ fill: '#f4eadf' }} labelBgStyle={{ fill: '#201d22' }} labelBgPadding={[6, 4]} />
   </g>;
 });
-export const edgeTypes = { a3Visual: VisualEdgeRenderer, a3Semantic: SemanticEdgeRenderer };
+const C4EdgeRenderer = memo(function C4EdgeRenderer(props: EdgeProps<CanvasEdge>) {
+  if (!props.data || !('description' in props.data.view)) return null;
+  const view = props.data.view, step = 'step' in props.data ? props.data.step : undefined;
+  const [path, labelX, labelY] = getBezierPath(props), markerId = `a3-c4-arrow-${props.id}`;
+  const title = `${step ? `${step.order}. ` : ''}${step?.description || view.description}${view.protocol ? ` [${view.protocol}]` : ''}`;
+  return <g data-c4-relation-id={view.relationId} data-c4-step-order={step?.order}>
+    <defs><marker id={markerId} markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L10,5 L0,10 z" fill="#a9ceff" /></marker></defs>
+    <BaseEdge id={props.id} path={path} label={title} labelX={labelX} labelY={labelY} markerEnd={`url(#${markerId})`} interactionWidth={22}
+      style={{ stroke: '#a9ceff', strokeWidth: 2 }} labelStyle={{ fill: '#edf5ff' }} labelBgStyle={{ fill: '#172536' }} labelBgPadding={[6, 4]} />
+  </g>;
+});
+export const edgeTypes = { a3Visual: VisualEdgeRenderer, a3Semantic: SemanticEdgeRenderer, a3C4: C4EdgeRenderer };
 
 export function CanvasEdgeEditor({ workspace, edge, tool, onCreate, onUpdate, onDelete, onRequestDeletePermission }: {
   workspace: LocalCanvasWorkspace; edge?: CanvasVisualEdgeView; tool: CanvasTool;

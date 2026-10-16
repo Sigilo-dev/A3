@@ -14,9 +14,10 @@ export interface FocusWorkspaceHandle {
 }
 interface Guard { ids: string[]; reason: string; resolve: (approved: boolean) => void; }
 
-export function FocusWorkspace({ project, visible, onReveal, onOpenCode, controllerRef, contentVersion, onSaved }: {
+export function FocusWorkspace({ project, visible, onReveal, onOpenCode, controllerRef, contentVersion, onSaved, onProjectsChanged }: {
   project: LocalProjectSession; visible: boolean; onReveal: () => void; onOpenCode: (target: CodeEditorTarget) => void;
   controllerRef: Ref<FocusWorkspaceHandle>; contentVersion: number; onSaved: () => void;
+  onProjectsChanged?: () => void;
 }): React.JSX.Element {
   const [session, setSession] = useState<WorkspaceSession | null>(null), sessionRef = useRef(session); sessionRef.current = session;
   const [error, setError] = useState<string | null>(null), [reference, setReference] = useState<PageReference | null>(null);
@@ -229,7 +230,7 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
         {selected?.kind === 'workspace' && <div className="focus-panel" role="tabpanel" id={`panel-${selected.id}`} aria-labelledby={`tab-${selected.id}`} tabIndex={-1}>
           {visible && <Suspense fallback={<p role="status">Abriendo lienzo…</p>}><CanvasPanel active={project} workspaceId={selected.workspaceId} initialViewport={selected.view}
             onViewportChange={(value) => stageView(selected.id, value)} onWorkspaceSelect={(workspaceId) => { void flush().then(() => run({ action: 'open-workspace', workspaceId })).catch(report); }}
-            onOpenMarkdown={openPageFromCanvas} onOpenCode={onOpenCode} contentVersion={contentVersion} /></Suspense>}
+            onOpenMarkdown={openPageFromCanvas} onOpenCode={onOpenCode} contentVersion={contentVersion} onProjectsChanged={onProjectsChanged} /></Suspense>}
         </div>}
         {!selected && <p>No hay vistas abiertas. <button onClick={() => void run({ action: 'open-workspace', workspaceId: project.workspaces[0]!.id }).catch(report)} disabled={!project.workspaces.length}>Abrir workspace</button></p>}
       </>}

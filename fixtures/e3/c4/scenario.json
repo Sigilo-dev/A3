@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "1.0.0",
+  "customType": {
+    "name": "demo.openai-service", "version": "1.0.0", "packageId": "demo.c4",
+    "fields": [], "ports": [], "bindingFields": [],
+    "extensions": { "a3.c4.category": "software-system", "demo.icon": "cloud", "demo.style": { "color": "#6699cc" } }
+  },
+  "elements": [
+    { "key": "person", "category": "person", "title": "Diseñadora", "description": "Diseña **proyectos**." },
+    { "key": "system", "category": "software-system", "title": "A3", "description": "Espacio de diseño local.", "url": "https://example.com/a3" },
+    { "key": "boundary", "category": "boundary", "title": "Servicios", "parent": "system" },
+    { "key": "api", "category": "container", "title": "API", "parent": "boundary", "technology": "TypeScript" },
+    { "key": "planner", "category": "component", "title": "Planificador", "parent": "api", "technology": "TypeScript" },
+    { "key": "external", "category": "software-system", "custom": true, "title": "Servicio OpenAI", "external": true },
+    { "key": "host", "category": "deployment-node", "title": "Servidor", "environment": "production" },
+    { "key": "docker", "category": "deployment-node", "title": "Docker", "parent": "host", "environment": "production", "technology": "Docker" },
+    { "key": "instance", "category": "instance", "title": "API 1", "parent": "docker", "instanceOf": "api" },
+    { "key": "replica", "category": "instance", "title": "API 2", "parent": "docker", "instanceOf": "api" }
+  ],
+  "relationships": [
+    { "key": "uses", "source": "person", "target": "system", "description": "Usa", "protocol": "UI" },
+    { "key": "submits", "source": "person", "target": "api", "description": "Solicita un plan", "protocol": "HTTPS" },
+    { "key": "calls", "source": "api", "target": "external", "description": "Genera una propuesta", "protocol": "HTTPS/JSON" },
+    { "key": "plans", "source": "planner", "target": "external", "description": "Consulta", "protocol": "HTTPS/JSON" },
+    { "key": "replicates", "source": "instance", "target": "replica", "description": "Sincroniza", "protocol": "TCP" }
+  ],
+  "views": [
+    { "key": "context", "kind": "context", "title": "Contexto", "scope": "system", "elements": ["person", "system", "external"], "relationships": ["uses"] },
+    { "key": "containers", "kind": "containers", "title": "Contenedores", "scope": "system", "elements": ["person", "system", "boundary", "api", "external"], "relationships": ["submits", "calls"] },
+    { "key": "components", "kind": "components", "title": "Componentes", "scope": "api", "elements": ["api", "planner", "external"], "relationships": ["plans"] },
+    { "key": "deployment", "kind": "deployment", "title": "Despliegue", "scope": "system", "environment": "production", "elements": ["host", "docker", "instance", "replica"], "relationships": ["replicates"] },
+    { "key": "dynamic", "kind": "dynamic", "title": "Secuencia", "scope": "system", "elements": ["person", "system", "api", "external"], "relationships": ["submits", "calls"], "steps": ["submits", "calls", "submits"] }
+  ]
+}

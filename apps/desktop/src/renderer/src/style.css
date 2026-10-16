@@ -344,3 +344,13 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .conceptual-relations > form > small { width: 100%; }
 .conceptual-relation-actions { display: flex; gap: 8px; }
 .conceptual-inspector button:focus-visible, .conceptual-inspector select:focus-visible, .conceptual-inspector input:focus-visible { outline: 2px solid #eabf91; outline-offset: 2px; }
+.c4-inspector { border-color: #496a91; background: #17202a; }
+.c4-inspector form { padding: 8px 0; border-top: 1px solid #405572; }
+.c4-inspector h4, .c4-inspector form > small { flex-basis: 100%; }
+.c4-inspector textarea { background: #101820; color: #edf3fa; min-height: 60px; max-width: 360px; }
+.c4-inspector input[type=checkbox] { min-width: 0; }
+.c4-node { padding: 10px; border: 1px solid #7ea6d9; background: #192d46; border-radius: 6px; }
+.c4-node small { color: #a9ceff; font-weight: bold; }
+.c4-node p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.c4-node-boundary { border-style: dashed; background: transparent; }
+.c4-node-deployment-node, .c4-node-instance { border-color: #bd9cdb; background: #31233d; }
