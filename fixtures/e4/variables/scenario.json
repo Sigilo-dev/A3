@@ -1,0 +1,15 @@
+{
+  "project": [
+    { "name": "demo.name", "valueType": "string", "source": { "kind": "literal", "value": "project label" }, "future": { "keep": true } },
+    { "name": "demo.count", "valueType": "number", "minimum": 1, "maximum": 200, "source": { "kind": "literal", "value": 24 } },
+    { "name": "demo.enabled", "valueType": "boolean", "source": { "kind": "literal", "value": true } },
+    { "name": "demo.backend", "valueType": "enum", "enumValues": ["rust", "typescript"], "source": { "kind": "literal", "value": "rust" } },
+    { "name": "demo.ports", "valueType": "list", "items": { "valueType": "number", "minimum": 0, "maximum": 65535 }, "source": { "kind": "literal", "value": [80, 443] } },
+    { "name": "demo.entity", "valueType": "reference", "referenceKinds": ["entity"], "source": { "kind": "literal", "value": { "kind": "entity", "id": "00000000-0000-4000-8000-000000000002", "future": true } } },
+    { "name": "demo.resource", "valueType": "reference", "referenceKinds": ["resource"], "source": { "kind": "literal", "value": { "kind": "resource", "id": "00000000-0000-4000-8000-000000000004" } } }
+  ],
+  "firstWorkspace": [{ "name": "demo.name", "valueType": "string", "source": { "kind": "literal", "value": "first workspace" } }],
+  "secondWorkspace": [{ "name": "demo.name", "valueType": "string", "source": { "kind": "literal", "value": "second workspace" } }],
+  "entity": [{ "name": "demo.name", "valueType": "string", "source": { "kind": "literal", "value": "entity override" } }],
+  "execution": [{ "name": "demo.name", "valueType": "string", "source": { "kind": "literal", "value": "temporary execution" } }]
+}

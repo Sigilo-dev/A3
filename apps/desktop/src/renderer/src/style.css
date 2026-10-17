@@ -1,6 +1,19 @@
 :root { font-family: "Segoe UI", sans-serif; color: #e8edf0; background: #10151b; font-synthesis: none; color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; }
+.variables-panel { max-width: 100%; font-size: 13px; }
+.variables-panel h1 { font-size: 32px; }
+.variables-panel h2 { margin-top: 28px; font-size: 19px; }
+.variables-context, .variables-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.variables-panel select, .variables-panel textarea { display: block; width: 100%; min-width: 0; font: inherit; padding: 9px; border: 1px solid #41515e; border-radius: 5px; background: #10151b; color: #e8edf0; }
+.variables-panel textarea { min-height: 70px; }
+.variables-panel :is(select, textarea, button):focus-visible { outline: 2px solid #c3ed82; outline-offset: 2px; }
+.variables-panel table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.variables-panel :is(th, td) { text-align: left; vertical-align: top; padding: 10px; border-bottom: 1px solid #293139; overflow-wrap: anywhere; }
+.variables-declarations { list-style: none; padding: 0; }
+.variables-declarations li { display: flex; gap: 14px; }
+.variable-field { border: 1px solid #41515e; padding: 14px; margin: 10px 0; border-radius: 6px; overflow-wrap: anywhere; }
+.variable-field button { margin-left: 12px; }
 button { font: inherit; cursor: pointer; }
 button:disabled { cursor: wait; opacity: .5; }
 input { display: block; width: 100%; min-width: 0; border: 1px solid #41515e; border-radius: 5px; padding: 10px 12px; background: #10151b; color: #e8edf0; font: inherit; font-size: 13px; }

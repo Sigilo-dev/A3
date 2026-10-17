@@ -17,8 +17,8 @@ export type { ContentNodeKind, ContentNodeType, ContentNodeSourceKind, PastedCon
 export { CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_NODE_VERSION, CONCEPTUAL_RELATION_KINDS, CONCEPTUAL_RELATION_TYPE, CONCEPTUAL_RELATION_VERSION, CONCEPTUAL_LABEL_KEY, CONCEPTUAL_KIND_KEY,
   conceptualNodeDefinition, conceptualNodeKind, conceptualRelationData, conceptualRelationType, isConceptualEntity, isConceptualRelation, isConceptualNodeKind, isConceptualRelationKind } from './conceptual-diagrams.js';
 export type { ConceptualNodeKind, ConceptualNodeType, ConceptualEntity, ConceptualRelationKind, ConceptualRelationData } from './conceptual-diagrams.js';
-export { validateRecord, validateDefinition, validateRegistry, validateSnapshot, defaultRegistry } from './validation.js';
-export { resolveVariable, type VariableContext } from './variables.js';
+export { validateRecord, validateDefinition, validateRegistry, validateSnapshot, defaultRegistry, findNodeType } from './validation.js';
+export { resolveVariable, resolveEffectiveVariable, resolveEntityField, validateVariable, validValueSpec, validVariableBinding, validVariableScope, matchesTypedValue, type VariableContext, type EffectiveVariable, type EffectiveField } from './variables.js';
 export { findA3Wikilinks, inspectMarkdownParse, inspectMarkdownSource, type A3WikilinkToken, type MarkdownParseIssue, type MarkdownSourceInspection } from './markdown.js';
 export { refOf, refKey, revisionsOf, getRecord, indexSnapshot } from './data.js';
 export { SHORTCUTS, defaultShortcuts, normalizeShortcut, validateShortcuts, matchesShortcut } from './shortcuts.js';

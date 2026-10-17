@@ -212,3 +212,10 @@ test('encoder cannot emit a tree its own reader cannot load, or recurse without 
   assert.equal(decodeDocument(location, valid.bytes).status, 'valid');
   reject(serializeRecord(location, { kind: 'entity', value: { ...await entity(), future: [boundary] } }), 'json-depth-limit');
 });
+test('E4 VariableSet 1.1 is supported only for its document family; later versions retain exact source in read-only mode', () => {
+  const ownerId = id(400), location = { kind: 'variable-set', path: '.a3/variables/project.json', expectedId: ownerId, variableScope: 'project' };
+  const value = { schemaVersion: '1.1.0', revision: 1, extensions: { 'future.keep': true }, scope: { kind: 'project', ownerId }, variables: [{ name: 'demo.choice', valueType: 'enum', enumValues: ['one'], source: { kind: 'literal', value: 'one' } }] };
+  const input = Buffer.from('\ufeff' + JSON.stringify(value, null, 2).replaceAll('\n', '\r\n'));
+  const decoded = decodeDocument(location, input); assert.equal(decoded.status, 'valid'); assert.deepEqual(Buffer.from(encodeDocument(decoded, []).bytes), input);
+  for (const schemaVersion of ['1.2.0', '2.0.0']) { const original = bytes({ ...value, schemaVersion }), unknown = decodeDocument(location, original); assert.equal(unknown.status, 'read-only'); assert.deepEqual(Buffer.from(unknown.originalBytes()), original); }
+});

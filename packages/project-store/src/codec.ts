@@ -17,7 +17,7 @@ function recordFor(location: DocumentLocation, value: unknown): DomainRecord {
 function versionIssue(location: DocumentLocation, value: unknown): StoreDiagnostic | undefined {
   const field = location.kind === 'project' ? 'formatVersion' : 'schemaVersion';
   const version = object(value) ? value[field] : undefined;
-  if (typeof version !== 'string' || !versionPattern.test(version) || version === supportedVersion) return undefined;
+  if (typeof version !== 'string' || !versionPattern.test(version) || version === supportedVersion || location.kind === 'variable-set' && version === '1.1.0') return undefined;
   const major = version.split('.')[0]!;
   return issue(location.path, 'compatibility', major.length > 1 || major > '1' ? 'unsupported-major' : 'unsupported-version',
     `Versión ${version} no soportada; inspección en solo lectura, sin downgrade.`, { pointer: '/' + field, severity: 'warning' });

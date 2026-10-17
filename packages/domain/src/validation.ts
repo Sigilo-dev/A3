@@ -2,7 +2,8 @@ import { Ajv2020, type AnySchemaObject } from 'ajv/dist/2020.js';
 import { schemas } from '../.generated/schemas.js';
 import { canonical, diagnostic, indexSnapshot, isJson, isObject, refKey, refOf, sameId } from './data.js';
 import type { Diagnostic, DomainRecord, DomainSnapshot, Entity, Endpoint, EndpointRule, JsonValue, NodeType, Relation, RelationType, TypeRegistry, ValueType } from './models.js';
-import { resolveValidatedVariable } from './variables.js';
+import { interpretedVariables, matchesTypedValue, resolveEntityField, resolveValidatedVariable, validateVariable, validValueSpec } from './variables.js';
+import { CONTENT_NODE_CATALOG } from './content-nodes.js';
 import { conceptualNodeTypeDefinition, conceptualRelationType } from './conceptual-diagrams.js';
 import { c4NodeDefinition, c4RelationDefinition, isC4Category, validateC4Snapshot } from './c4.js';
 import { umlNodeDefinition, umlRelationDefinition, validateUmlSnapshot } from './uml.js';
@@ -34,6 +35,8 @@ export function validateDefinition(kind: 'node-type' | 'relation-type', value: u
   if (diagnostics.length) return diagnostics;
   if (kind === 'node-type') {
     const definition = value as NodeType;
+    for (const field of definition.fields) if (!validValueSpec(field) || field.acceptsBinding !== undefined && typeof field.acceptsBinding !== 'boolean') diagnostics.push(diagnostic('node-field-type-invalid', 'Declaración de campo inválida.'));
+    for (const name of definition.bindingFields) if (!definition.fields.some((field) => field.name === name && field.acceptsBinding !== false)) diagnostics.push(diagnostic('node-binding-undeclared', 'Cada binding debe declarar un campo y su tipo.'));
     if ('a3.c4.category' in definition.extensions && !isC4Category(definition.extensions['a3.c4.category'])) {
       diagnostics.push(diagnostic('c4-category-invalid', 'El tipo personalizado debe declarar una categoría C4 soportada.'));
     }
@@ -93,6 +96,13 @@ export function validateRecord(record: unknown): Diagnostic[] {
     return [diagnostic('invalid-record', 'El registro de dominio no es válido.')];
   }
   const diagnostics = validateShape(record.kind, record.value);
+  if (!diagnostics.length && record.kind === 'variable-set') {
+    const set = record.value as import('./models.js').VariableSet;
+    for (const variable of interpretedVariables(set)) {
+      if (set.schemaVersion === '1.0.0' && !['string', 'number', 'boolean', 'json'].includes(variable.valueType)) diagnostics.push(diagnostic('variable-version-required', 'Los tipos extendidos requieren VariableSet 1.1.0.'));
+      diagnostics.push(...validateVariable(variable));
+    }
+  }
   if (scopedKinds.has(record.kind)) {
     const validator = ajv.getSchema('https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid')!;
     if (!validator(record.workspaceId)) diagnostics.push(diagnostic('workspace-scope-missing', 'La vista requiere workspaceId válido.'));
@@ -100,7 +110,7 @@ export function validateRecord(record: unknown): Diagnostic[] {
   return diagnostics;
 }
 
-export const matchesValueType = (value: JsonValue, type: ValueType): boolean => type === 'json' || typeof value === type;
+export const matchesValueType = (value: JsonValue, type: ValueType): boolean => matchesTypedValue(value, { valueType: type });
 const typeKey = (value: { name: string; version: string }): string => `${value.name}@${value.version}`;
 export const findNodeType = (registry: TypeRegistry, entity: Entity): NodeType | undefined => {
   const builtin = entity.typeVersion === '1.0.0'
@@ -115,7 +125,10 @@ export const findNodeType = (registry: TypeRegistry, entity: Entity): NodeType |
   const structurizr = isStructurizrSource(entity.type) && entity.typeVersion === '1.0.0'
     ? { name: entity.type, version: '1.0.0', packageId: 'a3.builtin.structurizr', fields: [], ports: [], bindingFields: [], extensions: {} }
     : undefined;
-  return builtin ?? circuit ?? mermaid ?? structurizr ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`);
+  const content: NodeType | undefined = entity.typeVersion === '1.0.0' && CONTENT_NODE_CATALOG.some((item) => item.type === entity.type) ? {
+    name: entity.type, version: '1.0.0', packageId: 'a3.builtin.content', fields: [{ name: 'a3.display.label', valueType: 'string', required: false, acceptsBinding: true }],
+    ports: [], bindingFields: ['a3.display.label'], extensions: {} } : undefined;
+  return builtin ?? circuit ?? mermaid ?? structurizr ?? registry.nodeTypes.find((d) => typeKey(d) === `${entity.type}@${entity.typeVersion}`) ?? content;
 };
 export const findRelationType = (registry: TypeRegistry, relation: Relation): RelationType | undefined =>
   (relation.type === 'a3.conceptual.relationship' && relation.typeVersion === '1.0.0' ? conceptualRelationType() : undefined) ??
@@ -156,7 +169,14 @@ export function validateSnapshot(snapshot: DomainSnapshot, registry: TypeRegistr
       if (!definition) report(record, 'node-type-unavailable', `Tipo ${record.value.type}@${record.value.typeVersion} ausente; se conserva el contenido.`, 'warning');
       for (const field of definition?.fields ?? []) {
         const value = record.value.properties[field.name];
-        if (value === undefined ? field.required : !matchesValueType(value, field.valueType)) report(record, 'node-field-invalid', `Campo ${field.name} inválido.`);
+        if (record.value.bindings[field.name] !== undefined && definition) {
+          const workspaceIds = [...new Set(snapshot.records.filter((r) => r.kind === 'placement' && sameId(r.value.entityId, record.value.id)).map((r) => r.kind === 'placement' ? r.workspaceId : ''))];
+          const contexts = workspaceIds.length ? workspaceIds.map((workspaceId) => ({ workspaceId })) : [{}];
+          for (const context of contexts) {
+            const resolved = resolveEntityField(snapshot, definition, record.value, field.name, context);
+            if (!resolved.ok) for (const issue of resolved.diagnostics) report(record, issue.detail, issue.message, ['variable-missing', 'variable-context-required'].includes(issue.detail) ? 'warning' : 'error');
+          }
+        } else if (value === undefined ? field.required : !matchesTypedValue(value, field, lookup)) report(record, 'node-field-invalid', `Campo ${field.name} inválido.`);
       }
     }
     if (record.kind === 'collection') for (const id of record.value.entityIds) {
@@ -167,8 +187,8 @@ export function validateSnapshot(snapshot: DomainSnapshot, registry: TypeRegistr
       const owner = lookup({ kind: record.value.scope.kind, id: record.value.scope.ownerId });
       if (!owner) report(record, 'variable-owner-missing', 'Propietario de variables ausente.');
       if (new Set(record.value.variables.map((v) => v.name)).size !== record.value.variables.length) report(record, 'duplicate-variable', 'Variable repetida en el mismo alcance.');
-      for (const variable of record.value.variables) {
-        if (variable.source.kind === 'literal' && !matchesValueType(variable.source.value, variable.valueType)) {
+      for (const variable of interpretedVariables(record.value)) {
+        if (variable.source.kind === 'literal' && !matchesTypedValue(variable.source.value, variable, lookup)) {
           report(record, 'variable-type-invalid', `Tipo de ${variable.name} inválido.`);
         }
         const scope = record.value.scope;
@@ -177,7 +197,7 @@ export function validateSnapshot(snapshot: DomainSnapshot, registry: TypeRegistr
           ...(scope.kind === 'entity' ? { entityId: scope.ownerId } : {})
         }, lookup);
         if (!result.ok) for (const issue of result.diagnostics) report(record, issue.detail, issue.message,
-          issue.detail === 'variable-missing' ? 'warning' : 'error');
+          ['variable-missing', 'variable-context-required'].includes(issue.detail) ? 'warning' : 'error');
       }
     }
     if (record.kind === 'placement' && !lookup({ kind: 'entity', id: record.value.entityId })) report(record, 'entity-missing', `Entidad ${record.value.entityId} ausente.`);

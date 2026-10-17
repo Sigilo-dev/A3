@@ -121,7 +121,7 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
     <Handle id="visual-source" type="source" position={Position.Right} isConnectable={data.canWrite && data.tool === 'connect'} aria-label="Origen de línea visual" />
     <NodeResizer isVisible={selected && data.canWrite && data.tool === 'select' && data.placement.style['a3.ui.locked'] !== true} minWidth={180} minHeight={130} color="#c3ed82"
       onResizeEnd={(_, size) => data.onResizeEnd(data.placement.id, { x: size.x, y: size.y }, { width: size.width, height: size.height })} />
-    <header className="canvas-entity-header"><strong>{data.entity.title || data.entity.type}{data.placement.style['a3.ui.locked'] === true ? ' · Bloqueado' : ''}</strong><small>{data.entity.type}@{data.entity.typeVersion}</small></header>
+    <header className="canvas-entity-header"><strong>{data.entity.displayTitle ?? (data.entity.title || data.entity.type)}{data.placement.style['a3.ui.locked'] === true ? ' · Bloqueado' : ''}</strong><small>{data.entity.type}@{data.entity.typeVersion}</small></header>
     {!data.entity.typeAvailable && <p className="canvas-fallback-label">Tipo o paquete no instalado · propiedades conservadas</p>}
     <div className="canvas-entity-body nodrag nopan nowheel">
       <UmlNodeBody entity={data.entity} />
@@ -282,7 +282,7 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
       style: { width: placement.size.width, height: placement.size.height }, draggable: workspace.canWrite && tool === 'select' && placement.style['a3.ui.locked'] !== true,
       zIndex: typeof placement.style['a3.ui.z-index'] === 'number' ? placement.style['a3.ui.z-index'] : 1,
       dragHandle: '.canvas-entity-header', selectable: true, focusable: true, selected: existing?.selected,
-      ariaLabel: `${entity.title || entity.type}${placement.style['a3.ui.locked'] === true ? ', bloqueado' : ''}`,
+      ariaLabel: `${entity.displayTitle ?? (entity.title || entity.type)}${placement.style['a3.ui.locked'] === true ? ', bloqueado' : ''}`,
       data: { sessionId: workspace.sessionId, workspaceId: workspace.workspaceId, entity, placement, diagramStyle: workspace.diagramStyle, canWrite: workspace.canWrite, tool, onResizeEnd, onOpenMarkdown, onDiagramImported, onProjectsChanged } }];
   });
   const groupNodes: CanvasGroupNode[] = workspace.groups.filter((group) => !groups.hiddenGroups.has(group.id.toLowerCase())).map((group) => {

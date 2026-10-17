@@ -25,10 +25,16 @@
               "string",
               "number",
               "boolean",
+              "enum",
+              "list",
+              "reference",
               "json"
             ]
           },
           "required": {
+            "type": "boolean"
+          },
+          "acceptsBinding": {
             "type": "boolean"
           }
         },
@@ -37,7 +43,12 @@
           "valueType",
           "required"
         ],
-        "additionalProperties": true
+        "additionalProperties": true,
+        "allOf": [
+          {
+            "$ref": "https://sigilo-dev.github.io/A3/schemas/e1/value-spec.schema.json#/$defs/spec"
+          }
+        ]
       }
     },
     "ports": {

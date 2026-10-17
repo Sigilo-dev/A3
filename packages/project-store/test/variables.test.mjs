@@ -1,0 +1,93 @@
+import assert from 'node:assert/strict';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import test from 'node:test';
+import { LocalProjectManager, sha256 } from '../dist/index.js';
+import { scratch, fixtureHost, E1, W1 } from './fixture.mjs';
+const W2 = '00000000-0000-4000-8000-000000000007';
+const scenario = JSON.parse(await readFile(new URL('../../../fixtures/e4/variables/scenario.json', import.meta.url), 'utf8'));
+const windows = { skip: process.platform !== 'win32' };
+async function project(t) {
+  const { root, tempRoot } = await scratch(t), host = await fixtureHost(root, 'typed-variables');
+  const manager = new LocalProjectManager({ stateDirectory: join(tempRoot, 'catalog'), host }); t.after(() => manager.dispose());
+  const session = (await manager.openFolder(root)).active; return { root, tempRoot, host, manager, sessionId: session.sessionId, projectId: host.projectId };
+}
+async function put(c, scope, variables, expectedRevision = null, query = {}) { return c.manager.setProjectVariables(c.sessionId, { scope, variables: structuredClone(variables), expectedRevision }, query); }
+const effective = (state, name = 'demo.name') => state.effective.find((entry) => entry.name === name).result;
+
+test('A3-018/A3-004: project/workspace/entity values, bound labels and ID references survive reopen without changing Markdown', windows, async (t) => {
+  const c = await project(t), { manager, root, projectId } = c;
+  const descriptor = JSON.parse(await readFile(join(root, '.a3/resources/00000000-0000-4000-8000-000000000004.json'), 'utf8'));
+  const sourcePath = join(root, descriptor.path), source = await readFile(sourcePath);
+  let state = await put(c, { kind: 'project', ownerId: projectId }, scenario.project);
+  await put(c, { kind: 'workspace', ownerId: W1 }, scenario.firstWorkspace); await put(c, { kind: 'workspace', ownerId: W2 }, scenario.secondWorkspace);
+  state = await manager.loadProjectVariables(c.sessionId, { entityId: E1, workspaceId: W1 });
+  const revision = state.entities.find((e) => e.id === E1).revision;
+  await manager.bindProjectVariable(c.sessionId, E1, revision, 'a3.display.label', { kind: 'variable', name: 'demo.name' }, { workspaceId: W1, entityId: E1 });
+  const first = await manager.loadCanvasWorkspace(c.sessionId, W1), second = await manager.loadCanvasWorkspace(c.sessionId, W2);
+  assert.equal(first.entities.find((e) => e.id === E1).displayTitle, 'first workspace'); assert.equal(second.entities.find((e) => e.id === E1).displayTitle, 'second workspace');
+  assert.equal(first.entities.find((e) => e.id === E1).title, second.entities.find((e) => e.id === E1).title);
+  const entityFile = join(root, '.a3/entities', E1 + '.json'), beforeEntity = await readFile(entityFile);
+  const stored = JSON.parse(await readFile(join(root, '.a3/variables/project.json'), 'utf8')); stored.extensions['fixture.future'] = { keep: true }; stored.variables[0].source.future = { keep: 'source' };
+  // Use a closed lease to simulate a normal external update, then reopen and preserve it.
+  await manager.closeActive(c.sessionId); await writeFile(join(root, '.a3/variables/project.json'), JSON.stringify(stored, null, 2)); c.sessionId = (await manager.openFolder(root)).active.sessionId;
+  const changed = scenario.project.map((v) => v.name === 'demo.name' ? { ...v, source: { kind: 'literal', value: 'project changed' } } : v);
+  await put(c, { kind: 'project', ownerId: projectId }, changed, 1);
+  assert.deepEqual(await readFile(entityFile), beforeEntity); assert.deepEqual(await readFile(sourcePath), source);
+  const saved = JSON.parse(await readFile(join(root, '.a3/variables/project.json'), 'utf8'));
+  assert.deepEqual(saved.extensions['fixture.future'], { keep: true }); assert.deepEqual(saved.variables[0].source.future, { keep: 'source' });
+  await put(c, { kind: 'entity', ownerId: E1 }, scenario.entity);
+  const transient = await manager.loadProjectVariables(c.sessionId, { workspaceId: W2, entityId: E1, executionVariables: scenario.execution });
+  assert.equal(effective(transient).value.scope.kind, 'execution'); assert.equal(effective(transient).value.value, 'temporary execution');
+  assert.equal(effective(await manager.loadProjectVariables(c.sessionId, { workspaceId: W2, entityId: E1 })).value.scope.kind, 'entity');
+  await manager.closeActive(c.sessionId); c.sessionId = (await manager.openFolder(root)).active.sessionId;
+  assert.equal((await manager.loadCanvasWorkspace(c.sessionId, W2)).entities.find((e) => e.id === E1).displayTitle, 'entity override');
+  assert.equal(effective(await manager.loadProjectVariables(c.sessionId), 'demo.resource').value.value.id, '00000000-0000-4000-8000-000000000004');
+  assert.equal((await readdir(join(root, '.a3/variables'))).some((name) => /execution/.test(name)), false);
+});
+
+test('A3-018/A3-047: stale revision, invalid types/credential markers and revocation never change accepted bytes', windows, async (t) => {
+  const c = await project(t), scope = { kind: 'project', ownerId: c.projectId };
+  await put(c, scope, scenario.project); const path = join(c.root, '.a3/variables/project.json'), original = await readFile(path);
+  await assert.rejects(put(c, scope, [], null), { code: 'REVISION_CONFLICT' });
+  await assert.rejects(put(c, scope, [{ name: 'demo.bad', valueType: 'enum', enumValues: ['one'], source: { kind: 'literal', value: 'two' } }], 1));
+  await assert.rejects(put(c, scope, [{ name: 'auth.password', valueType: 'string', source: { kind: 'literal', value: 'fixture only' } }], 1), { code: 'VARIABLE_INVALID' });
+  await c.host.capabilities.revoke({ root: c.root, projectId: c.projectId, capability: 'document.edit' });
+  await assert.rejects(put(c, scope, [], 1), { code: 'PERMISSION_DENIED' });
+  assert.deepEqual(await readFile(path), original);
+});
+
+test('A3-018: a wrong workspace override cannot invalidate another view; unbind preserves IDs and source', windows, async (t) => {
+  const c = await project(t); await put(c, { kind: 'project', ownerId: c.projectId }, scenario.project);
+  const state = await c.manager.loadProjectVariables(c.sessionId, { entityId: E1, workspaceId: W1 });
+  await c.manager.bindProjectVariable(c.sessionId, E1, state.entities.find((e) => e.id === E1).revision, 'a3.display.label', { kind: 'variable', name: 'demo.name' }, { workspaceId: W1 });
+  const path = join(c.root, '.a3/entities', E1 + '.json'), before = sha256(await readFile(path));
+  await assert.rejects(put(c, { kind: 'workspace', ownerId: W2 }, [{ name: 'demo.name', valueType: 'number', source: { kind: 'literal', value: 42 } }]));
+  assert.equal(sha256(await readFile(path)), before);
+  await assert.rejects(c.manager.bindProjectVariable(c.sessionId, E1, state.entities.find((e) => e.id === E1).revision, 'a3.display.label', null), { code: 'REVISION_CONFLICT' });
+  const current = await c.manager.loadProjectVariables(c.sessionId, { entityId: E1 });
+  assert.equal(effective(current).ok, true);
+  await c.manager.bindProjectVariable(c.sessionId, E1, current.entities.find((e) => e.id === E1).revision, 'a3.display.label', null);
+  assert.equal((await c.manager.loadCanvasWorkspace(c.sessionId, W1)).entities.find((e) => e.id === E1).displayTitle, undefined);
+});
+
+test('A3-018: query execution values and bindings cannot leak into a different project session', windows, async (t) => {
+  const c = await project(t); await put(c, { kind: 'project', ownerId: c.projectId }, scenario.project);
+  await c.manager.loadProjectVariables(c.sessionId, { executionVariables: scenario.execution }); const old = c.sessionId;
+  await c.manager.closeActive(old); c.sessionId = (await c.manager.openFolder(c.root)).active.sessionId;
+  await assert.rejects(c.manager.loadProjectVariables(old, { executionVariables: scenario.execution }), { code: 'STALE_SESSION' });
+  assert.equal(effective(await c.manager.loadProjectVariables(c.sessionId)).value.value, 'project label');
+  const invalid = await c.manager.loadProjectVariables(c.sessionId, { referenceScope: { kind: 'project', ownerId: c.projectId }, executionVariables: [{ name: 'demo.bad', valueType: 'number', source: { kind: 'literal', value: 'text' } }] });
+  assert.ok(invalid.executionDiagnostics.some((d) => d.detail === 'variable-type-invalid'));
+});
+test('A3-048: a corrupt or unknown-version variable set is diagnosed, never treated as an empty writable scope', windows, async (t) => {
+  const c = await project(t); await put(c, { kind: 'project', ownerId: c.projectId }, scenario.project);
+  const path = join(c.root, '.a3/variables/project.json');
+  const document = JSON.parse(await readFile(path, 'utf8'));
+  for (const bytes of [Buffer.from('{invalid json'), Buffer.from(JSON.stringify({ ...document, schemaVersion: '2.0.0' }))]) {
+    await c.manager.closeActive(c.sessionId); await writeFile(path, bytes); c.sessionId = (await c.manager.openFolder(c.root)).active.sessionId;
+    const read = await c.manager.loadProjectVariables(c.sessionId); assert.ok(read.blockedScopes.some((entry) => entry.scope.kind === 'project'));
+    await assert.rejects(put(c, { kind: 'project', ownerId: c.projectId }, [], null), { code: 'VARIABLE_SET_READ_ONLY' });
+    assert.deepEqual(await readFile(path), bytes);
+  }
+});

@@ -31,6 +31,8 @@ import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
 import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
 import { buildMediaGalleryCatalog, mediaGalleryKind, type MediaGalleryAvailability, type MediaGalleryCatalog } from './media-gallery.js';
+import { findNodeType, resolveEntityField, validateVariable, type VariableBinding } from '@a3/domain';
+import { projectVariablesState, type ProjectVariablesState, type SetProjectVariables, type VariablesQuery } from './variables.js';
 import type { DerivedMediaType, DerivedResourceSource, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, PreparedWrite, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -74,6 +76,7 @@ export interface LocalProjectsState {
 export interface WorkspaceViewport { x: number; y: number; zoom: number; }
 export interface DiagramStyleState { projectRevision: number; profile: DiagramStyleProfile; canWrite: boolean; diagnostics: readonly string[]; }
 export interface CanvasEntitySummary {
+  displayTitle?: string;
   c4Category?: C4Category;
   id: string; revision: number; type: string; typeVersion: string; title: string; properties: Entity['properties']; ports: Entity['ports'];
   contentResourceId?: string; contentResource?: CanvasResourceDescriptor; typeAvailable: boolean;
@@ -853,6 +856,10 @@ export class LocalProjectManager {
     const placedIds = new Set(placements.map((placement) => placement.entityId.toLowerCase()));
     const entities = choices.filter(({ value }) => placedIds.has(value.id.toLowerCase()))
       .map(({ value }) => ({ id: value.id, revision: value.revision, type: value.type, typeVersion: value.typeVersion,
+        ...(value.bindings['a3.display.label'] && findNodeType(registry, value) ? (() => {
+          const resolved = resolveEntityField(snapshot, findNodeType(registry, value)!, value, 'a3.display.label', { workspaceId });
+          return resolved.ok && typeof resolved.value.value === 'string' ? { displayTitle: resolved.value.value } : {};
+        })() : {}),
         title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
           ...(resources.get(value.contentResourceId.toLowerCase()) ? { contentResource: resourceDescriptor(resources.get(value.contentResourceId.toLowerCase())!) } : {}) } : {}),
         ...(c4Category(value, registry) ? { c4Category: c4Category(value, registry)! } : {}),
@@ -912,6 +919,54 @@ export class LocalProjectManager {
   }
   loadCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
     return this.#queue(async () => { const { active } = this.#canvasContext(sessionId, workspaceId); await this.#canvasHistory(active, workspaceId); return this.#canvasWorkspace(sessionId, workspaceId); });
+  }
+  #variablesContext(sessionId: string): ActiveProjectBinding {
+    const active = this.#active; demand(active?.sessionId === sessionId, 'STALE_SESSION', 'Las variables pertenecen a otra sesión de proyecto.');
+    const access = this.options.host.capabilities.authorizeAccess({ root: active.lease.service.root, projectId: active.projectId, actor: this.options.host.authenticatedActor,
+      operation: 'read-resource', paths: [], refs: [{ kind: 'project', id: active.projectId }], resources: [] });
+    demand(access.allowed, 'PERMISSION_DENIED', 'El broker denegó la lectura de variables.'); return active;
+  }
+  #variablesState(sessionId: string, query: VariablesQuery): ProjectVariablesState {
+    const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+    for (const [kind, id] of [['workspace', query.workspaceId], ['entity', query.entityId]] as const) if (id !== undefined) demand(snapshot.records.some((r) => r.kind === kind && 'id' in r.value && r.value.id.toLowerCase() === id.toLowerCase()), 'VARIABLE_CONTEXT_MISSING', 'El contexto seleccionado ya no existe.');
+    const edit = this.options.host.capabilities.authorizeAccess({ root: active.lease.service.root, projectId: active.projectId, actor: this.options.host.authenticatedActor,
+      operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: ['document.edit'], stage: 'prepare' });
+    const result = projectVariablesState(snapshot, active.lease.service.typeRegistry, sessionId, active.projectId, edit.allowed && active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict, query);
+    result.blockedScopes = active.lease.service.state.project.documents.flatMap((doc) => {
+      if (doc.location.kind !== 'variable-set' || doc.status === 'valid' || !doc.location.variableScope) return [];
+      const ownerId = doc.location.variableScope === 'project' ? active.projectId : basename(doc.location.path, '.json');
+      return uuid.test(ownerId) ? [{ scope: { kind: doc.location.variableScope, ownerId }, diagnostics: doc.diagnostics.map((d) => d.detail + ': ' + d.message) }] : [];
+    }); return result;
+  }
+  loadProjectVariables(sessionId: string, query: VariablesQuery = {}): Promise<ProjectVariablesState> { return this.#queue(async () => this.#variablesState(sessionId, query)); }
+  setProjectVariables(sessionId: string, input: SetProjectVariables, query: VariablesQuery = {}): Promise<ProjectVariablesState> {
+    const captured = structuredClone(input); return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+      const blocked = this.#variablesState(sessionId, query).blockedScopes.some((entry) => entry.scope.kind === captured.scope.kind && entry.scope.ownerId.toLowerCase() === captured.scope.ownerId.toLowerCase());
+      demand(!blocked, 'VARIABLE_SET_READ_ONLY', 'El documento del ámbito es corrupto o de versión no soportada. Se conservan sus bytes; requiere reparación explícita.');
+      const ref: DocumentRef = { kind: 'variable-set', id: captured.scope.ownerId, variableScope: captured.scope.kind };
+      const current = snapshot.records.find((r) => refKey(refOf(r)) === refKey(ref));
+      demand((current?.value.revision ?? null) === captured.expectedRevision, 'REVISION_CONFLICT', 'El ámbito cambió. Recarga y compara el borrador antes de guardar.');
+      const issues = captured.variables.flatMap(validateVariable); demand(!issues.length, 'VARIABLE_INVALID', issues.map((d) => d.detail + ': ' + d.message).join('\n'));
+      await this.#commitCanvasCommand(active, { command: 'a3.core.set-variables', payload: { scope: captured.scope, variables: captured.variables } }, captured.scope.kind === 'entity' ? [captured.scope.ownerId] : [], current ? undefined : ref);
+      return this.#variablesState(sessionId, query);
+    });
+  }
+  bindProjectVariable(sessionId: string, entityId: string, expectedRevision: number, field: string, binding: VariableBinding | null, query: VariablesQuery = {}): Promise<ProjectVariablesState> {
+    const captured = structuredClone(binding); return this.#queue(async () => {
+      this.#variablesState(sessionId, query);
+      const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+      const record = snapshot.records.find((r) => r.kind === 'entity' && r.value.id.toLowerCase() === entityId.toLowerCase());
+      demand(record?.kind === 'entity' && record.value.revision === expectedRevision, 'REVISION_CONFLICT', 'La entidad cambió; vuelve a cargar su inspector.');
+      const definition = findNodeType(active.lease.service.typeRegistry, record.value); demand(definition, 'NODE_TYPE_UNAVAILABLE', 'No hay contrato para este tipo de nodo.');
+      if (captured) {
+        const candidate = { ...record.value, bindings: { ...record.value.bindings, [field]: captured as unknown as JsonValue } };
+        const result = resolveEntityField(snapshot, definition, candidate, field, query);
+        demand(result.ok, 'VARIABLE_BINDING_INVALID', result.diagnostics.map((d) => d.detail + ': ' + d.message).join('\n'));
+      }
+      await this.#commitCanvasCommand(active, { command: 'a3.variables.bind-field', payload: { entityId, field, binding: captured } }, [entityId]);
+      return this.#variablesState(sessionId, query);
+    });
   }
   loadMediaConversionSource(sessionId: string, resourceId: string): Promise<MediaConversionSource> {
     return this.#queue(async () => {

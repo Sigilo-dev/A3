@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigilo-dev.github.io/A3/schemas/e1/value-spec.schema.json",
+  "$defs": {
+    "spec": {
+      "type": "object",
+      "properties": {
+        "valueType": { "enum": ["string", "number", "boolean", "enum", "list", "reference", "json"] },
+        "enumValues": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } },
+        "items": { "$ref": "#/$defs/spec" },
+        "referenceKinds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["entity", "resource"] } },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" }
+      },
+      "required": ["valueType"],
+      "allOf": [
+        { "if": { "properties": { "valueType": { "const": "enum" } } }, "then": { "properties": { "enumValues": {} }, "required": ["enumValues"] } },
+        { "if": { "properties": { "valueType": { "const": "list" } } }, "then": { "properties": { "items": {} }, "required": ["items"] } }
+      ],
+      "additionalProperties": true
+    }
+  }
+}

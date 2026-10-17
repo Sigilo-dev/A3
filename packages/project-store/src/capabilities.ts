@@ -77,6 +77,7 @@ function safeOperation(value: string): string {
   const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
   if (new RegExp(`^a3\\.core\\.[a-z-]+(?::${uuid})?$`, 'i').test(value)) return value.replace(new RegExp(`:${uuid}$`, 'i'), ':<operation-id>');
   if (new RegExp(`^a3\\.diagrams\\.[a-z-]+(?::${uuid})?$`, 'i').test(value)) return value.replace(new RegExp(`:${uuid}$`, 'i'), ':<operation-id>');
+  if (new RegExp(`^a3\\.variables\\.[a-z-]+(?::${uuid})?$`, 'i').test(value)) return value.replace(new RegExp(`:${uuid}$`, 'i'), ':<operation-id>');
   if (/^policy\.profile:(consultar|proponer|trabajar|personalizado)$/.test(value)) return value;
   if (/^policy\.grant:(deny|propose|approval|direct)$/.test(value)) return value;
   if (/^mount\.bind:(read-only|read-write)$/.test(value)) return value;

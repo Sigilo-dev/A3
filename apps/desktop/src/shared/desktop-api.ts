@@ -22,6 +22,7 @@ export const NAVIGATION_CHANNEL = 'a3.navigation:command';
 export const GALLERY_CHANNEL = 'a3.gallery:command';
 export const IMAGE_CONVERSION_CHANNEL = 'a3.media:image-conversion';
 export const AV_CONVERSION_CHANNEL = 'a3.media:av-conversion';
+export const VARIABLES_CHANNEL = 'a3.variables:command';
 export type { AvRequest, AvResult, AvJobView, AvEngineInfo, AvSettings } from './av-conversion';
 export type { ImageConversionRequest, ImageConversionResult, ImageConversionView, ImageConversionSettings, ImageInspection, ImageOutputInfo } from './image-conversion';
 export type GalleryRequest = { action: 'load'; sessionId: string } | { action: 'preview'; sessionId: string; resourceId: string; purpose?: 'preview' | 'playback' };
@@ -160,6 +161,7 @@ export type ShellResult<T> =
   | { ok: false; error: { code: 'PERMISSION_DENIED' | 'IO_FAILED'; message: string; recovery: string } };
 
 export interface DesktopAPI {
+  variables(request: import('./variables').VariablesRequest): Promise<import('./variables').VariablesResult>;
   getAppInfo(): Promise<ShellResult<AppInfo>>;
   projects(request: ProjectsRequest): Promise<ProjectsResult>;
   workspaceSession(request: WorkspaceSessionRequest): Promise<WorkspaceSessionResult>;

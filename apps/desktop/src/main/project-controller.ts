@@ -11,6 +11,7 @@ import { ImageConversionJobs, runImageWorker } from './image-conversion';
 import { AvConversionJobs } from './av-conversion';
 import { AvEngine } from './av-engine';
 import { validAvRequest, type AvResult } from '../shared/av-conversion';
+import { validVariablesRequest, type VariablesResult } from '../shared/variables';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
@@ -559,6 +560,15 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
+    async handleVariables(value: unknown): Promise<VariablesResult> {
+      if (!validVariablesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de variables inválida.', recovery: 'Revisa los campos y el ámbito; ejecución nunca se guarda.' } };
+      try {
+        const state = value.action === 'load' ? await manager.loadProjectVariables(value.sessionId, value.query) : value.action === 'set' ?
+          await manager.setProjectVariables(value.sessionId, value.input, value.query) : await manager.bindProjectVariable(value.sessionId, value.entityId, value.expectedRevision, value.field, value.binding, value.query);
+        return { ok: true, value: state };
+      } catch (error) { return { ok: false, error: { code: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'VARIABLES_FAILED',
+        message: error instanceof Error ? error.message : 'No se pudo completar la operación de variables.', recovery: 'El borrador y los archivos se conservan. Recarga para comparar revisiones, revisa permisos y tipos.' } }; }
+    },
     imageConversions,
     avConversions,
     async handleAvConversion(value: unknown): Promise<AvResult> {

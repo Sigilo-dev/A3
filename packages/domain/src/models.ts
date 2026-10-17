@@ -56,15 +56,22 @@ export interface DrawingAsset extends OpenData { schemaVersion: string; strokes:
 export interface GroupMember extends OpenData { kind: 'placement' | 'group' | 'drawing'; id: UUID; }
 export interface Group extends Document { name: string; members: GroupMember[]; collapsed?: boolean; }
 export interface Collection extends Document { name: string; entityIds: UUID[]; }
-export type ValueType = 'string' | 'number' | 'boolean' | 'json';
-export interface Variable extends OpenData {
-  name: Namespace; valueType: ValueType;
-  source: ({ kind: 'literal'; value: JsonValue } | { kind: 'reference'; name: Namespace }) & OpenData;
+export type ValueType = 'string' | 'number' | 'boolean' | 'enum' | 'list' | 'reference' | 'json';
+/** json remains readable for E1 compatibility; new product variables use the six typed forms. */
+export interface ValueSpec extends OpenData {
+  valueType: ValueType; enumValues?: string[]; items?: ValueSpec; referenceKinds?: ('entity' | 'resource')[];
+  minimum?: number; maximum?: number;
+}
+export type VariableSelectorScope = VariableScope | { kind: 'execution' };
+export interface VariableBinding extends OpenData { kind: 'variable'; name: Namespace; scope?: VariableSelectorScope; }
+export interface Variable extends ValueSpec {
+  name: Namespace;
+  source: ({ kind: 'literal'; value: JsonValue } | { kind: 'reference'; name: Namespace; scope?: VariableSelectorScope }) & OpenData;
 }
 export interface VariableScope extends OpenData { kind: 'project' | 'workspace' | 'entity'; ownerId: UUID; }
 export interface VariableSet extends Revisioned { scope: VariableScope; variables: Variable[]; }
 export type PortDirection = 'input' | 'output' | 'inout';
-export interface FieldRule extends OpenData { name: Namespace; valueType: ValueType; required: boolean; }
+export interface FieldRule extends ValueSpec { name: Namespace; required: boolean; acceptsBinding?: boolean; }
 // Immutable, versioned package definitions. They are not Entity documents.
 export interface NodeType extends OpenData {
   name: Namespace; version: string; packageId: Namespace; fields: FieldRule[];
@@ -157,6 +164,7 @@ export interface StructurizrImportChange {
 }
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
 export type Payloads = {
+  'a3.variables.bind-field': { entityId: UUID; field: Namespace; binding: VariableBinding | null };
   'a3.diagrams.set-style': { profile: DiagramStyleProfile };
   'a3.er.change': ErChange;
   'a3.mermaid.import': MermaidImportChange;

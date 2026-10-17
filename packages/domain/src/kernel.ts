@@ -1,5 +1,5 @@
 import { canonical, copy, diagnostic, freeze, getRecord, isJson, isObject, refKey, refOf, revisionsOf, sameId, UUID_PATTERN } from './data.js';
-import { findRelationType, validateDefinition, validateRecord, validateRegistry, validateSnapshot } from './validation.js';
+import { findNodeType, findRelationType, validateDefinition, validateRecord, validateRegistry, validateSnapshot } from './validation.js';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition } from './content-nodes.js';
 import { applyC4Change } from './c4-commands.js';
 import { applyUmlChange } from './uml-commands.js';
@@ -15,6 +15,7 @@ import { c4Category, c4Data } from './c4.js';
 import { CONCEPTUAL_KIND_KEY, CONCEPTUAL_LABEL_KEY, CONCEPTUAL_RELATION_TYPE, CONCEPTUAL_RELATION_VERSION,
   conceptualNodeDefinition, isConceptualEntity, isConceptualNodeKind, isConceptualRelation, isConceptualRelationKind } from './conceptual-diagrams.js';
 import { DIAGRAM_STYLE_EXTENSION, validateDiagramStyleProfile } from './diagram-style.js';
+import { mergeValueSpec } from './variables.js';
 import type { CommandContext, ContentEffect, Diagnostic, DocumentKinds, DocumentRef, DomainCommand, DomainRecord, DomainSnapshot, DuplicateSelection, ExpectedRevision, JsonValue, NodeTypeChange, Outcome, Payloads, PreparedPlan, RecordChange, RecordKind, ReversibleCanvasCommand, Resource, ResourceLocation, TypeRegistry } from './models.js';
 
 class DomainFault extends Error {
@@ -35,7 +36,7 @@ const commands = new Set(['a3.core.create-project', 'a3.core.create-document', '
   'a3.core.create-content-node',
   'a3.conceptual.create-node', 'a3.conceptual.update-node', 'a3.conceptual.create-relation', 'a3.conceptual.update-relation', 'a3.conceptual.delete-relation',
   'a3.core.move-placement', 'a3.core.move-placements', 'a3.core.update-placement-view', 'a3.core.update-placement-views', 'a3.core.update-visual-edge', 'a3.core.update-drawing', 'a3.core.convert-drawings-to-node', 'a3.core.move-resource', 'a3.core.move-group', 'a3.core.set-group-members', 'a3.core.set-group-collapsed', 'a3.core.set-collection-members',
-  'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.apply-canvas-history', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
+  'a3.variables.bind-field', 'a3.core.set-variables', 'a3.core.set-workspace-viewport', 'a3.core.delete', 'a3.core.duplicate-selection', 'a3.core.apply-canvas-history', 'a3.core.register-node-type', 'a3.core.unregister-node-type']);
 const kinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
 const scoped = new Set(['placement', 'visual-edge', 'relation-view', 'group', 'drawing']);
 
@@ -1046,14 +1047,30 @@ function apply(draft: Draft): void {
       const scope = request.payload.scope;
       const ref: DocumentRef = { kind: 'variable-set', id: scope.ownerId, variableScope: scope.kind };
       if (getRecord(draft.snapshot, ref)) draft.edit(ref, 'variable-set', (value) => {
+        const legacy = value.schemaVersion === '1.0.0';
+        value.schemaVersion = '1.1.0';
         value.variables = request.payload.variables.map((variable) => {
           const old = value.variables.find((v) => v.name === variable.name);
           const source: Record<string, unknown> = { ...old?.source };
+          if (legacy && old?.source.kind === 'reference' && Object.hasOwn(old.source, 'scope') && variable.source.kind === 'reference' && !Object.hasOwn(variable.source, 'scope')) fail('variable-legacy-scope-review', 'La fuente E1 tiene un campo scope opaco; revísalo explícitamente antes de adoptar VariableSet 1.1.0.');
           delete source.value; delete source.name;
-          return { ...old, ...copy(variable), source: { ...source, ...copy(variable.source) } };
+          if (!legacy || Object.hasOwn(variable.source, 'scope')) delete source.scope;
+          return { ...old, ...copy(variable), ...(variable.items ? { items: mergeValueSpec(old?.items, variable.items) } : {}), source: { ...source, ...copy(variable.source) } };
         });
       });
-      else draft.add({ kind: 'variable-set', value: { schemaVersion: '1.0.0', revision: 1, extensions: {}, scope: copy(scope), variables: copy(request.payload.variables) } });
+      else draft.add({ kind: 'variable-set', value: { schemaVersion: '1.1.0', revision: 1, extensions: {}, scope: copy(scope), variables: copy(request.payload.variables) } });
+      break;
+    }
+    case 'a3.variables.bind-field': {
+      const { entityId, field, binding } = request.payload;
+      const record = getRecord(draft.snapshot, { kind: 'entity', id: entityId });
+      if (record?.kind !== 'entity') fail('entity-missing', 'Entidad de binding ausente.');
+      const definition = findNodeType(draft.registry, record.value);
+      if (!definition?.bindingFields.includes(field) || !definition.fields.some((rule) => rule.name === field && rule.acceptsBinding !== false)) fail('node-binding-forbidden', 'El tipo no declara este campo como compatible con bindings.');
+      draft.edit({ kind: 'entity', id: entityId }, 'entity', (value) => {
+        if (binding === null) delete value.bindings[field];
+        else value.bindings[field] = copy(binding) as unknown as JsonValue;
+      });
       break;
     }
     case 'a3.core.delete': deleteRecord(draft, request.payload); break;

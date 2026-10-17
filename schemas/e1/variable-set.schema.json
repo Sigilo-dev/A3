@@ -4,7 +4,7 @@
   "type": "object",
   "properties": {
     "schemaVersion": {
-      "const": "1.0.0"
+      "enum": ["1.0.0", "1.1.0"]
     },
     "revision": {
       "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/revision"
@@ -45,6 +45,9 @@
               "string",
               "number",
               "boolean",
+              "enum",
+              "list",
+              "reference",
               "json"
             ]
           },
@@ -88,7 +91,12 @@
           "valueType",
           "source"
         ],
-        "additionalProperties": true
+        "additionalProperties": true,
+        "allOf": [
+          {
+            "$ref": "https://sigilo-dev.github.io/A3/schemas/e1/value-spec.schema.json#/$defs/spec"
+          }
+        ]
       }
     }
   },
