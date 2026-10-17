@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { createDeclarativeNodePackage, type DeclarativeNodePackage, type FieldRule, type NodeType, type NodeTypeCollection, type NodeTypeMapping, type ValueType } from '@a3/domain';
+import type { DeclarativeNodePackage, FieldRule, NodeType, NodeTypeCollection, NodeTypeMapping, ValueType } from '@a3/domain';
 import type { LocalProjectSession, NodePackagesRequest, NodePackagesResult } from '../../shared/desktop-api';
 import type { NodePackageImportReview, ProjectNodePackagesState } from '@a3/project-store';
+import { ExtensionHostPanel } from './ExtensionHostPanel';
 
 interface FieldDraft { name: string; valueType: ValueType; required: boolean; acceptsBinding: boolean; defaultValue: string; enumValues: string; }
 interface PortDraft { id: string; label: string; direction: 'input' | 'output'; dataType: string; min: string; max: string; }
@@ -42,8 +43,10 @@ function composePackage(input: {
     exportMappings: mappings(input.exportFormat, input.exportTarget, input.exportFields, input.exportPorts), extensions: {} };
   const collection: NodeTypeCollection = { id: input.collectionId, name: input.collectionName, typeRefs: [{ name: nodeType.name, version: nodeType.version }] };
   const types = [nodeType], collections = [collection];
-  return createDeclarativeNodePackage({ id: input.packageId, name: input.packageName, version: input.version, license: input.license,
-    a3ApiVersion: '1.0.0', nodeTypes: types, collections });
+  // Transient form data only; the host owns schema validation and installation.
+  return { schemaVersion: '1.0.0', manifest: { schemaVersion: '1.0.0', id: input.packageId, name: input.packageName, version: input.version, license: input.license,
+    a3ApiVersion: '1.0.0', contributes: { 'a3.node-types': { types: types.map((type) => `${type.name}@${type.version}`).sort(), collections: collections.map((item) => item.id).sort() } },
+    permissions: [], extensions: {} }, nodeTypes: types, collections, extensions: {} };
 }
 
 async function call(request: NodePackagesRequest): Promise<ProjectNodePackagesState | NodePackageImportReview> {
@@ -231,6 +234,7 @@ export function NodePackagesPanel({ project }: { project: LocalProjectSession | 
               : <button type="button" className="secondary" disabled={!state?.canWrite || busy || entry.status === 'integrity-mismatch' || entry.status === 'lock-invalid' || entry.status === 'conflict'} onClick={() => { void reviewExisting(entry); }}>Revisar e instalar</button>}</div>
         </article>; })}
       </section>
+      <ExtensionHostPanel project={project} />
     </>}
   </section>;
 }

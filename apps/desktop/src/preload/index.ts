@@ -8,6 +8,7 @@ import { MANUAL_CHAT_CHANNEL, type ManualChatRequest } from '../shared/manual-ch
 import { CODEX_AUTH_CHANNEL, type CodexAuthRequest } from '../shared/codex-auth';
 import { VARIABLES_CHANNEL } from '../shared/desktop-api';
 import { AGENT_PROFILES_CHANNEL, type AgentProfilesRequest } from '../shared/agent-profiles';
+import { EXTENSION_HOST_CHANNEL, type ExtensionsRequest } from '../shared/extensions';
 import type { VariablesRequest } from '../shared/variables';
 import { AV_CONVERSION_CHANNEL, IMAGE_CONVERSION_CHANNEL, type AvRequest, type ImageConversionRequest } from '../shared/desktop-api';
 import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL, type NavigationRequest, type WorkspaceSessionRequest } from '../shared/desktop-api';
@@ -45,6 +46,7 @@ const api: DesktopAPI = Object.freeze({
   planning: (request: PlanningRequest) => ipcRenderer.invoke(PLANNING_CHANNEL, request),
   variables: (request: VariablesRequest) => ipcRenderer.invoke(VARIABLES_CHANNEL, request),
   nodePackages: (request: NodePackagesRequest) => ipcRenderer.invoke(NODE_PACKAGES_CHANNEL, request),
+  extensions: (request: ExtensionsRequest) => ipcRenderer.invoke(EXTENSION_HOST_CHANNEL, request),
   getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL),
   projects: (request: ProjectsRequest) => ipcRenderer.invoke(PROJECTS_CHANNEL, request),
   workspaceSession: (request: WorkspaceSessionRequest) => ipcRenderer.invoke(WORKSPACE_SESSION_CHANNEL, request),

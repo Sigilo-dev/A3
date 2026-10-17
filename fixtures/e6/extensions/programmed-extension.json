@@ -1,0 +1,54 @@
+{
+  "profile": "programmed-extension",
+  "schemaVersion": "1.0.0",
+  "id": "community.security-fixture",
+  "name": "Hostile extension fixture",
+  "version": "1.0.0",
+  "license": "MIT",
+  "a3ApiVersion": "1.0.0",
+  "contributes": {
+    "community.security-fixture.notes": {
+      "description": "Synthetic untrusted manifest; registration never loads its entrypoint."
+    }
+  },
+  "permissions": [
+    "project.read",
+    "document.edit",
+    "network.access",
+    "process.run"
+  ],
+  "scopes": {
+    "project.read": {
+      "resourceIds": [
+        "00000000-0000-4000-8000-000000000004"
+      ]
+    },
+    "document.edit": {
+      "resourceIds": [
+        "00000000-0000-4000-8000-000000000004"
+      ]
+    },
+    "network.access": {
+      "origins": [
+        "https://example.invalid"
+      ]
+    },
+    "process.run": {
+      "executableIds": [
+        "fixture-tool"
+      ]
+    }
+  },
+  "entrypoints": {
+    "main": {
+      "path": "malicious.mjs",
+      "sha256": "ddb2fb06fb78ecf5bbde1f613a74e284915ff07d259db6f8e97c44bed775e7d4"
+    }
+  },
+  "extensions": {
+    "community.security-fixture.claims": {
+      "sandbox": true,
+      "approved": true
+    }
+  }
+}

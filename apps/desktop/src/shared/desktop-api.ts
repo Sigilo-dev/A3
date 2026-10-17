@@ -185,6 +185,7 @@ export interface DesktopAPI {
   planning(request: import('./planning').PlanningRequest): Promise<import('./planning').PlanningResult>;
   variables(request: import('./variables').VariablesRequest): Promise<import('./variables').VariablesResult>;
   nodePackages(request: NodePackagesRequest): Promise<NodePackagesResult>;
+  extensions(request: import('./extensions').ExtensionsRequest): Promise<import('./extensions').ExtensionsResult>;
   getAppInfo(): Promise<ShellResult<AppInfo>>;
   projects(request: ProjectsRequest): Promise<ProjectsResult>;
   workspaceSession(request: WorkspaceSessionRequest): Promise<WorkspaceSessionResult>;

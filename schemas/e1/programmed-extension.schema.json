@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigilo-dev.github.io/A3/schemas/e1/programmed-extension.schema.json",
+  "type": "object",
+  "properties": {
+    "profile": {
+      "const": "programmed-extension"
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "id": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "version": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/version"
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "a3ApiVersion": {
+      "const": "1.0.0"
+    },
+    "contributes": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions"
+    },
+    "permissions": {
+      "type": "array",
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "project.read",
+          "document.edit",
+          "network.access",
+          "process.run"
+        ]
+      }
+    },
+    "scopes": {
+      "type": "object",
+      "properties": {
+        "project.read": {
+          "type": "object",
+          "properties": {
+            "resourceIds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid"
+              }
+            }
+          },
+          "required": [
+            "resourceIds"
+          ],
+          "additionalProperties": false
+        },
+        "document.edit": {
+          "type": "object",
+          "properties": {
+            "resourceIds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/uuid"
+              }
+            }
+          },
+          "required": [
+            "resourceIds"
+          ],
+          "additionalProperties": false
+        },
+        "network.access": {
+          "type": "object",
+          "properties": {
+            "origins": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+              "pattern": "^https://[^/?#@*]+$"
+              }
+            }
+          },
+          "required": [
+            "origins"
+          ],
+          "additionalProperties": false
+        },
+        "process.run": {
+          "type": "object",
+          "properties": {
+            "executableIds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9.-]{0,63}$"
+              }
+            }
+          },
+          "required": [
+            "executableIds"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "entrypoints": {
+      "type": "object",
+      "properties": {
+        "main": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.|\\.\\.)(?:/|$))[^\\\\:\\u0000-\\u001f<>\"|?*]+$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "path",
+            "sha256"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "main"
+      ],
+      "additionalProperties": false
+    },
+    "extensions": {
+      "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions"
+    }
+  },
+  "required": [
+    "profile",
+    "schemaVersion",
+    "id",
+    "name",
+    "version",
+    "license",
+    "a3ApiVersion",
+    "contributes",
+    "permissions",
+    "scopes",
+    "entrypoints",
+    "extensions"
+  ],
+  "additionalProperties": false
+}

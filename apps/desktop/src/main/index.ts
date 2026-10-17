@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, GALLERY_CHANNEL, MARKDOWN_CHANNEL, NODE_PACKAGES_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
 import { createProjectController } from './project-controller';
+import { EXTENSION_HOST_CHANNEL } from '../shared/extensions';
 import { AV_CONVERSION_CHANNEL, IMAGE_CONVERSION_CHANNEL } from '../shared/desktop-api';
 import { PLANTUML_ARTIFACT_FILE } from './plantuml-renderer';
 import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL } from '../shared/desktop-api';
@@ -60,7 +61,9 @@ async function finishQuit(): Promise<void> {
     await projects?.avConversions.cancelAll();
     await codexTurns?.shutdown();
     unsubscribeCapabilityRevocations?.(); unsubscribeCapabilityRevocations = undefined;
+    projects?.extensions.invalidateSessions();
     await projects?.manager.shutdown();
+    await projects?.extensions.dispose();
     await codexAuthorization?.shutdown();
     manualChat?.dispose();
     quitting = true; clearTimeout(bootTimer); app.quit();
@@ -241,7 +244,15 @@ async function startDesktop(): Promise<void> {
     if (['open', 'create', 'recent', 'relocate', 'confirm', 'close'].includes(String(action)) && manualChat && !await manualChat.confirmProjectSwitch()) {
       return { ok: false, error: { code: 'CANCELLED', message: 'Se conservan las pestañas web y el proyecto actual.', recovery: 'Guarda o copia el texto web antes de cambiar de proyecto.' } };
     }
+    if (['open', 'create', 'recent', 'relocate', 'confirm', 'close'].includes(String(action))) projects.extensions.invalidateSessions();
     return projects.handle(args[0]);
+  });
+  ipcMain.handle(EXTENSION_HOST_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) {
+      return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Solicitud de extensión no autorizada.', recovery: 'Usa el gestor local del proyecto.' } };
+    }
+    return projects.extensions.handle(args[0]);
   });
   ipcMain.handle(NODE_PACKAGES_CHANNEL, (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
@@ -370,6 +381,7 @@ async function startDesktop(): Promise<void> {
 
 app.on('before-quit', (event) => { if (!quitting) { event.preventDefault(); void finishQuit(); } });
 app.on('window-all-closed', () => app.quit());
+app.on('will-quit', () => { ipcMain.removeHandler(EXTENSION_HOST_CHANNEL); });
 app.on('will-quit', () => { codexAuthorization?.dispose(); ipcMain.removeHandler(CODEX_AUTH_CHANNEL); ipcMain.removeHandler(GIT_OPERATIONS_CHANNEL); ipcMain.removeHandler(HISTORY_CHANNEL); ipcMain.removeHandler(GITHUB_CHANNEL); projects?.github.dispose(); projects?.git.dispose(); manualChat?.dispose(); ipcMain.removeHandler(MANUAL_CHAT_CHANNEL); ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(NODE_PACKAGES_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(GALLERY_CHANNEL); ipcMain.removeHandler(IMAGE_CONVERSION_CHANNEL); ipcMain.removeHandler(AV_CONVERSION_CHANNEL); ipcMain.removeHandler(VARIABLES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); ipcMain.removeHandler(NAVIGATION_CHANNEL); });
 process.on('uncaughtException', fatalStartup);
 process.on('unhandledRejection', fatalStartup);

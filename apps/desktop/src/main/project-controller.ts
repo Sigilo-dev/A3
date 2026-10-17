@@ -10,6 +10,7 @@ import { validIotCircuitOperation } from '@a3/domain/iot-circuit';
 import { ImageConversionJobs, runImageWorker } from './image-conversion';
 import { AvConversionJobs } from './av-conversion';
 import { AvEngine } from './av-engine';
+import { CapabilityScopedExtensionHost, ExtensionHostError } from './extension-host';
 import { validAvRequest, type AvResult } from '../shared/av-conversion';
 import { validVariablesRequest, type VariablesResult } from '../shared/variables';
 import { validPlanningRequest, type PlanningResult } from '../shared/planning';
@@ -631,11 +632,17 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   const git = new GitProjectController(manager, capabilities, authenticatedActor, getWindow, stateDirectory);
   const history = new ProjectHistoryController(manager);
   const github = new GithubProjectController(stateDirectory, manager, capabilities, authenticatedActor, getWindow, git);
+  const extensions = new CapabilityScopedExtensionHost({ stateDirectory, broker: capabilities, actor: authenticatedActor, confirm,
+    current: async (sessionId) => {
+      const active = (await manager.getState()).active;
+      if (!active || active.sessionId !== sessionId) throw new ExtensionHostError('EXTENSION_STALE_SESSION');
+      return { sessionId: active.sessionId, projectId: active.projectId, root: active.root };
+    } });
   git.setAutomationPublisher(async (sessionId) => github.automationPublisher(sessionId));
   return {
     manager,
     capabilities,
-    git, github, history,
+    git, github, history, extensions,
     async handleAgentProfiles(value: unknown): Promise<AgentProfilesResult> {
       if (!validAgentProfilesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'La solicitud de perfil de agente no es válida.', recovery: 'Vuelve a cargar Preferencias del proyecto.' } };
       try {
