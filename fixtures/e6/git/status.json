@@ -1,0 +1,11 @@
+{
+  "engine": {
+    "version": "2.53.0.windows.1",
+    "bytes": 4344208,
+    "sha256": "d09a1324132aa9da4b4c2b14242dcac893539a735fab288136b101156434a55a",
+    "license": "GPL-2.0-only"
+  },
+  "visibleFiles": ["docs/guía con espacios ñ.md", "código α & $(literal).ts"],
+  "protectedFiles": [".a3/local/session.json", ".env", "credentials.json", ".cache/thumbnail.png", "node_modules/test/index.js", "sub/.env.local", "sub/private.key"],
+  "projectId": "7fb4a853-3e44-449e-9a33-ac1988a86224"
+}
