@@ -7,6 +7,7 @@ import { scratch, fixtureHost, E1, W1 } from './fixture.mjs';
 const W2 = '00000000-0000-4000-8000-000000000007';
 const scenario = JSON.parse(await readFile(new URL('../../../fixtures/e4/variables/scenario.json', import.meta.url), 'utf8'));
 const templateCases = JSON.parse(await readFile(new URL('../../../fixtures/e4/variables/template-cases.json', import.meta.url), 'utf8'));
+const promptCases = JSON.parse(await readFile(new URL('../../../fixtures/e4/prompts/template-cases.json', import.meta.url), 'utf8'));
 const windows = { skip: process.platform !== 'win32' };
 async function project(t) {
   const { root, tempRoot } = await scratch(t), host = await fixtureHost(root, 'typed-variables');
@@ -98,6 +99,8 @@ test('A3-018/A3-019: project compiler resolves by selected workspace, marks unre
   assert.equal(missing.canSendAutomatically, false); assert.match(missing.markedExport, /A3: variable sin resolver demo\.absent/);
   const ambiguous = await manager.resolveProjectVariableText(c.sessionId, '{{demo.name}}', { entityId: E1 }, ['demo.name']);
   assert.equal(ambiguous.unresolved[0].detail, 'variable-context-required');
+  const templated = await manager.compileProjectPromptTemplate(c.sessionId, promptCases.validBlocks, { show: true, name: 'A3', items: ['local'] }, { workspaceId: W1, entityId: E1 });
+  assert.equal(templated.canSendAutomatically, true); assert.match(templated.text, /A3/); assert.deepEqual(templated.inputsUsed, ['items', 'name', 'show']);
   assert.deepEqual(await readFile(sourceFile), originalSource); assert.deepEqual(await readFile(variablesFile), originalVariables);
 });
 

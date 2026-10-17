@@ -19,6 +19,9 @@ export { CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_NODE_VERSION, CONCEPTUAL_RELATION_K
 export type { ConceptualNodeKind, ConceptualNodeType, ConceptualEntity, ConceptualRelationKind, ConceptualRelationData } from './conceptual-diagrams.js';
 export { validateRecord, validateDefinition, validateRegistry, validateSnapshot, defaultRegistry, findNodeType } from './validation.js';
 export { resolveVariable, resolveEffectiveVariable, resolveEntityField, resolveVariableText, validateVariable, validValueSpec, validVariableBinding, validVariableScope, matchesTypedValue, type VariableContext, type EffectiveVariable, type EffectiveField, type VariableTextIssue, type VariableTextResolution } from './variables.js';
+export { parsePromptTemplate, serializePromptTemplate, compilePromptTemplate, defaultPromptHelperRegistry, buildPromptHelperRegistry, BUILTIN_PROMPT_TEMPLATES, serializeBuiltinPromptTemplate,
+  type PromptInputType, type PromptContextSource, type PromptOutputFormat, type PromptTemplateInput, type PromptContextRule, type PromptTemplate, type PromptTemplateIssue, type PromptTemplateParseResult,
+  type PromptTemplateCompilationResult, type PromptHelperOperation, type PromptHelperRegistration } from './prompt-templates.js';
 export { findA3Wikilinks, inspectMarkdownParse, inspectMarkdownSource, type A3WikilinkToken, type MarkdownParseIssue, type MarkdownSourceInspection } from './markdown.js';
 export { refOf, refKey, revisionsOf, getRecord, indexSnapshot } from './data.js';
 export { SHORTCUTS, defaultShortcuts, normalizeShortcut, validateShortcuts, matchesShortcut } from './shortcuts.js';

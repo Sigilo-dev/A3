@@ -17,6 +17,7 @@
     "./plantuml-source": { "types": "./dist/src/plantuml-source.d.ts", "import": "./dist/src/plantuml-source.js" },
     "./mermaid-import": { "types": "./dist/src/mermaid-import.d.ts", "import": "./dist/src/mermaid-import.js" },
     "./plantuml-import": { "types": "./dist/src/plantuml-import.d.ts", "import": "./dist/src/plantuml-import.js" },
+    "./prompt-templates": { "types": "./dist/src/prompt-templates.d.ts", "import": "./dist/src/prompt-templates.js" },
     "./structurizr-source": { "types": "./dist/src/structurizr-source.d.ts", "import": "./dist/src/structurizr-source.js" },
     "./structurizr-import": { "types": "./dist/src/structurizr-import.d.ts", "import": "./dist/src/structurizr-import.js" },
     "./shortcuts": { "types": "./dist/src/shortcuts.d.ts", "import": "./dist/src/shortcuts.js" },

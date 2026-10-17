@@ -31,7 +31,7 @@ import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
 import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
 import { buildMediaGalleryCatalog, mediaGalleryKind, type MediaGalleryAvailability, type MediaGalleryCatalog } from './media-gallery.js';
-import { findNodeType, resolveEntityField, resolveVariableText, validateVariable, type VariableBinding, type VariableTextResolution } from '@a3/domain';
+import { compilePromptTemplate, findNodeType, resolveEntityField, resolveVariableText, validateVariable, type PromptTemplateCompilationResult, type VariableBinding, type VariableTextResolution } from '@a3/domain';
 import { projectVariablesState, type ProjectVariablesState, type SetProjectVariables, type VariablesQuery } from './variables.js';
 import type { DerivedMediaType, DerivedResourceSource, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, PreparedWrite, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
 
@@ -959,6 +959,15 @@ export class LocalProjectManager {
       this.#variablesState(sessionId, query);
       demand(typeof source === 'string' && source.length <= 2 * 1024 * 1024, 'VARIABLE_TEMPLATE_LIMIT', 'La plantilla supera el límite de 2 MiB.');
       return resolveVariableText(snapshot, source, query, requiredNames);
+    });
+  }
+  compileProjectPromptTemplate(sessionId: string, templateSource: string, inputs: Record<string, JsonValue>, query: VariablesQuery = {}): Promise<PromptTemplateCompilationResult> {
+    const capturedInputs = structuredClone(inputs);
+    return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+      this.#variablesState(sessionId, query);
+      demand(typeof templateSource === 'string' && templateSource.length <= 2 * 1024 * 1024, 'PROMPT_TEMPLATE_LIMIT', 'La plantilla supera el límite de 2 MiB.');
+      return compilePromptTemplate(snapshot, templateSource, capturedInputs, query);
     });
   }
   setProjectVariables(sessionId: string, input: SetProjectVariables, query: VariablesQuery = {}): Promise<ProjectVariablesState> {

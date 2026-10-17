@@ -578,7 +578,8 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       if (!validVariablesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de variables inválida.', recovery: 'Revisa los campos y el ámbito; ejecución nunca se guarda.' } };
       try {
         const state = value.action === 'load' ? await manager.loadProjectVariables(value.sessionId, value.query) : value.action === 'compile' ?
-          await manager.resolveProjectVariableText(value.sessionId, value.source, value.query, value.requiredNames) : value.action === 'set' ?
+          await manager.resolveProjectVariableText(value.sessionId, value.source, value.query, value.requiredNames) : value.action === 'compile-template' ?
+            await manager.compileProjectPromptTemplate(value.sessionId, value.templateSource, value.inputs, value.query) : value.action === 'set' ?
             await manager.setProjectVariables(value.sessionId, value.input, value.query) : await manager.bindProjectVariable(value.sessionId, value.entityId, value.expectedRevision, value.field, value.binding, value.query);
         return { ok: true, value: state };
       } catch (error) { return { ok: false, error: { code: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'VARIABLES_FAILED',
