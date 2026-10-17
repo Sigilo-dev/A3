@@ -131,3 +131,47 @@ test('A3-048: a corrupt or unknown-version variable set is diagnosed, never trea
     assert.deepEqual(await readFile(path), bytes);
   }
 });
+
+test('A3-019/A3-022: project context is explicit, reads semantic relations only, and stores hash-only local provenance', windows, async (t) => {
+  const c = await project(t), resourceId = '00000000-0000-4000-8000-000000000004', relationId = '00000000-0000-4000-8000-000000000005';
+  const sourcePath = join(c.root, 'pages/readme.md'), original = await readFile(sourcePath);
+  await put(c, { kind: 'project', ownerId: c.projectId }, scenario.project);
+  const catalog = await c.manager.loadPromptContextCatalog(c.sessionId);
+  assert.equal(catalog.projectId, c.projectId); assert.equal(catalog.visualEdgeCount, 1);
+  assert.deepEqual(catalog.relations.map((entry) => entry.id), [relationId]);
+  const input = { mode: 'manual', source: '# Solicitud\n\n{{demo.name}}', inputs: {}, requiredNames: ['demo.name'], query: {},
+    selection: { entities: [{ entityId: E1, role: 'requirement' }], resourceIds: [resourceId], relationIds: [relationId], excludedSourceKeys: [] }, maxBytes: 16 * 1024, split: false };
+  const result = await c.manager.compileProjectPromptContext(c.sessionId, input);
+  assert.equal(result.projectId, c.projectId); assert.equal(result.visualEdgesIncluded, 0); assert.equal(result.traceSaved, true);
+  assert.match(result.parts[0].markdown, /Visión/); assert.match(result.parts[0].markdown, /Visión del fixture/); assert.match(result.parts[0].markdown, /a3\.core\.references/);
+  assert.ok(result.included.some((entry) => entry.kind === 'entity' && entry.category === 'requirement' && entry.sourceHash));
+  const resource = result.included.find((entry) => entry.kind === 'resource');
+  assert.equal(resource.originPath, 'pages/readme.md'); assert.equal(resource.sourceHash, sha256(original)); assert.ok(resource.descriptorHash);
+  assert.deepEqual(await readFile(sourcePath), original);
+  const trace = JSON.parse(await readFile(join(c.root, result.tracePath), 'utf8'));
+  assert.equal(trace.id, result.executionId); assert.equal(trace.projectId, c.projectId); assert.equal(trace.provider, null); assert.equal(trace.model, null);
+  assert.deepEqual(trace.variableContext.requiredNames, ['demo.name']); assert.ok(trace.variables.some((variable) => variable.name === 'demo.name' && variable.valueHash));
+  assert.equal(trace.included.find((entry) => entry.kind === 'resource').sourceHash, resource.sourceHash);
+  assert.equal(JSON.stringify(trace).includes('Visión del fixture'), false, 'local trace must not copy source content');
+  await assert.rejects(c.manager.compileProjectPromptContext(c.sessionId, { ...input, selection: { ...input.selection, relationIds: ['00000000-0000-4000-8000-000000000011'] } }),
+    { code: 'PROMPT_CONTEXT_RELATION_MISSING' });
+});
+
+test('A3-019: explicit exclusion is recorded and project B cannot inherit project A prompt sources', windows, async (t) => {
+  const a = await project(t), resourceId = '00000000-0000-4000-8000-000000000004', sourceA = join(a.root, 'pages/readme.md');
+  await writeFile(sourceA, '# Project A exclusive context\n');
+  const excluded = await a.manager.compileProjectPromptContext(a.sessionId, { mode: 'manual', source: 'Prompt A', inputs: {}, requiredNames: [], query: {},
+    selection: { entities: [], resourceIds: [resourceId], relationIds: [], excludedSourceKeys: [`resource:${resourceId}`] }, maxBytes: 16 * 1024, split: false });
+  assert.equal(excluded.included.length, 0); assert.equal(excluded.omitted[0].reason, 'user-excluded');
+  await a.manager.closeActive(a.sessionId);
+
+  const { root: rootB, tempRoot } = await scratch(t), manifestPath = join(rootB, 'a3.project.json'), manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.projectId = '00000000-0000-4000-8000-000000000099'; await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+  const sourceB = join(rootB, 'pages/readme.md'); await writeFile(sourceB, '# Project B context only\n');
+  const hostB = await fixtureHost(rootB, 'context-isolation-b'), managerB = new LocalProjectManager({ stateDirectory: join(tempRoot, 'catalog-b'), host: hostB }); t.after(() => managerB.dispose());
+  const sessionB = (await managerB.openFolder(rootB)).active.sessionId;
+  const resultB = await managerB.compileProjectPromptContext(sessionB, { mode: 'manual', source: 'Prompt B', inputs: {}, requiredNames: [], query: {},
+    selection: { entities: [], resourceIds: [resourceId], relationIds: [], excludedSourceKeys: [] }, maxBytes: 16 * 1024, split: false });
+  assert.equal(resultB.projectId, hostB.projectId); assert.match(resultB.parts[0].markdown, /Project B context only/);
+  assert.doesNotMatch(resultB.parts[0].markdown, /Project A exclusive context/);
+});

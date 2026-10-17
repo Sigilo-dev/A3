@@ -1,0 +1,68 @@
+{
+  "project": { "id": "00000000-0000-4000-8000-000000000001", "name": "fixture A3" },
+  "base": {
+    "text": "Prompt de prueba",
+    "markedExport": "# Solicitud\n\nAnaliza solo las fuentes adjuntas.",
+    "canSendAutomatically": true,
+    "outputFormat": "markdown",
+    "templateId": "a3.review",
+    "templateName": "Revisión de texto",
+    "templateDiagnostics": [],
+    "variables": [],
+    "unresolved": []
+  },
+  "documents": [
+    {
+      "key": "entity:00000000-0000-4000-8000-000000000002",
+      "id": "00000000-0000-4000-8000-000000000002",
+      "kind": "entity",
+      "category": "requirement",
+      "label": "Requisito R-1",
+      "originPath": ".a3/entities/00000000-0000-4000-8000-000000000002.json",
+      "revision": 3,
+      "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "descriptorHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceBytes": 412,
+      "content": "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"title\":\"Requisito R-1\"}",
+      "contentFormat": "json"
+    },
+    {
+      "key": "resource:00000000-0000-4000-8000-000000000003",
+      "id": "00000000-0000-4000-8000-000000000003",
+      "kind": "resource",
+      "category": "project-memory",
+      "label": "memoria/principios.md",
+      "originPath": "memory/principios.md",
+      "revision": 1,
+      "sourceHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "descriptorHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "sourceBytes": 47,
+      "content": "# Principios\n\nMantener la experiencia local-first.\n",
+      "contentFormat": "markdown"
+    },
+    {
+      "key": "relation:00000000-0000-4000-8000-000000000004",
+      "id": "00000000-0000-4000-8000-000000000004",
+      "kind": "relation",
+      "category": "relation",
+      "label": "depende-de",
+      "originPath": ".a3/relations/00000000-0000-4000-8000-000000000004.json",
+      "revision": 2,
+      "sourceHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "sourceBytes": 280,
+      "content": "{\"source\":{\"entityId\":\"00000000-0000-4000-8000-000000000002\"},\"target\":{\"entityId\":\"00000000-0000-4000-8000-000000000005\"},\"type\":\"a3.core.depends-on\"}",
+      "contentFormat": "json"
+    }
+  ],
+  "unavailable": [
+    {
+      "key": "resource:00000000-0000-4000-8000-000000000006",
+      "id": "00000000-0000-4000-8000-000000000006",
+      "kind": "resource",
+      "category": "resource",
+      "label": "imagen.bin",
+      "originPath": "assets/files/imagen.bin",
+      "reason": "unsupported-media-type"
+    }
+  ]
+}

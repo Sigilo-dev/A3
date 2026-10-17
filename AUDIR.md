@@ -2,7 +2,7 @@
 
 ## 2026-10-16 — E2-F2
 
-Se continúa `codex/e2-canvas` desde `3c09828` (focus aceptado), con raíz y origin de A3 verificados y divergencia 0/0 tras fetch. Se conserva `pkr-site/` sin añadirlo al índice. La especificación local ignorada y los contratos E0 se consultan sin publicarlos ni cambiar schemas/fixtures aceptados. No se añaden dependencias ni se modifica el lock.
+Se continúa `codex/e2-canvas` desde `3c09828` (focus aceptado), con raíz y origin de A3 verificados y divergencia 0/0 tras fetch. La especificación local ignorada y los contratos E0 se consultan sin publicarlos ni cambiar schemas/fixtures aceptados. No se añaden dependencias ni se modifica el lock.
 
 El host incorpora un índice regenerable de páginas y referencias con resolución por ID, título/ruta, alias, encabezados y bloques; la ambigüedad exige selección. Focus integra backlinks, salientes, selector de vínculo por UUID y visitas atrás/adelante sin copiar documentos. Renombrar/mover desde página, explorador o comando genérico del dominio amplía el mismo plan del writer con referencias conocidas y revisiones, manteniendo el plan puro del dominio. Continúan las garantías de hash/read set, broker, journal y conflicto externo: la operación lógica de varios archivos no se anuncia atómica. Se conservan BOM UTF-8, CRLF, campos desconocidos y spans no afectados; las referencias de solo lectura no se reescriben.
 
@@ -14,7 +14,7 @@ Decisiones y límites: [ADR 0012](docs/adr/0012-contextual-navigation.md) y [E2-
 
 ## 2026-10-15 — E1-F1
 
-Se verificaron raíz `C:/Users/VR/Documents/ChatGPT/A3`, origin fetch/push `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base`, base E1-E2 `f1cd2cf` y divergencia inicial 0/0 tras fetch. El directorio ajeno no rastreado `pkr-site/` se conserva intacto y fuera del commit. La especificación maestra sí está disponible como archivo local ignorado en esta revisión: se leyeron §§7–9, 21, 28 y aceptación A3-001–003, además de resumen, decisiones, contratos E0 y servicios E1. No se añade ese archivo local al commit ni se cambian schemas/fixtures aceptados.
+Se verificaron raíz `C:/Users/VR/Documents/ChatGPT/A3`, origin fetch/push `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base`, base E1-E2 `f1cd2cf` y divergencia inicial 0/0 tras fetch. La especificación maestra sí está disponible como archivo local ignorado en esta revisión: se leyeron §§7–9, 21, 28 y aceptación A3-001–003, además de resumen, decisiones, contratos E0 y servicios E1. No se añade ese archivo local al commit ni se cambian schemas/fixtures aceptados.
 
 Se conectó la pantalla Proyectos a un controlador main con selección de carpetas y confirmaciones nativas. IPC valida emisor, frame y campos; el renderer solo envía acciones, nombres e IDs de preview/sesión, no rutas libres ni brokers. Crear valida destino/nombre, previsualiza archivos/carpetas y genera Project `1.0.0` y Workspace «Principal». Incorporar exige preview/confirmación y conserva bytes/rutas de archivos previos, incluidos README y `.gitignore`. Un `.a3` previo sin bootstrap local reconocido se rechaza para revisión. No se inicializa Git ni se publica o conecta a GitHub.
 
@@ -33,7 +33,7 @@ A3-001–002 reciben evidencia del flujo local Windows sin red. A3-003 cubre cam
 
 ## 2026-10-15 — E1-E2
 
-Se confirmó raíz `C:/Users/VR/Documents/ChatGPT/A3`, `origin` fetch/push `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base` y base local `e86d819`. El árbol tenía el directorio ajeno no rastreado `pkr-site/`; se conserva fuera del cambio. Se leyeron `docs/e0/summary.md`, `docs/e0/decisions.md`, contratos E0 y código/evidencia C2 y E1-E1. `A3_ESPECIFICACION_MAESTRA.md` no está en checkout ni en la rama remota consultada; esta implementación aplica los contratos disponibles y el alcance del prompt.
+Se confirmó raíz `C:/Users/VR/Documents/ChatGPT/A3`, `origin` fetch/push `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base` y base local `e86d819`. Se leyeron `docs/e0/summary.md`, `docs/e0/decisions.md`, contratos E0 y código/evidencia C2 y E1-E1. `A3_ESPECIFICACION_MAESTRA.md` no está en checkout ni en la rama remota consultada; esta implementación aplica los contratos disponibles y el alcance del prompt.
 
 Se añadió un binding de montaje por proyecto y mount ID en almacenamiento local del host, separado del proyecto portable. Un proyecto clonado solo solicita mount y ruta relativa; la persona selecciona una carpeta Windows local y la aprueba de nuevo. Se guarda identidad del directorio y permiso local; cada acceso revalida canonicalización, identidad y componentes. El lector de bytes usa handle y detecta cambios de archivo/ruta. Bloquea traversal, rutas absolutas, segmentos ambiguos, symlinks/junctions salientes, raíz reemplazada y swaps observables entre validación, apertura y lectura. Las referencias conservan su descriptor y diagnostican raíz ausente/cambiada, sin convertirse en contenido vacío.
 
@@ -53,7 +53,7 @@ Con fixtures temporales Windows se verificaron: snapshots byte-exactos, retenci�
 
 ## 2026-10-15 — E1-D1
 
-Se verificaron raíz Git `C:/Users/VR/Documents/ChatGPT/A3`, origin fetch/push `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base`, base E1-C2 `f8d85af` y remoto. El único elemento ajeno al inicio fue el directorio no rastreado `pkr-site/`; se conserva intacto y fuera del commit. Se leyeron la especificación maestra §§7–8/28, contratos/evidencia E0-C1, ADR 0004, API y pruebas del writer.
+Se verificaron raíz Git `C:/Users/VR/Documents/ChatGPT/A3`, origin fetch/push `https://github.com/Sigilo-dev/A3.git`, rama `codex/e1-base`, base E1-C2 `f8d85af` y remoto. Se leyeron la especificación maestra §§7–8/28, contratos/evidencia E0-C1, ADR 0004, API y pruebas del writer.
 
 Antes de programar quedó fijada la máquina de estados en `docs/e1/transaction-recovery.md`: preparar, respaldar, aplicar, confirmar, revertir y conflicto. Se mantiene el protocolo C2 y su cadena hash; nuevas intenciones guardan la identidad principal `{kind,id}` sin credenciales y las revisiones antes/después. El journal permanece en `.a3/local/transactions`, fuera de datos portables y excluido de Git.
 
@@ -89,7 +89,7 @@ Verificación Windows 10 x64 build 19045, Node host 24.13.1/npm 11.10.0:
 - `npm test`: 34 E0, 44 dominio, 68 store = 146 pruebas aprobadas. Casos C2: ID/bytes exactos, permisos/revocación, revisiones/hashes, planes concurrentes, ventanas compartidas, segundo proceso real, muerte del dueño, watcher nativo, captura de carrera externa, eliminación de documentos conservando fuentes y mudanza local.
 - Seis procesos terminaron con exit 86 en fases after-intent, after-staging, after-detach, after-install, before-commit y after-commit. Sin marcador completo se reabre solo lectura; con marcador validado se permite nuevo writer. No se prueba recuperación completa ni corte físico de energía.
 - `npm run typecheck` y `npm run build`: exit 0; store y desktop compilan y los bundles del renderer E1-A no cambian. No se genera instalador ni se repiten spikes ajenos al cambio.
-- Sin cambios en package-lock ni pins externos. Revisión de diff/whitespace antes de commit. La carpeta ajena no rastreada `pkr-site/` apareció durante el trabajo; se conserva y no se incluye.
+- Sin cambios en package-lock ni pins externos. Revisión de diff/whitespace antes de commit.
 
 Correcciones realizadas: se quitaron imports sin uso detectados por tipos. Una prueba de caída después de separar el primer JSON devolvía project-not-writable en lugar de recovery-required; se priorizó comprobar el registro pendiente incluso con catálogo incompleto. Se fijó root local para poder descubrirlo con manifiesto separado y no publicar backups cuando catalogRoot cambia. Se serializó apertura inicial para compartir servicio en ventanas concurrentes, se invalidan propuestas al cambiar actor, se verifican nuevamente permisos/copias antes del marcador y se conserva la observación de fuentes cuyos descriptores desaparecen. La recuperación completa permanece sin implementar, como exige el corte.
 

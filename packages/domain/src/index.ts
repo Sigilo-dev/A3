@@ -22,6 +22,9 @@ export { resolveVariable, resolveEffectiveVariable, resolveEntityField, resolveV
 export { parsePromptTemplate, serializePromptTemplate, compilePromptTemplate, defaultPromptHelperRegistry, buildPromptHelperRegistry, BUILTIN_PROMPT_TEMPLATES, serializeBuiltinPromptTemplate,
   type PromptInputType, type PromptContextSource, type PromptOutputFormat, type PromptTemplateInput, type PromptContextRule, type PromptTemplate, type PromptTemplateIssue, type PromptTemplateParseResult,
   type PromptTemplateCompilationResult, type PromptHelperOperation, type PromptHelperRegistration } from './prompt-templates.js';
+export { buildPromptContext, type PromptContextDocument, type PromptContextDocumentKind, type PromptContextCategory, type PromptContextUnavailable,
+  type PromptContextBase, type PromptContextBuildOptions, type PromptContextManifestEntry, type PromptContextOmission, type PromptContextPart,
+  type PromptContextCompilationResult } from './prompt-context.js';
 export { findA3Wikilinks, inspectMarkdownParse, inspectMarkdownSource, type A3WikilinkToken, type MarkdownParseIssue, type MarkdownSourceInspection } from './markdown.js';
 export { refOf, refKey, revisionsOf, getRecord, indexSnapshot } from './data.js';
 export { SHORTCUTS, defaultShortcuts, normalizeShortcut, validateShortcuts, matchesShortcut } from './shortcuts.js';

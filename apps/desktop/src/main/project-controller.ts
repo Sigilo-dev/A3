@@ -577,7 +577,8 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
     async handleVariables(value: unknown): Promise<VariablesResult> {
       if (!validVariablesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de variables inválida.', recovery: 'Revisa los campos y el ámbito; ejecución nunca se guarda.' } };
       try {
-        const state = value.action === 'load' ? await manager.loadProjectVariables(value.sessionId, value.query) : value.action === 'compile' ?
+        const state = value.action === 'load' ? await manager.loadProjectVariables(value.sessionId, value.query) : value.action === 'context-catalog' ?
+          await manager.loadPromptContextCatalog(value.sessionId) : value.action === 'compile-context' ? await manager.compileProjectPromptContext(value.sessionId, value.input) : value.action === 'compile' ?
           await manager.resolveProjectVariableText(value.sessionId, value.source, value.query, value.requiredNames) : value.action === 'compile-template' ?
             await manager.compileProjectPromptTemplate(value.sessionId, value.templateSource, value.inputs, value.query) : value.action === 'set' ?
             await manager.setProjectVariables(value.sessionId, value.input, value.query) : await manager.bindProjectVariable(value.sessionId, value.entityId, value.expectedRevision, value.field, value.binding, value.query);

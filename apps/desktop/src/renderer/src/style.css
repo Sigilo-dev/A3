@@ -11,6 +11,16 @@ body { margin: 0; }
 .prompt-result { margin-top: 22px; padding: 16px; border: 1px solid #394b58; border-radius: 8px; background: #111a20; }
 .prompt-template-meta { margin: 16px 0; padding: 16px; border: 1px solid #33413b; border-radius: 8px; background: #151e22; }
 .prompt-template-meta h2 { margin-top: 0; }
+.prompt-context-selection { margin: 18px 0; padding: 14px 16px; border: 1px solid #334755; border-radius: 8px; background: #111a20; }
+.prompt-context-selection section { margin-top: 16px; }
+.prompt-context-selection ul, .prompt-result ul { padding-left: 22px; }
+.prompt-context-selection li, .prompt-result li { margin: 8px 0; overflow-wrap: anywhere; }
+.prompt-context-selection li > label { display: flex; align-items: center; gap: 8px; }
+.prompt-context-selection li select { margin-left: auto; min-width: 210px; }
+.prompt-context-selection small { display: block; color: #9aaab5; }
+.prompt-context-selection > label { display: inline-flex; align-items: center; gap: 8px; margin-right: 18px; }
+.prompt-context-selection > label select { min-width: 150px; }
+.prompt-result code { overflow-wrap: anywhere; }
 .prompt-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
 .prompt-inputs small { display: block; margin-top: 4px; color: #9aaab5; }
 .prompt-inputs :is(input, select, textarea) { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 9px; border: 1px solid #41515e; border-radius: 5px; background: #10151b; color: #e8edf0; font: inherit; }

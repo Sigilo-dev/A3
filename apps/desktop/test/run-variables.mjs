@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { cp, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -23,6 +23,12 @@ try {
   assert.deepEqual(await readFile(join(root, resource.path)), original);
   const document = JSON.parse(await readFile(join(root, '.a3/variables/project.json'), 'utf8')); assert.equal(document.schemaVersion, '1.1.0');
   assert.equal(document.variables.some((v) => v.source?.value === 'temporary only'), false);
+  const traces = await readdir(join(root, '.a3/local/prompt-runs')); assert.ok(traces.length > 0);
+  const savedTraces = await Promise.all(traces.map(async (name) => JSON.parse(await readFile(join(root, '.a3/local/prompt-runs', name), 'utf8'))));
+  const trace = savedTraces.find((item) => item.included.some((source) => source.sourceHash)); assert.ok(trace);
+  assert.equal(trace.kind, 'prompt-context-compilation'); assert.equal(trace.provider, null); assert.equal(trace.model, null);
+  assert.ok(trace.promptHash && trace.included.some((source) => source.sourceHash));
+  assert.equal(JSON.stringify(trace).includes('Visión del fixture'), false);
 } finally {
   if (dirname(resolve(temp)) !== resolve(tmpdir()) || !basename(temp).startsWith('a3-variables-smoke-')) throw new Error('Unexpected cleanup target');
   await rm(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

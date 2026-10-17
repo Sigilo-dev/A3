@@ -14,7 +14,7 @@ import { parseStructurizrDslImport, parseStructurizrJsonImport, type Structurizr
 import { STRUCTURIZR_DSL_SOURCE_TYPE, STRUCTURIZR_JSON_SOURCE_TYPE, STRUCTURIZR_SOURCE_LIMIT, structurizrSourceProperties, type StructurizrSourceFormat } from '@a3/domain/structurizr-source';
 import { adaptDiagramStyle, diagramStyleLayer, DIAGRAM_STYLE_EXTENSION, defaultDiagramStyleProfile, validateDiagramStyleProfile, type DiagramStyleProfile } from '@a3/domain';
 import { projectErCanvas, type CanvasErState } from './er-canvas.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, isIotComponent, iotCatalogEntry, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type JsonValue, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
@@ -31,11 +31,36 @@ import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
 import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
 import { buildMediaGalleryCatalog, mediaGalleryKind, type MediaGalleryAvailability, type MediaGalleryCatalog } from './media-gallery.js';
-import { compilePromptTemplate, findNodeType, resolveEntityField, resolveVariableText, validateVariable, type PromptTemplateCompilationResult, type VariableBinding, type VariableTextResolution } from '@a3/domain';
+import { buildPromptContext, compilePromptTemplate, findNodeType, resolveEntityField, resolveVariableText, validateVariable, type PromptContextBase, type PromptContextCategory, type PromptContextDocument, type PromptContextUnavailable, type PromptTemplateCompilationResult, type VariableBinding, type VariableTextResolution } from '@a3/domain';
 import { projectVariablesState, type ProjectVariablesState, type SetProjectVariables, type VariablesQuery } from './variables.js';
+import type { PromptContextCatalog, PromptContextCompileInput, PromptContextExecutionTrace, ProjectPromptContextResult } from './prompt-context.js';
 import type { DerivedMediaType, DerivedResourceSource, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, PreparedWrite, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PROMPT_CONTEXT_RESOURCE_LIMIT = 8 * 1024 * 1024;
+const PROMPT_CONTEXT_TOTAL_READ_LIMIT = 32 * 1024 * 1024;
+const PROMPT_TEXT_EXTENSIONS = new Set(['md', 'markdown', 'mdown', 'txt', 'text', 'json', 'jsonc', 'yaml', 'yml', 'toml', 'csv', 'tsv', 'xml', 'html', 'css', 'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'py', 'rs', 'c', 'h', 'cpp', 'hpp', 'ino', 'sql', 'sh', 'bat', 'ps1', 'puml', 'plantuml', 'mmd', 'mermaid']);
+function promptResourceIssue(resource: Extract<DomainRecord, { kind: 'resource' }>['value']): string | undefined {
+  if (resource.kind === 'remote-url') return 'remote-network-disabled';
+  const extension = resource.path.toLowerCase().split('/').at(-1)?.split('.').at(-1) ?? '';
+  const media = resource.mediaType?.toLowerCase();
+  return media?.startsWith('text/') || ['application/json', 'application/yaml', 'application/toml', 'application/xml'].includes(media ?? '') || PROMPT_TEXT_EXTENSIONS.has(extension)
+    ? undefined : 'unsupported-media-type';
+}
+function promptContextKey(kind: 'entity' | 'resource' | 'relation', id: string): string { return `${kind}:${id.toLowerCase()}`; }
+function resolvePromptContextJson(snapshot: import('@a3/domain').DomainSnapshot, value: import('@a3/domain').JsonValue, query: VariablesQuery,
+  variables: import('@a3/domain').EffectiveVariable[], unresolved: import('@a3/domain').VariableTextIssue[], budget: { usedBytes: number; maxBytes: number }): import('@a3/domain').JsonValue {
+  if (typeof value === 'string') {
+    let resolved = value;
+    if (value.includes('{{')) { const result = resolveVariableText(snapshot, value, query); variables.push(...result.variables); unresolved.push(...result.unresolved); resolved = result.text; }
+    budget.usedBytes += Buffer.byteLength(resolved, 'utf8');
+    if (budget.usedBytes > budget.maxBytes) throw new LocalProjectError('PROMPT_CONTEXT_RESOLUTION_LIMIT', 'La vista resuelta supera el límite por fuente.');
+    return resolved;
+  }
+  if (Array.isArray(value)) return value.map((entry) => resolvePromptContextJson(snapshot, entry, query, variables, unresolved, budget));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, resolvePromptContextJson(snapshot, entry, query, variables, unresolved, budget)]));
+  return value;
+}
 function detectedMediaType(resource: Extract<DomainRecord, { kind: 'resource' }>['value']): string | undefined {
   if (resource.mediaType) return resource.mediaType;
   if (resource.kind === 'remote-url') return 'text/uri-list';
@@ -951,6 +976,177 @@ export class LocalProjectManager {
       const ownerId = doc.location.variableScope === 'project' ? active.projectId : basename(doc.location.path, '.json');
       return uuid.test(ownerId) ? [{ scope: { kind: doc.location.variableScope, ownerId }, diagnostics: doc.diagnostics.map((d) => d.detail + ': ' + d.message) }] : [];
     }); return result;
+  }
+  #promptContextCatalog(sessionId: string): PromptContextCatalog {
+    const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+    const project = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'project' }> => record.kind === 'project');
+    demand(project, 'PROJECT_MANIFEST_MISSING', 'No se encontró el manifiesto del proyecto abierto.');
+    return {
+      sessionId, projectId: active.projectId, projectName: project.value.name,
+      workspaces: snapshot.records.flatMap((record) => record.kind === 'workspace' ? [{ id: record.value.id, name: record.value.name }] : []),
+      entities: snapshot.records.flatMap((record) => record.kind === 'entity' ? [{ id: record.value.id, title: record.value.title, type: record.value.type,
+        revision: record.value.revision, ...(record.value.contentResourceId ? { contentResourceId: record.value.contentResourceId } : {}) }] : []),
+      resources: snapshot.records.flatMap((record) => {
+        if (record.kind !== 'resource') return [];
+        const value = record.value, originPath = value.kind === 'remote-url' ? value.url : value.path, category = value.kind === 'project-file' && /^memory\//i.test(value.path) ? 'project-memory' as const : 'resource' as const;
+        const unavailableReason = promptResourceIssue(value);
+        return [{ id: value.id, label: originPath.split('/').at(-1) ?? originPath, originPath, revision: value.revision,
+          ...(value.mediaType ? { mediaType: value.mediaType } : {}), category, readableAsText: unavailableReason === undefined, ...(unavailableReason ? { unavailableReason } : {}) }];
+      }),
+      relations: snapshot.records.flatMap((record) => record.kind === 'relation' ? [{ id: record.value.id, type: record.value.type, revision: record.value.revision,
+        sourceEntityId: record.value.source.entityId, targetEntityId: record.value.target.entityId }] : []),
+      visualEdgeCount: snapshot.records.filter((record) => record.kind === 'visual-edge').length
+    };
+  }
+  loadPromptContextCatalog(sessionId: string): Promise<PromptContextCatalog> {
+    return this.#queue(async () => this.#promptContextCatalog(sessionId));
+  }
+  compileProjectPromptContext(sessionId: string, input: PromptContextCompileInput): Promise<ProjectPromptContextResult> {
+    const captured = structuredClone(input);
+    return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+      this.#variablesState(sessionId, captured.query);
+      demand(captured.source.length <= 2 * 1024 * 1024 && Number.isSafeInteger(captured.maxBytes) && captured.maxBytes >= 4 * 1024 && captured.maxBytes <= 1024 * 1024 &&
+        typeof captured.split === 'boolean' && captured.selection.entities.length <= 128 && captured.selection.resourceIds.length <= 128 && captured.selection.relationIds.length <= 128 && captured.selection.excludedSourceKeys.length <= 512,
+      'PROMPT_CONTEXT_REQUEST_INVALID', 'La selección, la fuente o el presupuesto de contexto no son válidos.');
+      const allSelectedIds = [...captured.selection.entities.map((item) => item.entityId), ...captured.selection.resourceIds, ...captured.selection.relationIds];
+      demand(allSelectedIds.every((id) => uuid.test(id)) && new Set(allSelectedIds.map((id) => id.toLowerCase())).size === allSelectedIds.length &&
+        captured.selection.entities.every((item) => ['selection', 'requirement', 'acceptance-criterion'].includes(item.role)) &&
+        captured.selection.excludedSourceKeys.every((key) => /^(?:entity|resource|relation):[0-9a-f-]{36}$/i.test(key)),
+      'PROMPT_CONTEXT_SELECTION_INVALID', 'Hay IDs duplicados o una categoría de fuente no válida.');
+      const projectRecord = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'project' }> => record.kind === 'project');
+      demand(projectRecord, 'PROJECT_MANIFEST_MISSING', 'No se encontró el manifiesto del proyecto abierto.');
+
+      let base: PromptContextBase;
+      if (captured.mode === 'template') {
+        demand(captured.inputs !== null && typeof captured.inputs === 'object' && !Array.isArray(captured.inputs), 'PROMPT_CONTEXT_INPUT_INVALID', 'Las entradas de plantilla deben ser un objeto JSON.');
+        base = compilePromptTemplate(snapshot, captured.source, captured.inputs, captured.query);
+      } else {
+        const resolution = resolveVariableText(snapshot, captured.source, captured.query, captured.requiredNames);
+        base = { ...resolution, templateDiagnostics: [], outputFormat: 'markdown', templateId: 'manual', templateName: 'Markdown manual' };
+      }
+      const documents: PromptContextDocument[] = [], unavailable: PromptContextUnavailable[] = [], excluded = new Set(captured.selection.excludedSourceKeys.map((key) => key.toLowerCase()));
+      let contextSourceBytes = 0, contextContentBytes = 0;
+      const addUnavailable = (item: PromptContextUnavailable): void => { unavailable.push(item); };
+      const sourceDocument = (kind: 'entity' | 'relation', id: string) => active.lease.service.state.project.documents.find((document) => document.record?.kind === kind && document.record.value.id.toLowerCase() === id.toLowerCase());
+      const resourceRequests = new Map<string, { category: PromptContextCategory; owners: Set<string> }>();
+      for (const resourceId of captured.selection.resourceIds) {
+        const resource = snapshot.records.find((record) => record.kind === 'resource' && record.value.id.toLowerCase() === resourceId.toLowerCase());
+        demand(resource?.kind === 'resource', 'PROMPT_CONTEXT_RESOURCE_MISSING', `El recurso elegido ya no está disponible: ${resourceId}.`);
+        const category = resource.value.kind === 'project-file' && /^memory\//i.test(resource.value.path) ? 'project-memory' : 'resource';
+        resourceRequests.set(resourceId.toLowerCase(), { category, owners: new Set() });
+      }
+      for (const selection of captured.selection.entities) {
+        const entityRecord = snapshot.records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === selection.entityId.toLowerCase());
+        demand(entityRecord?.kind === 'entity', 'PROMPT_CONTEXT_ENTITY_MISSING', `La entidad elegida ya no está disponible: ${selection.entityId}.`);
+        const key = promptContextKey('entity', entityRecord.value.id), entityDoc = sourceDocument('entity', entityRecord.value.id);
+        demand(entityDoc?.record?.kind === 'entity', 'PROMPT_CONTEXT_ENTITY_UNREADABLE', `No se pudo verificar el archivo de la entidad ${selection.entityId}.`);
+        const entityBytes = entityDoc.originalBytes();
+        if (excluded.has(key)) addUnavailable({ key, id: entityRecord.value.id, kind: 'entity', category: selection.role, label: entityRecord.value.title,
+          originPath: entityDoc.location.path, revision: entityRecord.value.revision, sourceHash: entityDoc.sha256, sourceBytes: entityBytes.byteLength, reason: 'user-excluded' });
+        else if (contextSourceBytes + entityBytes.byteLength > PROMPT_CONTEXT_TOTAL_READ_LIMIT) addUnavailable({ key, id: entityRecord.value.id, kind: 'entity', category: selection.role,
+          label: entityRecord.value.title, originPath: entityDoc.location.path, revision: entityRecord.value.revision, sourceHash: entityDoc.sha256, sourceBytes: entityBytes.byteLength, reason: 'context-source-read-budget' });
+        else {
+          contextSourceBytes += entityBytes.byteLength;
+          const variables: import('@a3/domain').EffectiveVariable[] = [], unresolved: import('@a3/domain').VariableTextIssue[] = [];
+          try {
+            const resolved = resolvePromptContextJson(snapshot, entityRecord.value as unknown as import('@a3/domain').JsonValue,
+              { ...captured.query, entityId: entityRecord.value.id }, variables, unresolved, { usedBytes: 0, maxBytes: PROMPT_CONTEXT_RESOURCE_LIMIT });
+            const content = JSON.stringify(resolved, null, 2), contentBytes = Buffer.byteLength(content, 'utf8');
+            if (contentBytes > PROMPT_CONTEXT_RESOURCE_LIMIT || contextContentBytes + contentBytes > PROMPT_CONTEXT_TOTAL_READ_LIMIT) throw new LocalProjectError('PROMPT_CONTEXT_RESOLUTION_LIMIT', 'El documento resuelto supera el límite de contexto.');
+            contextContentBytes += contentBytes;
+            documents.push({ key, id: entityRecord.value.id, kind: 'entity', category: selection.role, label: entityRecord.value.title, originPath: entityDoc.location.path,
+              revision: entityRecord.value.revision, sourceHash: entityDoc.sha256, descriptorHash: entityDoc.sha256, sourceBytes: entityBytes.byteLength,
+              content, contentFormat: 'json', variables, unresolved });
+          } catch {
+            addUnavailable({ key, id: entityRecord.value.id, kind: 'entity', category: selection.role, label: entityRecord.value.title, originPath: entityDoc.location.path,
+              revision: entityRecord.value.revision, sourceHash: entityDoc.sha256, sourceBytes: entityBytes.byteLength, reason: 'context-source-resolution-budget' });
+          }
+          if (entityRecord.value.contentResourceId) {
+            const resourceId = entityRecord.value.contentResourceId, existing = resourceRequests.get(resourceId.toLowerCase());
+            if (existing) existing.owners.add(entityRecord.value.id);
+            else resourceRequests.set(resourceId.toLowerCase(), { category: 'entity-content', owners: new Set([entityRecord.value.id]) });
+          }
+        }
+      }
+      for (const [resourceId, request] of resourceRequests) {
+        const resourceRecord = snapshot.records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === resourceId);
+        const key = promptContextKey('resource', resourceId);
+        if (!resourceRecord) { addUnavailable({ key, id: resourceId, kind: 'resource', category: request.category, label: resourceId, reason: 'resource-missing' }); continue; }
+        const value = resourceRecord.value, originPath = value.kind === 'remote-url' ? value.url : value.path;
+        const descriptor = active.lease.service.state.project.documents.find((document) => document.record?.kind === 'resource' && document.record.value.id.toLowerCase() === resourceId);
+        const unavailableReason = promptResourceIssue(value);
+        if (excluded.has(key)) { addUnavailable({ key, id: value.id, kind: 'resource', category: request.category, label: originPath, originPath, revision: value.revision,
+          ...(descriptor ? { sourceHash: descriptor.sha256, sourceBytes: descriptor.originalBytes().byteLength } : {}), reason: 'user-excluded' }); continue; }
+        if (unavailableReason) { addUnavailable({ key, id: value.id, kind: 'resource', category: request.category, label: originPath, originPath, revision: value.revision,
+          ...(descriptor ? { sourceHash: descriptor.sha256, sourceBytes: descriptor.originalBytes().byteLength } : {}), reason: unavailableReason }); continue; }
+        if (value.kind === 'remote-url') { addUnavailable({ key, id: value.id, kind: 'resource', category: request.category, label: originPath, originPath, revision: value.revision, reason: 'remote-network-disabled' }); continue; }
+        const opened = await active.lease.service.openResource(value.id, PROMPT_CONTEXT_RESOURCE_LIMIT);
+        if (!opened.ok) { addUnavailable({ key, id: value.id, kind: 'resource', category: request.category, label: originPath, originPath, revision: value.revision, reason: opened.diagnostics[0]?.detail ?? 'resource-read-failed' }); continue; }
+        if (opened.value.revision !== value.revision) { addUnavailable({ key, id: value.id, kind: 'resource', category: request.category, label: originPath, originPath, revision: value.revision,
+          sourceHash: opened.value.sha256, sourceBytes: opened.value.bytes.byteLength, reason: 'source-revision-conflict' }); continue; }
+        if (contextSourceBytes + opened.value.bytes.byteLength > PROMPT_CONTEXT_TOTAL_READ_LIMIT) { addUnavailable({ key, id: value.id, kind: 'resource', category: request.category, label: originPath, originPath,
+          revision: value.revision, sourceHash: opened.value.sha256, sourceBytes: opened.value.bytes.byteLength, reason: 'context-source-read-budget' }); continue; }
+        contextSourceBytes += opened.value.bytes.byteLength;
+        let text: string;
+        try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(opened.value.bytes); }
+        catch { addUnavailable({ key, id: value.id, kind: 'resource', category: request.category, label: originPath, originPath, revision: value.revision,
+          sourceHash: opened.value.sha256, sourceBytes: opened.value.bytes.byteLength, reason: 'invalid-utf8' }); continue; }
+        const ownerIds = [...request.owners], ownerId = captured.query.entityId ?? (ownerIds.length === 1 ? ownerIds[0] : undefined);
+        const variables: import('@a3/domain').EffectiveVariable[] = [], unresolved: import('@a3/domain').VariableTextIssue[] = [];
+        const resolution = resolveVariableText(snapshot, text, { ...captured.query, ...(ownerId ? { entityId: ownerId } : {}) });
+        variables.push(...resolution.variables); unresolved.push(...resolution.unresolved);
+        const contentBytes = Buffer.byteLength(resolution.text, 'utf8');
+        if (contentBytes > PROMPT_CONTEXT_RESOURCE_LIMIT || contextContentBytes + contentBytes > PROMPT_CONTEXT_TOTAL_READ_LIMIT) { addUnavailable({ key, id: value.id, kind: 'resource', category: request.category,
+          label: originPath, originPath: opened.value.path, revision: value.revision, sourceHash: opened.value.sha256, sourceBytes: opened.value.bytes.byteLength, reason: 'context-source-resolution-budget' }); continue; }
+        contextContentBytes += contentBytes;
+        documents.push({ key, id: value.id, kind: 'resource', category: request.category, label: originPath, originPath: opened.value.path, revision: opened.value.revision,
+          sourceHash: opened.value.sha256, descriptorHash: opened.value.descriptorHash, sourceBytes: opened.value.bytes.byteLength,
+          content: resolution.text, contentFormat: /\.(?:md|markdown|mdown)$/i.test(originPath) ? 'markdown' : 'text', variables, unresolved });
+      }
+      for (const relationId of captured.selection.relationIds) {
+        const relation = snapshot.records.find((record) => record.kind === 'relation' && record.value.id.toLowerCase() === relationId.toLowerCase());
+        demand(relation?.kind === 'relation', 'PROMPT_CONTEXT_RELATION_MISSING', `La relación semántica elegida ya no está disponible: ${relationId}.`);
+        const key = promptContextKey('relation', relation.value.id), document = sourceDocument('relation', relation.value.id);
+        demand(document?.record?.kind === 'relation', 'PROMPT_CONTEXT_RELATION_UNREADABLE', `No se pudo verificar la relación ${relationId}.`);
+        const relationBytes = document.originalBytes();
+        if (excluded.has(key)) { addUnavailable({ key, id: relation.value.id, kind: 'relation', category: 'relation', label: relation.value.type, originPath: document.location.path,
+          revision: relation.value.revision, sourceHash: document.sha256, sourceBytes: relationBytes.byteLength, reason: 'user-excluded' }); continue; }
+        if (contextSourceBytes + relationBytes.byteLength > PROMPT_CONTEXT_TOTAL_READ_LIMIT) { addUnavailable({ key, id: relation.value.id, kind: 'relation', category: 'relation', label: relation.value.type, originPath: document.location.path,
+          revision: relation.value.revision, sourceHash: document.sha256, sourceBytes: relationBytes.byteLength, reason: 'context-source-read-budget' }); continue; }
+        contextSourceBytes += relationBytes.byteLength;
+        const variables: import('@a3/domain').EffectiveVariable[] = [], unresolved: import('@a3/domain').VariableTextIssue[] = [];
+        let resolved: import('@a3/domain').JsonValue;
+        try { resolved = resolvePromptContextJson(snapshot, relation.value as unknown as import('@a3/domain').JsonValue, captured.query, variables, unresolved, { usedBytes: 0, maxBytes: PROMPT_CONTEXT_RESOURCE_LIMIT }); }
+        catch { addUnavailable({ key, id: relation.value.id, kind: 'relation', category: 'relation', label: relation.value.type, originPath: document.location.path,
+          revision: relation.value.revision, sourceHash: document.sha256, sourceBytes: relationBytes.byteLength, reason: 'context-source-resolution-budget' }); continue; }
+        const content = JSON.stringify(resolved, null, 2), contentBytes = Buffer.byteLength(content, 'utf8');
+        if (contentBytes > PROMPT_CONTEXT_RESOURCE_LIMIT || contextContentBytes + contentBytes > PROMPT_CONTEXT_TOTAL_READ_LIMIT) { addUnavailable({ key, id: relation.value.id, kind: 'relation', category: 'relation',
+          label: relation.value.type, originPath: document.location.path, revision: relation.value.revision, sourceHash: document.sha256, sourceBytes: relationBytes.byteLength, reason: 'context-source-resolution-budget' }); continue; }
+        contextContentBytes += contentBytes;
+        documents.push({ key, id: relation.value.id, kind: 'relation', category: 'relation', label: relation.value.type, originPath: document.location.path,
+          revision: relation.value.revision, sourceHash: document.sha256, descriptorHash: document.sha256, sourceBytes: relationBytes.byteLength,
+          content, contentFormat: 'json', variables, unresolved });
+      }
+      const compiled = buildPromptContext(active.projectId, projectRecord.value.name, base, documents, unavailable,
+        { maxBytes: captured.maxBytes, split: captured.split, excludedSourceKeys: captured.selection.excludedSourceKeys });
+      const executionId = randomUUID(), partHashes = compiled.parts.map((part) => sha256(Buffer.from(part.markdown, 'utf8'))), outputHasher = createHash('sha256');
+      compiled.parts.forEach((part) => { outputHasher.update(Buffer.from(part.markdown, 'utf8')); outputHasher.update(Buffer.from([0])); });
+      const execution: PromptContextExecutionTrace = { schemaVersion: '1.0.0', id: executionId, kind: 'prompt-context-compilation', projectId: active.projectId,
+        createdAt: new Date().toISOString(), mode: captured.mode, templateId: compiled.templateId ?? 'manual', templateHash: sha256(Buffer.from(captured.source, 'utf8')),
+        inputHash: sha256(Buffer.from(JSON.stringify(captured.inputs), 'utf8')), promptHash: outputHasher.digest('hex'),
+        variableContext: { ...(captured.query.workspaceId ? { workspaceId: captured.query.workspaceId } : {}), ...(captured.query.entityId ? { entityId: captured.query.entityId } : {}),
+          ...(captured.query.referenceScope ? { referenceScope: captured.query.referenceScope } : {}), requiredNames: captured.mode === 'manual' ? captured.requiredNames : [],
+          executionVariableNames: (captured.query.executionVariables ?? []).map((variable) => variable.name).sort() },
+        variables: compiled.variables.map((variable) => ({ name: variable.name, scope: { kind: variable.scope.kind, ...(variable.scope.kind === 'execution' ? {} : { ownerId: variable.scope.ownerId }) },
+          valueHash: sha256(Buffer.from(JSON.stringify(variable.value), 'utf8')) })), selection: captured.selection,
+        included: compiled.included, omitted: compiled.omitted, parts: compiled.parts.map((part, index) => ({ index: part.index, bytes: part.bytes, sha256: partHashes[index]!, sourceKeys: part.sourceKeys })),
+        provider: null, model: null };
+      const tracePath = `.a3/local/prompt-runs/${executionId}.json`;
+      await ensureDirectories(active.lease.service.root, '.a3/local/prompt-runs');
+      await writeExclusive(active.lease.service.root, tracePath, Buffer.from(JSON.stringify(execution, null, 2) + '\n', 'utf8'));
+      return { ...compiled, executionId, tracePath, traceSaved: true };
+    });
   }
   loadProjectVariables(sessionId: string, query: VariablesQuery = {}): Promise<ProjectVariablesState> { return this.#queue(async () => this.#variablesState(sessionId, query)); }
   resolveProjectVariableText(sessionId: string, source: string, query: VariablesQuery = {}, requiredNames: string[] = []): Promise<VariableTextResolution> {

@@ -42,8 +42,14 @@ async function run() {
   await click('[data-section="prompts"]'); await waitFor("Boolean(document.querySelector('[aria-label=\"Ejemplo de plantilla\"]')) && document.querySelector('[aria-label=\"Contexto workspace\"]')?.options.length > 1");
   await set('[aria-label="Ejemplo de plantilla"]', 'a3.iot-proposal');
   await set('#prompt-input-goal', 'Medir temperatura en ambiente'); await set('#prompt-input-components', 'ESP32 DevKit\nSensor de temperatura con referencia exacta'); await set('#prompt-input-board', 'ESP32 DevKit exacta');
+  await waitFor("Boolean(document.querySelector('[aria-label=\"Categoría de contexto para Visión\"]'))");
+  await set('[aria-label="Categoría de contexto para Visión"]', 'requirement');
+  await click('[aria-label="Relaciones semánticas seleccionables"] li input[type=checkbox]');
   await click('button.primary'); await waitFor("Boolean(document.querySelector('[aria-label=\"Vista previa exportable\"]'))");
   assert.match(await js("document.querySelector('[aria-label=\"Vista previa exportable\"]').value"), /Propuesta IoT \(no verificada\)/);
+  assert.match(await text('[aria-label="Manifiesto de fuentes incluidas"]'), /Visión|pages\/readme\.md/);
+  assert.match(await text('[aria-label="Manifiesto de fuentes incluidas"]'), /a3\.core\.references/);
+  assert.match(await text('.prompt-result'), /VisualEdge incluidos: 0/); assert.match(await text('.prompt-result'), /Trazabilidad local: guardada/);
   assert.equal(await js("document.querySelector('[data-auto-send-allowed]').dataset.autoSendAllowed"), 'true');
   await set('[aria-label="Ejemplo de plantilla"]', 'manual'); await waitFor("Boolean(document.querySelector('[aria-label=\"Plantilla Markdown\"]'))");
   await set('[aria-label="Contexto workspace"]', W1); await set('[aria-label="Plantilla Markdown"]', 'Usa {{demo.name}} y revisa {{demo.absent}}.');
@@ -56,6 +62,6 @@ async function run() {
   await click('[data-section="variables"]'); await waitFor("document.querySelector('[data-variable-effective]')?.textContent.includes('project label')");
   assert.equal((await text('[data-variable-effective]')).includes('temporary only'), false);
   await js("document.querySelector('[data-variable-name-input]').focus()"); assert.equal(await js("document.activeElement.hasAttribute('data-variable-name-input')"), true);
-  console.log('A3_VARIABLES_SMOKE=' + JSON.stringify({ passed: true, checks: ['project variable UI', 'workspace override', 'bound label in two views', 'explicit scope inspector', 'safe built-in IoT template preview', 'derived prompt preview with required-variable gate', 'temporary execution is not persisted', 'invalid type feedback', 'strict IPC/no execution writes', 'keyboard focus', 'renderer without Node'] })); win.close();
+  console.log('A3_VARIABLES_SMOKE=' + JSON.stringify({ passed: true, checks: ['project variable UI', 'workspace override', 'bound label in two views', 'explicit scope inspector', 'safe built-in IoT template preview', 'explicit requirement and relation context', 'source manifest and local provenance trace', 'visual edges excluded from context', 'derived prompt preview with required-variable gate', 'temporary execution is not persisted', 'invalid type feedback', 'strict IPC/no execution writes', 'keyboard focus', 'renderer without Node'] })); win.close();
 }
 void run().catch((error) => { console.error(error); app.exit(2); }); require(entry);
