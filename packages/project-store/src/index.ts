@@ -18,6 +18,8 @@ export { migrationChain, applyMigrationChain } from './migrations.js';
 export type { MigrationScope, MigrationStep, MigrationResult } from './migrations.js';
 export { CAPABILITIES, CAPABILITY_GROUPS, createProjectCapabilityBroker, isProjectCapabilityBroker, parseSharedPolicyRequest } from './capabilities.js';
 export type { BrokerOptions, Capability, CapabilityDecision, CapabilityRevocation, EffectiveCapabilityState, GrantMode, LocalMountBinding, MountPermission, Profile, ProjectCapabilityBroker, ProjectCapabilityState, SharedPolicyRequest } from './capabilities.js';
+export { AGENT_PROCESS_ISOLATION_AVAILABLE, AGENT_PROCESS_LIMITS, ActiveAgentProcessRegistry, AgentProcessOutputLimit, authorizeAgentProcess, captureAgentExecutionRoot, createAgentProcessDeadline, validateAgentProcessIntent } from './agent-process.js';
+export type { AgentProcessDeadline, AgentProcessGateResult, AgentProcessIntent, AgentProcessValidation, ApprovedExecutionRoot } from './agent-process.js';
 export { MountPathError, inspectLocalMountFile, readLocalMountFile, readMountedResource, validateMountRelativePath } from './mounts.js';
 export type { MountActionPreview, MountedBytes } from './mounts.js';
 export { LocalProjectManager, LocalProjectError, validateProjectName } from './projects.js';
