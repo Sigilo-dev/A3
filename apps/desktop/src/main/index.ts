@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, safeStorage, session, shell } from 'electron';
 import { access } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,6 +13,9 @@ import { MEMORY_SEARCH_CHANNEL } from '../shared/memory-search';
 import { PLANNING_CHANNEL } from '../shared/planning';
 import { MANUAL_CHAT_CHANNEL } from '../shared/manual-chat';
 import { ManualChatController } from './manual-chat';
+import { CODEX_AUTH_CHANNEL } from '../shared/codex-auth';
+import { CodexAuthorization } from './codex-authorization';
+import { SystemCredentialVault } from './codex-credential-vault';
 
 const APP_URL = 'a3://desktop/index.html';
 const editorStyleNonce = randomBytes(24).toString('base64');
@@ -25,6 +28,7 @@ let bootTimer: ReturnType<typeof setTimeout> | undefined;
 let projects: ReturnType<typeof createProjectController> | undefined;
 let closing = false;
 let manualChat: ManualChatController | undefined;
+let codexAuthorization: CodexAuthorization | undefined;
 
 async function finishQuit(): Promise<void> {
   if (closing || quitting) return;
@@ -45,6 +49,7 @@ async function finishQuit(): Promise<void> {
     await projects?.imageConversions.cancelAll();
     await projects?.avConversions.cancelAll();
     await projects?.manager.shutdown();
+    await codexAuthorization?.shutdown();
     manualChat?.dispose();
     quitting = true; clearTimeout(bootTimer); app.quit();
   } catch {
@@ -111,6 +116,7 @@ async function startDesktop(): Promise<void> {
     : join(app.getAppPath(), 'resources', 'plantuml', PLANTUML_ARTIFACT_FILE);
   projects = createProjectController(app.getPath('userData'), () => mainWindow, plantumlArtifactPath);
   manualChat = new ManualChatController(() => mainWindow, async () => (await projects?.manager.getState())?.active?.sessionId ?? null);
+  codexAuthorization = new CodexAuthorization({ vault: new SystemCredentialVault(app.getPath('userData'), safeStorage), openBrowser: (url) => shell.openExternal(url) });
 
   const shellSession = session.fromPartition('persist:a3-shell');
   shellSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -139,6 +145,13 @@ async function startDesktop(): Promise<void> {
     } catch { return new Response('Recurso de interfaz no disponible', { status: 404 }); }
   });
 
+  ipcMain.handle(CODEX_AUTH_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !codexAuthorization || closing || quitting) {
+      return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Autorización disponible solo en la interfaz local.' } };
+    }
+    return codexAuthorization.handle(args[0]);
+  });
   ipcMain.handle(MANUAL_CHAT_CHANNEL, (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
         !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !manualChat || closing || quitting) {
@@ -303,7 +316,7 @@ async function startDesktop(): Promise<void> {
 
 app.on('before-quit', (event) => { if (!quitting) { event.preventDefault(); void finishQuit(); } });
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => { manualChat?.dispose(); ipcMain.removeHandler(MANUAL_CHAT_CHANNEL); ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(GALLERY_CHANNEL); ipcMain.removeHandler(IMAGE_CONVERSION_CHANNEL); ipcMain.removeHandler(AV_CONVERSION_CHANNEL); ipcMain.removeHandler(VARIABLES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); ipcMain.removeHandler(NAVIGATION_CHANNEL); });
+app.on('will-quit', () => { codexAuthorization?.dispose(); ipcMain.removeHandler(CODEX_AUTH_CHANNEL); manualChat?.dispose(); ipcMain.removeHandler(MANUAL_CHAT_CHANNEL); ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(GALLERY_CHANNEL); ipcMain.removeHandler(IMAGE_CONVERSION_CHANNEL); ipcMain.removeHandler(AV_CONVERSION_CHANNEL); ipcMain.removeHandler(VARIABLES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); ipcMain.removeHandler(NAVIGATION_CHANNEL); });
 process.on('uncaughtException', fatalStartup);
 process.on('unhandledRejection', fatalStartup);
 void app.whenReady().then(() => { if (primaryInstance) return startDesktop(); }).catch(fatalStartup);

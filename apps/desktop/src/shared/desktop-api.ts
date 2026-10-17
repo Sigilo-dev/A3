@@ -161,6 +161,7 @@ export type ShellResult<T> =
   | { ok: false; error: { code: 'PERMISSION_DENIED' | 'IO_FAILED'; message: string; recovery: string } };
 
 export interface DesktopAPI {
+  codexAuthorization(request: import('./codex-auth').CodexAuthRequest): Promise<import('./codex-auth').CodexAuthResult>;
   manualChat(request: import('./manual-chat').ManualChatRequest): Promise<import('./manual-chat').ManualChatResult>;
   onManualChatFocus(listener: () => void): () => void;
   memorySearch(request: import('./memory-search').MemorySearchRequest): Promise<import('./memory-search').MemorySearchResult>;
