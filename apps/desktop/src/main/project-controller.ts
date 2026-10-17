@@ -1,19 +1,21 @@
-import { clipboard, dialog, type BrowserWindow } from 'electron';
+import { BrowserWindow, clipboard, dialog, type BrowserWindow as BrowserWindowType } from 'electron';
 import { validC4Operation, validUmlOperation, validateDiagramStyleProfile } from '@a3/domain';
 import { validErOperation } from '@a3/domain/er';
-import { lstat, realpath, readdir } from 'node:fs/promises';
+import { lstat, realpath, readdir, mkdtemp, writeFile, rename, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, parse, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { CONTENT_NODE_CATALOG, CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_RELATION_KINDS, IOT_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { validIotCircuitOperation } from '@a3/domain/iot-circuit';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { CanvasContentRequest, CanvasContentResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
 import { validCanvasView, validPageView } from '@a3/project-store';
 import type { WorkspaceSessionRequest, WorkspaceSessionResult } from '../shared/desktop-api';
 import type { NavigationRequest, NavigationResult } from '../shared/desktop-api';
 import { validateShortcuts } from '@a3/domain';
 import { PLANTUML_ARTIFACT_FILE, PlantUmlRenderer } from './plantuml-renderer';
+import { canvasPdfHtml, planCanvasPdfPages, renderCanvasExportSvgAsync, type CanvasExportWorkspace } from '@a3/project-store';
 
 function validNavigationRequest(value: unknown): value is NavigationRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -77,7 +79,22 @@ function validCanvasRequest(value: unknown): value is CanvasRequest | CanvasCont
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const input = value as Record<string, unknown>;
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (typeof input.action !== 'string' || typeof input.sessionId !== 'string' || typeof input.workspaceId !== 'string' || !uuid.test(input.sessionId) || !uuid.test(input.workspaceId)) return false;
+  if (typeof input.action !== 'string' || typeof input.sessionId !== 'string' || !uuid.test(input.sessionId)) return false;
+  if (input.action === 'export-cancel') return Object.keys(input).length === 3 && typeof input.jobId === 'string' && uuid.test(input.jobId);
+  if (typeof input.workspaceId !== 'string' || !uuid.test(input.workspaceId)) return false;
+  if (input.action === 'export') {
+    const allowed = ['action', 'sessionId', 'workspaceId', 'jobId', 'format', 'scope', 'selection', 'groupId', 'background', 'margin', 'scale', 'fileName', 'paper', 'orientation', 'fit'];
+    const selection = input.selection as Record<string, unknown> | null;
+    const ids = (items: unknown): items is string[] => Array.isArray(items) && items.length <= 500 && items.every((item) => typeof item === 'string' && uuid.test(item));
+    return Object.keys(input).every((key) => allowed.includes(key)) && Object.keys(input).length >= 14 && Object.keys(input).length <= 15 &&
+      typeof input.jobId === 'string' && uuid.test(input.jobId) && ['svg', 'png', 'pdf'].includes(String(input.format)) &&
+      ['selection', 'group', 'diagram', 'workspace'].includes(String(input.scope)) && !!selection && typeof selection === 'object' && !Array.isArray(selection) &&
+      Object.keys(selection).length === 4 && ids(selection.placements) && ids(selection.groups) && ids(selection.drawings) && ids(selection.edges) &&
+      (!('groupId' in input) || typeof input.groupId === 'string' && uuid.test(input.groupId)) && ['transparent', 'opaque', 'project'].includes(String(input.background)) &&
+      Number.isFinite(input.margin) && Number(input.margin) >= 0 && Number(input.margin) <= 500 && Number.isFinite(input.scale) && Number(input.scale) >= .1 && Number(input.scale) <= 4 &&
+      typeof input.fileName === 'string' && input.fileName.trim().length > 0 && input.fileName.length <= 120 && !/[\\/:*?"<>|]/.test(input.fileName) &&
+      ['A3', 'A4'].includes(String(input.paper)) && ['portrait', 'landscape'].includes(String(input.orientation)) && ['page', 'tiles'].includes(String(input.fit));
+  }
   if (input.action === 'plantuml-render') return Object.keys(input).length === 5 && uuid.test(String(input.sourceEntityId)) && uuid.test(String(input.placementId));
   if (input.action === 'diagram-style-load') return Object.keys(input).length === 3;
   if (input.action === 'diagram-style-save') return Object.keys(input).length === 5 && Number.isSafeInteger(input.expectedProjectRevision) &&
@@ -307,6 +324,106 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       `${project.name}\n${project.root}\nLos archivos y copias de recuperación se conservarán. La sesión del proyecto se cerrará antes de abrir otra.`) });
   const plantumlRenderer = new PlantUmlRenderer({ artifactPath: plantumlArtifactPath, installDirectory: join(stateDirectory, 'diagram-engines', 'plantuml') });
   const dropDrafts = new Map<string, StagedDrop>();
+  const exportJobs = new Map<string, { sessionId: string; cancel: () => void }>();
+  const cancelledExport = (): CanvasExportResult => ({ ok: true, value: { cancelled: true } });
+  const renderExport = async (request: CanvasExportRequest): Promise<CanvasExportResult> => {
+    if (exportJobs.has(request.jobId)) return { ok: false, error: { code: 'EXPORT_JOB_EXISTS', message: 'Ya existe una exportación con este ID.', recovery: 'Inicia una exportación nueva.' } };
+    let hidden: BrowserWindowType | undefined, tempRoot: string | undefined, outputTemp: string | undefined;
+    const controller = new AbortController(), { signal } = controller;
+    exportJobs.set(request.jobId, { sessionId: request.sessionId, cancel: () => { controller.abort(); if (hidden && !hidden.isDestroyed()) hidden.destroy(); } });
+    const checkCancelled = (): void => { if (signal.aborted) throw new DOMException('Exportación cancelada.', 'AbortError'); };
+    try {
+      const sources = await manager.loadCanvasExportWorkspaces(request.sessionId, request.workspaceId, request.scope);
+      checkCancelled();
+      const hydrated: CanvasExportWorkspace[] = [];
+      let embeddedBytes = 0;
+      for (const source of sources) {
+        const content: Record<string, { text?: string; dataUrl?: string }> = {};
+        const placementIds = new Set<string>(), groupMap = new Map(source.groups.map((group) => [group.id.toLowerCase(), group]));
+        const addGroup = (id: string, seen = new Set<string>()): void => {
+          const key = id.toLowerCase(); if (seen.has(key)) return; seen.add(key);
+          for (const member of groupMap.get(key)?.members ?? []) member.kind === 'placement' ? placementIds.add(member.id.toLowerCase()) : member.kind === 'group' ? addGroup(member.id, seen) : undefined;
+        };
+        if (request.scope === 'diagram' || request.scope === 'workspace') for (const placement of source.placements) placementIds.add(placement.id.toLowerCase());
+        else if (request.scope === 'group' && request.groupId) addGroup(request.groupId);
+        else if (request.scope === 'selection') {
+          for (const id of request.selection.placements) placementIds.add(id.toLowerCase());
+          for (const id of request.selection.groups) addGroup(id);
+          for (const id of request.selection.edges) {
+            const edge = source.visualEdges.find((item) => item.id.toLowerCase() === id.toLowerCase());
+            if (edge) { placementIds.add(edge.sourcePlacementId.toLowerCase()); placementIds.add(edge.targetPlacementId.toLowerCase()); }
+          }
+        }
+        for (const entity of source.entities) {
+          if (!entity.contentResourceId || !source.placements.some((p) => p.entityId.toLowerCase() === entity.id.toLowerCase() && placementIds.has(p.id.toLowerCase()))) continue;
+          checkCancelled();
+          try {
+            const preview = await manager.loadCanvasContent(request.sessionId, source.workspaceId, entity.id, entity.contentResourceId, 'preview');
+            const key = entity.contentResourceId.toLowerCase();
+            if (preview.text !== null) content[key] = { text: preview.text };
+            else if (preview.bytes && /^image\/(?:png|jpeg|gif|webp|avif|bmp)$/.test(preview.mediaType ?? '') && embeddedBytes + preview.bytes.byteLength <= 20 * 1024 * 1024) {
+              embeddedBytes += preview.bytes.byteLength;
+              content[key] = { dataUrl: `data:${preview.mediaType};base64,${Buffer.from(preview.bytes).toString('base64')}` };
+            }
+          } catch { /* Missing, denied or unsupported media stays represented by its safe poster card. */ }
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        hydrated.push({ ...source, content });
+      }
+      checkCancelled();
+      const rendered = await renderCanvasExportSvgAsync(hydrated, { scope: request.scope, selection: request.selection,
+        ...(request.groupId ? { groupId: request.groupId } : {}), background: request.background, margin: request.margin, scale: request.scale }, signal);
+      if (request.format === 'pdf' && request.background === 'transparent') rendered.diagnostics.push('PDF usa papel blanco; la transparencia se conserva en SVG y PNG, no en la página impresa.');
+      checkCancelled();
+      let bytes: Uint8Array, pages = 1;
+      if (request.format === 'svg') bytes = Buffer.from(rendered.svg, 'utf8');
+      else {
+        tempRoot = await mkdtemp(join(tmpdir(), 'a3-canvas-export-'));
+        if (request.format === 'png') {
+          if (rendered.width * rendered.height > 30_000_000 || rendered.width > 16000 || rendered.height > 16000) throw new LocalProjectError('EXPORT_TOO_LARGE', 'La imagen supera el límite de rasterización local de 30 megapíxeles. Exporta una selección o reduce la escala.');
+          const svgPath = join(tempRoot, 'scene.svg'); await writeFile(svgPath, rendered.svg, { flag: 'wx' });
+          hidden = new BrowserWindow({ show: false, width: rendered.width, height: rendered.height, transparent: true, backgroundColor: '#00000000', webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false } });
+          hidden.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+          hidden.webContents.on('will-navigate', (event) => event.preventDefault());
+          await hidden.loadFile(svgPath); checkCancelled();
+          const image = await hidden.webContents.capturePage(undefined, { stayHidden: true }); checkCancelled();
+          bytes = image.resize({ width: rendered.width, height: rendered.height, quality: 'best' }).toPNG();
+        } else {
+          const pdfOptions = { paper: request.paper, orientation: request.orientation, marginMm: request.margin, fit: request.fit, scale: request.scale } as const;
+          const pagesToRender = planCanvasPdfPages(rendered.bounds, pdfOptions); pages = pagesToRender.length;
+          const htmlPath = join(tempRoot, 'print.html'); await writeFile(htmlPath, canvasPdfHtml(rendered.svg, pagesToRender, pdfOptions), { flag: 'wx' });
+          hidden = new BrowserWindow({ show: false, width: 1200, height: 900, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false } });
+          hidden.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+          hidden.webContents.on('will-navigate', (event) => event.preventDefault());
+          await hidden.loadFile(htmlPath); await hidden.webContents.executeJavaScript('document.fonts.ready.then(() => true)'); checkCancelled();
+          bytes = await hidden.webContents.printToPDF({ pageSize: request.paper, landscape: request.orientation === 'landscape', margins: { top: 0, right: 0, bottom: 0, left: 0 }, printBackground: true, preferCSSPageSize: true });
+          checkCancelled();
+        }
+      }
+      if (hidden && !hidden.isDestroyed()) { hidden.destroy(); hidden = undefined; }
+      checkCancelled();
+      const extension = request.format, base = request.fileName.replace(/\.(?:svg|png|pdf)$/i, ''), suggested = `${base}.${extension}`;
+      const parent = getWindow(); if (!parent) throw new LocalProjectError('WINDOW_UNAVAILABLE', 'La ventana principal no está disponible para elegir el destino.');
+      const destination = await dialog.showSaveDialog(parent, { title: `Exportar ${request.scope} como ${request.format.toUpperCase()}`, defaultPath: suggested,
+        filters: [{ name: request.format.toUpperCase(), extensions: [extension] }], buttonLabel: 'Exportar' });
+      if (destination.canceled || !destination.filePath) return cancelledExport();
+      checkCancelled();
+      const filePath = destination.filePath.toLowerCase().endsWith(`.${extension}`) ? destination.filePath : `${destination.filePath}.${extension}`;
+      outputTemp = join(dirname(filePath), `.${basename(filePath)}.${randomUUID()}.tmp`);
+      await writeFile(outputTemp, bytes, { flag: 'wx' }); checkCancelled(); await rename(outputTemp, filePath); outputTemp = undefined;
+      return { ok: true, value: { format: request.format, fileName: basename(filePath), width: rendered.width, height: rendered.height, pages,
+        rasterized: rendered.rasterized, diagnostics: rendered.diagnostics } };
+    } catch (error) {
+      if (signal.aborted || error instanceof DOMException && error.name === 'AbortError') return cancelledExport();
+      return { ok: false, error: { code: error instanceof LocalProjectError ? error.code : 'EXPORT_FAILED',
+        message: error instanceof Error ? error.message : 'No se pudo exportar el lienzo.', recovery: 'Los documentos del proyecto no se modificaron. Reduce el alcance o escala y vuelve a intentarlo.' } };
+    } finally {
+      if (hidden && !hidden.isDestroyed()) hidden.destroy();
+      if (outputTemp) await rm(outputTemp, { force: true }).catch(() => undefined);
+      if (tempRoot) await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+      exportJobs.delete(request.jobId);
+    }
+  };
   const chooseFolder = async (title: string): Promise<string | undefined> => {
     const parent = getWindow(); if (!parent) return undefined;
     const result = await dialog.showOpenDialog(parent, { title, properties: ['openDirectory', 'dontAddToRecent'] });
@@ -424,10 +541,16 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
-    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasMermaidImportResult | CanvasPlantUmlImportResult | CanvasPlantUmlResult | CanvasStyleResult | CanvasStructurizrImportResult> {
+    async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasExportResult | CanvasMermaidImportResult | CanvasPlantUmlImportResult | CanvasPlantUmlResult | CanvasStyleResult | CanvasStructurizrImportResult> {
       if (!validCanvasRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de lienzo inválida.', recovery: 'Reabre el workspace.' } };
       try {
         switch (value.action) {
+          case 'export': return renderExport(value);
+          case 'export-cancel': {
+            const job = exportJobs.get(value.jobId);
+            if (job?.sessionId === value.sessionId) job.cancel();
+            return cancelledExport();
+          }
           case 'diagram-style-load': return { ok: true, value: await manager.loadDiagramStyle(value.sessionId) };
           case 'diagram-style-save': return { ok: true, value: await manager.saveDiagramStyle(value.sessionId, value.expectedProjectRevision, value.profile) };
           case 'plantuml-render': return { ok: true, value: await plantumlRenderer.render(await manager.preparePlantUmlRender(value.sessionId, value.workspaceId, value.sourceEntityId, value.placementId)) };

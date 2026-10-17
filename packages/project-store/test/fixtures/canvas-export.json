@@ -1,0 +1,36 @@
+{
+  "sessionId": "00000000-0000-4000-8000-000000000001",
+  "workspaceId": "00000000-0000-4000-8000-000000000006",
+  "name": "Export fixture",
+  "revision": 1,
+  "diagramStyle": { "schemaVersion": "1.0.0", "engine": "a3-native", "theme": "neutral", "colors": { "background": "#ffffff", "secondary": "#eef2ff", "text": "#1e293b", "line": "#64748b" } },
+  "diagramStyleDiagnostics": [],
+  "viewport": { "x": 0, "y": 0, "zoom": 1 },
+  "canWrite": true,
+  "pending": false,
+  "entities": [
+    { "id": "00000000-0000-4000-8000-000000000101", "revision": 1, "type": "a3.content.short-text", "typeVersion": "1.0.0", "title": "Idea <script>alert(1)</script>", "properties": {}, "ports": [], "typeAvailable": true },
+    { "id": "00000000-0000-4000-8000-000000000102", "revision": 1, "type": "a3.content.image", "typeVersion": "1.0.0", "title": "Reference image", "properties": {}, "ports": [], "contentResourceId": "00000000-0000-4000-8000-000000000202", "contentResource": { "id": "00000000-0000-4000-8000-000000000202", "kind": "project-file", "label": "sample.png", "mediaType": "image/png" }, "typeAvailable": true },
+    { "id": "00000000-0000-4000-8000-000000000103", "revision": 1, "type": "a3.content.youtube", "typeVersion": "1.0.0", "title": "Reference video", "properties": {}, "ports": [], "contentResourceId": "00000000-0000-4000-8000-000000000203", "contentResource": { "id": "00000000-0000-4000-8000-000000000203", "kind": "remote-url", "label": "youtube.com", "url": "https://youtube.com/watch?v=fixture" }, "typeAvailable": true }
+  ],
+  "entityChoices": [],
+  "resourceChoices": [],
+  "placements": [
+    { "id": "00000000-0000-4000-8000-000000000301", "revision": 1, "entityId": "00000000-0000-4000-8000-000000000101", "position": { "x": 20, "y": 40 }, "size": { "width": 280, "height": 150 }, "style": {} },
+    { "id": "00000000-0000-4000-8000-000000000302", "revision": 1, "entityId": "00000000-0000-4000-8000-000000000102", "position": { "x": 380, "y": 40 }, "size": { "width": 280, "height": 150 }, "style": {} },
+    { "id": "00000000-0000-4000-8000-000000000303", "revision": 1, "entityId": "00000000-0000-4000-8000-000000000103", "position": { "x": 380, "y": 260 }, "size": { "width": 280, "height": 150 }, "style": {} }
+  ],
+  "visualEdges": [ { "id": "00000000-0000-4000-8000-000000000401", "revision": 1, "sourcePlacementId": "00000000-0000-4000-8000-000000000301", "targetPlacementId": "00000000-0000-4000-8000-000000000302", "label": "visual", "waypoints": [], "style": {} } ],
+  "conceptualRelations": [],
+  "drawings": [ { "id": "00000000-0000-4000-8000-000000000501", "revision": 1, "points": [{ "x": 100, "y": 220, "pressure": 0.3 }, { "x": 150, "y": 240, "pressure": 0.8 }], "parameters": { "size": 4, "thinning": 0.2, "smoothing": 0.5, "streamline": 0.5, "simulatePressure": true }, "style": {} } ],
+  "groups": [ { "id": "00000000-0000-4000-8000-000000000601", "revision": 1, "name": "Research", "members": [{ "kind": "placement", "id": "00000000-0000-4000-8000-000000000301" }, { "kind": "drawing", "id": "00000000-0000-4000-8000-000000000501" }], "collapsed": false } ],
+  "c4": { "elements": [], "relationships": [], "relationViews": [], "types": [], "views": [], "current": null },
+  "uml": { "elements": [], "relationships": [], "relationViews": [] },
+  "er": { "elements": [], "relationships": [], "relationViews": [] },
+  "history": { "canUndo": false, "canRedo": false, "undoRequiresDelete": false, "redoRequiresDelete": false, "deleteAvailable": false },
+  "canDeleteEdges": false,
+  "canDeleteRelations": false,
+  "canDeleteDrawings": false,
+  "canConvertDrawings": false,
+  "content": { "00000000-0000-4000-8000-000000000202": { "dataUrl": "data:image/png;base64,iVBORw0KGgo=" } }
+}

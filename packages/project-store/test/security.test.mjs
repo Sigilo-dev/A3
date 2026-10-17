@@ -80,7 +80,8 @@ test('capability categories stay independent in Trabajar and Personalizado', asy
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['document.edit'], 'a3.core.update-entity', 'apply'), true);
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['diagram.edit'], 'a3.core.move-placement', 'apply'), true);
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['task.edit'], 'a3.core.set-collection-members', 'apply'), true);
-  for (const cap of ['delete', 'mount.read', 'network.access', 'package.install', 'export', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push', 'git.branch', 'git.restore']) {
+  capability(await broker.authorizeCapabilities(root, actor, projectId, ['export'], 'canvas.export', 'apply'), true);
+  for (const cap of ['delete', 'mount.read', 'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push', 'git.branch', 'git.restore']) {
     const result = await broker.authorizeCapabilities(root, actor, projectId, [cap], `probe.${cap}`, 'apply');
     assert.equal(result.allowed, false, `${cap} must stay independent`);
     assert.equal(result.missingCapability, cap);
@@ -91,6 +92,19 @@ test('capability categories stay independent in Trabajar and Personalizado', asy
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['diagram.edit'], 'custom.diagram', 'apply'), true);
   const unrelated = await broker.authorizeCapabilities(root, actor, projectId, ['document.edit'], 'custom.document', 'apply');
   assert.equal(unrelated.allowed, false); assert.equal(unrelated.missingCapability, 'document.edit');
+});
+
+test('export is gated by project profile and explicit approval in Proponer', async (t) => {
+  const { root } = await scratch(t);
+  let approved = false;
+  const { broker, projectId, actor } = await brokerFor(root, { kind: 'agent', id: 'agent-1' }, ({ operation }) => operation.startsWith('policy.') || approved);
+  await broker.setProfile({ root, projectId, profile: 'proponer' });
+  const denied = await broker.authorizeCapabilities(root, actor, projectId, ['export'], 'canvas.export', 'apply');
+  assert.equal(denied.allowed, false); assert.equal(denied.reason, 'approval-rejected');
+  approved = true;
+  capability(await broker.authorizeCapabilities(root, actor, projectId, ['export'], 'canvas.export', 'apply'), true);
+  await broker.setProfile({ root, projectId, profile: 'consultar' });
+  assert.equal((await broker.authorizeCapabilities(root, actor, projectId, ['export'], 'canvas.export', 'apply')).allowed, false);
 });
 
 test('the project service exposes no callback-based permission bypass', async (t) => {

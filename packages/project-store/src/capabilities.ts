@@ -57,15 +57,15 @@ export interface SharedPolicyRequest { schemaVersion: '1.0.0'; requests: readonl
 
 const profileModes: Record<Profile, Partial<Record<Capability, GrantMode>>> = {
   consultar: { 'project.read': 'direct' },
-  proponer: { 'project.read': 'direct', 'document.edit': 'approval', 'diagram.edit': 'approval', 'task.edit': 'approval', 'project.recover': 'approval' },
-  trabajar: { 'project.read': 'direct', 'document.edit': 'direct', 'diagram.edit': 'direct', 'task.edit': 'direct', 'project.recover': 'approval' },
+  proponer: { 'project.read': 'direct', 'document.edit': 'approval', 'diagram.edit': 'approval', 'task.edit': 'approval', 'project.recover': 'approval', export: 'approval' },
+  trabajar: { 'project.read': 'direct', 'document.edit': 'direct', 'diagram.edit': 'direct', 'task.edit': 'direct', 'project.recover': 'approval', export: 'direct' },
   personalizado: { 'project.read': 'deny' }
 };
 // E0-C2 did not verify OS process isolation, network confinement, package execution,
-// Git, or export adapters. A local policy cannot turn an absent enforcement boundary on.
+// or Git. Export is now enforced by the host's local save dialog and export adapter.
 const unavailable = new Set<Capability>([
   'mount.write', 'process.run', 'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit',
-  'git.push', 'git.branch', 'git.restore', 'export'
+  'git.push', 'git.branch', 'git.restore'
 ]);
 const known = new Set<string>(CAPABILITIES);
 const trustedBrokers = new WeakSet<object>();

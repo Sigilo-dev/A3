@@ -336,6 +336,19 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
   const [selection, setSelection] = useState<{ nodeIds: string[]; groupIds: string[]; edgeIds: string[]; drawingIds: string[] }>({ nodeIds: [], groupIds: [], edgeIds: [], drawingIds: [] });
   const [groupName, setGroupName] = useState('Grupo nuevo');
   const [selectedGroupId, setSelectedGroupId] = useState('');
+  const [exportFormat, setExportFormat] = useState<'svg' | 'png' | 'pdf'>('svg');
+  const [exportScope, setExportScope] = useState<'selection' | 'group' | 'diagram' | 'workspace'>('diagram');
+  const [exportGroupId, setExportGroupId] = useState('');
+  const [exportBackground, setExportBackground] = useState<'transparent' | 'opaque' | 'project'>('transparent');
+  const [exportMargin, setExportMargin] = useState(24);
+  const [exportScale, setExportScale] = useState(1);
+  const [exportPaper, setExportPaper] = useState<'A3' | 'A4'>('A3');
+  const [exportOrientation, setExportOrientation] = useState<'portrait' | 'landscape'>('landscape');
+  const [exportFit, setExportFit] = useState<'page' | 'tiles'>('page');
+  const [exportFileName, setExportFileName] = useState('A3-diagrama');
+  const [exporting, setExporting] = useState(false);
+  const [exportReport, setExportReport] = useState<string | null>(null);
+  const exportJob = useRef('');
   const [strokePreview, setStrokePreview] = useState<StrokePreview | null>(null);
   const [selectedEntityId, setSelectedEntityId] = useState('');
   const [contentKind, setContentKind] = useState<ContentNodeKind>('page');
@@ -508,7 +521,7 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
       changed.current = loaded.pending;
       installWorkspace(loaded); setViewport(loaded.viewport); rebase(loaded.viewport); setStatus(!loaded.canWrite ? 'Vista temporal · solo lectura' : loaded.pending ? 'Vista pendiente' : 'Vista guardada');
     }).catch(report);
-    return () => { flush(); live.current = false; clearTimeout(timer.current); };
+    return () => { flush(); live.current = false; clearTimeout(timer.current); if (exportJob.current) void window.a3?.canvas({ action: 'export-cancel', sessionId, jobId: exportJob.current }); };
   }, [sessionId, workspaceId]);
   useEffect(() => window.a3?.onFileDrop((notice) => {
     if (notice.error) { setError(notice.error); setStatus('Drop cancelado'); setDropNotice(null); return; }
@@ -575,6 +588,27 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     const added = result.value.placements.find((placement) => !latest.placements.some((previous) => previous.id === placement.id));
     installWorkspace(result.value, added?.id); setError(null); setErrorKind(null); setStatus(mode === 'text' ? 'Texto pegado como nodo' : 'Contenido pegado en el lienzo');
     if (added) setNodes((previous) => previous.map((node) => ({ ...node, selected: node.id === added.id })));
+  }
+  async function exportCanvas(): Promise<void> {
+    if (!workspace || !window.a3 || exporting) return;
+    const jobId = crypto.randomUUID(); exportJob.current = jobId; setExporting(true); setExportReport(null); setError(null);
+    const result = await window.a3.canvas({ action: 'export', jobId, sessionId, workspaceId, format: exportFormat, scope: exportScope,
+      selection: { placements: selection.nodeIds, groups: selection.groupIds, drawings: selection.drawingIds, edges: selection.edgeIds },
+      ...(exportScope === 'group' ? { groupId: exportGroupId || selection.groupIds[0] || selectedGroupId || workspace.groups[0]?.id } : {}),
+      background: exportBackground, margin: exportMargin, scale: exportScale, fileName: exportFileName || workspace.name,
+      paper: exportPaper, orientation: exportOrientation, fit: exportFit });
+    if (exportJob.current !== jobId) return;
+    exportJob.current = ''; setExporting(false);
+    if (!result.ok) { setExportReport(`${result.error.code}: ${result.error.message}`); return; }
+    if ('cancelled' in result.value && result.value.cancelled) { setExportReport('Exportación cancelada; no se creó ningún archivo.'); return; }
+    const report = [`${result.value.fileName} · ${result.value.width} × ${result.value.height} · ${result.value.pages} página(s)`,
+      ...result.value.rasterized.map((item) => `Imagen raster incrustada en el SVG base: ${item}`), ...result.value.diagnostics];
+    setExportReport(report.join('\n')); setStatus(`Exportación ${exportFormat.toUpperCase()} lista`);
+  }
+  async function cancelExport(): Promise<void> {
+    const jobId = exportJob.current;
+    if (!jobId || !window.a3) return;
+    await window.a3.canvas({ action: 'export-cancel', sessionId, jobId });
   }
   async function commitDrop(): Promise<void> {
     const notice = dropNotice, latest = workspaceRef.current, rect = hostRef.current?.getBoundingClientRect();
@@ -1147,6 +1181,28 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
       </details>
       <label className="canvas-fixture"><input type="checkbox" data-canvas-fixture checked={showReference} onChange={(event) => setShowReference(event.target.checked)} />Referencia de prueba</label>
     </div>
+    <details className="canvas-export-panel" data-canvas-export>
+      <summary>Exportar lienzo</summary>
+      <div className="canvas-export-controls">
+        <label>Formato <select data-canvas-export-format value={exportFormat} onChange={(event) => setExportFormat(event.target.value as typeof exportFormat)}><option value="svg">SVG vectorial</option><option value="png">PNG</option><option value="pdf">PDF</option></select></label>
+        <label>Alcance <select data-canvas-export-scope value={exportScope} onChange={(event) => setExportScope(event.target.value as typeof exportScope)}><option value="selection">Selección</option><option value="group">Grupo</option><option value="diagram">Diagrama actual</option><option value="workspace">Todo el proyecto</option></select></label>
+        {exportScope === 'group' && <label>Grupo <select data-canvas-export-group value={exportGroupId || selection.groupIds[0] || selectedGroupId || workspace?.groups[0]?.id || ''} onChange={(event) => setExportGroupId(event.target.value)}>
+          {workspace?.groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>}
+        <label>Fondo <select data-canvas-export-background value={exportBackground} onChange={(event) => setExportBackground(event.target.value as typeof exportBackground)}><option value="transparent">Transparente</option><option value="opaque">Blanco opaco</option><option value="project">Color del proyecto</option></select></label>
+        <label>Margen {exportFormat === 'pdf' ? '(mm)' : '(unidades)'} <input data-canvas-export-margin type="number" min="0" max={exportFormat === 'pdf' ? 40 : 500} value={exportMargin} onChange={(event) => setExportMargin(Number(event.target.value))} /></label>
+        <label>Escala <input data-canvas-export-scale type="number" min="0.1" max="4" step="0.1" value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))} /></label>
+        {exportFormat === 'pdf' && <>
+          <label>Papel <select data-canvas-export-paper value={exportPaper} onChange={(event) => setExportPaper(event.target.value as typeof exportPaper)}><option value="A3">A3</option><option value="A4">A4</option></select></label>
+          <label>Orientación <select data-canvas-export-orientation value={exportOrientation} onChange={(event) => setExportOrientation(event.target.value as typeof exportOrientation)}><option value="landscape">Horizontal</option><option value="portrait">Vertical</option></select></label>
+          <label>Distribución <select data-canvas-export-fit value={exportFit} onChange={(event) => setExportFit(event.target.value as typeof exportFit)}><option value="page">Ajustar a una página</option><option value="tiles">Dividir en varias páginas</option></select></label>
+        </>}
+        <label>Nombre <input data-canvas-export-name value={exportFileName} maxLength={120} onChange={(event) => setExportFileName(event.target.value)} /></label>
+        <button className="secondary" data-canvas-export-start disabled={exporting || !workspace || exportScope === 'group' && !selection.groupIds[0] && !selectedGroupId && !workspace?.groups.length || exportScope === 'selection' && !selection.nodeIds.length && !selection.groupIds.length && !selection.drawingIds.length && !selection.edgeIds.length} onClick={() => void exportCanvas()}>{exporting ? 'Exportando…' : 'Elegir destino y exportar'}</button>
+        {exporting && <button data-canvas-export-cancel onClick={() => void cancelExport()}>Cancelar exportación</button>}
+      </div>
+      <small>SVG conserva geometría y texto; imágenes incrustadas se rasterizan. Video y audio usan poster. Los motores de diagramas no se ejecutan durante la exportación.</small>
+      {exportReport && <pre className="canvas-export-report" data-canvas-export-report role="status">{exportReport}</pre>}
+    </details>
     <div className="canvas-arrange-toolbar" role="toolbar" aria-label="Duplicación, disposición e historial">
       <button data-canvas-undo disabled={!workspace?.canWrite || !workspace.history.canUndo || workspace.history.undoRequiresDelete && !workspace.history.deleteAvailable} onClick={() => changeHistory('undo')}>Deshacer</button>
       <button data-canvas-redo disabled={!workspace?.canWrite || !workspace.history.canRedo || workspace.history.redoRequiresDelete && !workspace.history.deleteAvailable} onClick={() => changeHistory('redo')}>Rehacer</button>

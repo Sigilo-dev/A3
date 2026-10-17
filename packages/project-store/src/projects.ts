@@ -907,6 +907,21 @@ export class LocalProjectManager {
   loadCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
     return this.#queue(async () => { const { active } = this.#canvasContext(sessionId, workspaceId); await this.#canvasHistory(active, workspaceId); return this.#canvasWorkspace(sessionId, workspaceId); });
   }
+  loadCanvasExportWorkspaces(sessionId: string, workspaceId: string, scope: 'selection' | 'group' | 'diagram' | 'workspace'): Promise<LocalCanvasWorkspace[]> {
+    return this.#queue(async () => {
+      const { active } = this.#canvasContext(sessionId, workspaceId);
+      const decision = await this.options.host.capabilities.authorizeCapabilities(active.lease.service.root, this.options.host.authenticatedActor,
+        active.projectId, ['export'], 'canvas.export', 'apply');
+      demand(decision.allowed, 'PERMISSION_DENIED', decision.reason === 'approval-rejected' ? 'No se aprobó la exportación para este proyecto.' : 'La política local no concede permiso para exportar este proyecto.');
+      const records = active.lease.service.state.project.snapshot.records;
+      const ids = scope === 'workspace' ? records.filter((record): record is Extract<DomainRecord, { kind: 'workspace' }> => record.kind === 'workspace')
+        .map((record) => record.value.id) : [workspaceId];
+      demand(ids.length > 0 && ids.length <= 100, 'EXPORT_WORKSPACE_LIMIT', 'El proyecto debe tener de 1 a 100 workspaces para exportarse.');
+      const result: LocalCanvasWorkspace[] = [];
+      for (const id of ids) result.push(this.#canvasWorkspace(sessionId, id));
+      return result;
+    });
+  }
   loadDiagramStyle(sessionId: string): Promise<DiagramStyleState> {
     return this.#queue(async () => {
       const active = this.#active;

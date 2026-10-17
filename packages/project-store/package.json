@@ -5,15 +5,27 @@
   "description": "Validated A3 project documents, local recovery, snapshots and registered migrations",
   "license": "MIT",
   "type": "module",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "scripts": {
     "typecheck": "npm run build --workspace @a3/domain && tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "test": "npm run build --workspace @a3/domain && npm run build && node --test test/*.test.mjs"
   },
-  "dependencies": { "@a3/domain": "0.1.0-dev.0" },
-  "devDependencies": { "@types/node": "24.19.2", "typescript": "7.0.2" }
+  "dependencies": {
+    "@a3/domain": "0.1.0-dev.0",
+    "perfect-freehand": "1.2.3",
+    "roughjs": "4.6.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
 }

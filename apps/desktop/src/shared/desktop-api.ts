@@ -41,6 +41,8 @@ export type CodeRequest =
 export type CodeResult = { ok: true; value: import('@a3/project-store').CodeDocument } | { ok: false; error: { code: string; message: string; recovery: string } };
 export const DROP_STAGE_CHANNEL = 'a3.canvas:stage-drop';
 export type CanvasRequest =
+  | CanvasExportRequest
+  | { action: 'export-cancel'; sessionId: string; jobId: string }
   | { action: 'diagram-style-load'; sessionId: string; workspaceId: string }
   | { action: 'diagram-style-save'; sessionId: string; workspaceId: string; expectedProjectRevision: number; profile: DiagramStyleProfile }
   | { action: 'plantuml-render'; sessionId: string; workspaceId: string; sourceEntityId: string; placementId: string }
@@ -86,6 +88,14 @@ export type CanvasRequest =
   | { action: 'update-drawing'; sessionId: string; workspaceId: string; drawingId: string; expectedRevision: number; patch: CanvasDrawingPatch }
   | { action: 'delete-drawing'; sessionId: string; workspaceId: string; drawingId: string; expectedRevision: number }
   | { action: 'convert-drawings-to-node'; sessionId: string; workspaceId: string; expectedWorkspaceRevision: number; drawings: { id: string; expectedRevision: number }[] };
+export interface CanvasExportRequest {
+  action: 'export'; sessionId: string; workspaceId: string; jobId: string; format: 'svg' | 'png' | 'pdf'; scope: import('@a3/project-store').CanvasExportScope;
+  selection: import('@a3/project-store').CanvasExportSelection; groupId?: string;
+  background: 'transparent' | 'opaque' | 'project'; margin: number; scale: number; fileName: string;
+  paper: 'A3' | 'A4'; orientation: 'portrait' | 'landscape'; fit: 'page' | 'tiles';
+}
+export type CanvasExportOutcome = { cancelled: true } | { cancelled?: false; format: 'svg' | 'png' | 'pdf'; fileName: string; width: number; height: number; pages: number; rasterized: readonly string[]; diagnostics: readonly string[] };
+export type CanvasExportResult = { ok: true; value: CanvasExportOutcome } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type CanvasContentRequest = { action: 'content'; sessionId: string; workspaceId: string; entityId: string; resourceId: string; purpose?: 'preview' | 'playback' };
 export type MarkdownRequest =
   | { action: 'open'; sessionId: string; entityId: string; resourceId: string }
@@ -154,6 +164,7 @@ export interface DesktopAPI {
   canvas(request: Extract<CanvasRequest, { action: 'structurizr-import-apply' }>): Promise<CanvasResult>;
   canvas(request: Extract<CanvasRequest, { action: 'plantuml-render' }>): Promise<CanvasPlantUmlResult>;
   canvas(request: Extract<CanvasRequest, { action: 'diagram-style-load' | 'diagram-style-save' }>): Promise<CanvasStyleResult>;
+  canvas(request: Extract<CanvasRequest, { action: 'export' | 'export-cancel' }>): Promise<CanvasExportResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;
   canvas(request: CanvasContentRequest): Promise<CanvasContentResult>;
   canvas(request: CanvasRequest): Promise<CanvasResult>;
