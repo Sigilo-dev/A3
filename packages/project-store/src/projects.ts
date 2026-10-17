@@ -30,6 +30,7 @@ import { jsonBytes, ProgressLog, progressProtocol, transactionRoot } from './pro
 import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
 import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
+import { buildMediaGalleryCatalog, mediaGalleryKind, type MediaGalleryAvailability, type MediaGalleryCatalog } from './media-gallery.js';
 import type { ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -102,6 +103,7 @@ export interface CanvasPlacementViewPatch { id: string; expectedRevision: number
 export interface CanvasSelectionRef { id: string; expectedRevision: number; }
 export interface CanvasSelection { placements: CanvasSelectionRef[]; drawings: CanvasSelectionRef[]; groups: CanvasSelectionRef[]; }
 export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; mediaType?: string; bytes?: Uint8Array; }
+export interface MediaGalleryPreview { resourceId: string; mediaType?: string; state: 'binary' | 'remote' | 'too-large' | 'unavailable'; bytes?: Uint8Array; url?: string; }
 /** Main-process-only read context for the pinned renderer; never expose its absolute paths to the renderer. */
 export interface PlantUmlRenderInput { source: string; sourceHash: string; workingDirectory: string; includeRoots: readonly string[]; styleDirectives?: string; }
 export interface CanvasMermaidImportItem { key: string; kind: string; title: string; action: 'create' | 'update' | 'unchanged' | 'conflict'; }
@@ -906,6 +908,71 @@ export class LocalProjectManager {
   }
   loadCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
     return this.#queue(async () => { const { active } = this.#canvasContext(sessionId, workspaceId); await this.#canvasHistory(active, workspaceId); return this.#canvasWorkspace(sessionId, workspaceId); });
+  }
+  loadMediaGallery(sessionId: string): Promise<MediaGalleryCatalog> {
+    return this.#queue(async () => {
+      const active = this.#active;
+      demand(active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión del proyecto cambió; vuelve a cargar la galería.');
+      const access = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+        projectId: active.projectId, operation: 'open-project', paths: ['a3.project.json'], refs: [{ kind: 'project', id: active.projectId }], resources: [] });
+      demand(access.allowed, 'PERMISSION_DENIED', 'El broker denegó la lectura del proyecto para la galería.');
+      const records = active.lease.service.state.project.snapshot.records;
+      const project = records.find((record): record is Extract<DomainRecord, { kind: 'project' }> => record.kind === 'project')?.value;
+      const projectName = project?.name ?? active.name;
+      const initialCatalog = buildMediaGalleryCatalog({ projectId: active.projectId, projectName, records });
+      const availability: Record<string, MediaGalleryAvailability> = {};
+      const mountedMedia = initialCatalog.items.filter((item) => item.resourceKind === 'mounted-file');
+      const indexDecision = mountedMedia.length ? await this.options.host.capabilities.authorizeCapabilities(active.lease.service.root,
+        this.options.host.authenticatedActor, active.projectId, ['mount.index'], 'gallery.media-index', 'apply') : undefined;
+      const resourceById = new Map(records.filter((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource')
+        .map((record) => [record.value.id.toLowerCase(), record]));
+      for (const item of mountedMedia) {
+        const key = item.resourceId.toLowerCase(), record = resourceById.get(key);
+        if (record?.kind !== 'resource' || record.value.kind !== 'mounted-file') { availability[key] = 'missing'; continue; }
+        const resource = record.value;
+        if (!indexDecision?.allowed) { availability[key] = 'permission-denied'; continue; }
+        const read = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+          projectId: active.projectId, operation: 'read-resource', paths: [], refs: [refOf(record)], resources: [resource] });
+        if (!read.allowed) { availability[key] = 'permission-denied'; continue; }
+        const binding = this.options.host.capabilities.getLocalMount({ root: active.lease.service.root, projectId: active.projectId, mountId: resource.mountId });
+        if (!binding) { availability[key] = 'approval-required'; continue; }
+        if (binding.status === 'root-missing') { availability[key] = 'missing'; continue; }
+        if (binding.status === 'root-changed') { availability[key] = 'changed'; continue; }
+        const state = await inspectLocalMountFile(binding, resource.path);
+        availability[key] = state === 'available' ? 'available' : state === 'missing' ? 'missing' : 'changed';
+      }
+      const catalog = buildMediaGalleryCatalog({ projectId: active.projectId, projectName, records, availability });
+      const workspaces = catalog.workspaces.map((workspace) => {
+        const decision = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+          projectId: active.projectId, operation: 'write', paths: [], refs: [{ kind: 'workspace', id: workspace.id }], resources: [],
+          requiredCapabilities: ['diagram.edit'], stage: 'prepare' });
+        return { ...workspace, canWrite: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && decision.allowed };
+      });
+      return { ...catalog, workspaces };
+    });
+  }
+  loadMediaGalleryPreview(sessionId: string, resourceId: string, purpose: 'preview' | 'playback' = 'preview'): Promise<MediaGalleryPreview> {
+    return this.#queue(async () => {
+      const active = this.#active;
+      demand(active?.sessionId === sessionId, 'STALE_SESSION', 'La sesión del proyecto cambió; vuelve a abrir el preview.');
+      const records = active.lease.service.state.project.snapshot.records;
+      const resourceRecord = records.find((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.id.toLowerCase() === resourceId.toLowerCase());
+      demand(resourceRecord, 'RESOURCE_MISSING', 'El recurso multimedia ya no está en el catálogo del proyecto.');
+      const entities = records.filter((record): record is Extract<DomainRecord, { kind: 'entity' }> => record.kind === 'entity' && record.value.contentResourceId?.toLowerCase() === resourceId.toLowerCase());
+      const kind = mediaGalleryKind(entities.map(({ value }) => value), resourceRecord.value);
+      demand(kind, 'MEDIA_TYPE_UNSUPPORTED', 'El recurso no pertenece al catálogo de imágenes o videos.');
+      const detected = detectedMediaType(resourceRecord.value);
+      if (resourceRecord.value.kind === 'remote-url') return { resourceId: resourceRecord.value.id, ...(detected ? { mediaType: detected } : {}), state: 'remote', url: resourceRecord.value.url };
+      if (purpose === 'preview' && (kind !== 'image' || !detected?.startsWith('image/')) || purpose === 'playback' && (kind !== 'video' || !detected?.startsWith('video/'))) {
+        return { resourceId: resourceRecord.value.id, ...(detected ? { mediaType: detected } : {}), state: 'unavailable' };
+      }
+      const opened = await active.lease.service.openResource(resourceRecord.value.id, purpose === 'playback' ? 32 * 1024 * 1024 : 4 * 1024 * 1024);
+      if (!opened.ok) {
+        const tooLarge = opened.diagnostics.some((item) => /read-limit|size-limit|resource-too-large/.test(item.detail));
+        return { resourceId: resourceRecord.value.id, ...(detected ? { mediaType: detected } : {}), state: tooLarge ? 'too-large' : 'unavailable' };
+      }
+      return { resourceId: resourceRecord.value.id, mediaType: detected!, state: 'binary', bytes: opened.value.bytes };
+    });
   }
   loadCanvasExportWorkspaces(sessionId: string, workspaceId: string, scope: 'selection' | 'group' | 'diagram' | 'workspace'): Promise<LocalCanvasWorkspace[]> {
     return this.#queue(async () => {

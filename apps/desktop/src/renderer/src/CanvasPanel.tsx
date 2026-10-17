@@ -298,9 +298,10 @@ function toFlowNodes(workspace: LocalCanvasWorkspace, origin: { x: number; y: nu
   });
   return [...groupNodes, ...placementNodes];
 }
-export function CanvasPanel({ active, onOpenMarkdown, onOpenCode, contentVersion, workspaceId: controlledWorkspaceId, onWorkspaceSelect, initialViewport, onViewportChange, onProjectsChanged }: { active: LocalProjectSession | null | undefined; onOpenMarkdown: (target: MarkdownEditorTarget) => void; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number;
+export function CanvasPanel({ active, onOpenMarkdown, onOpenCode, contentVersion, workspaceId: controlledWorkspaceId, onWorkspaceSelect, initialViewport, onViewportChange, onProjectsChanged, revealPlacement }: { active: LocalProjectSession | null | undefined; onOpenMarkdown: (target: MarkdownEditorTarget) => void; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number;
   onProjectsChanged?: () => void;
   workspaceId?: string; onWorkspaceSelect?: (id: string) => void; initialViewport?: WorldViewport | null; onViewportChange?: (view: WorldViewport) => void;
+  revealPlacement?: { workspaceId: string; placementId: string; nonce: number };
 }): React.JSX.Element {
   const [selected, setSelected] = useState('');
   const workspaceId = controlledWorkspaceId ?? (active?.workspaces.some((workspace) => workspace.id === selected) ? selected : active?.workspaces[0]?.id);
@@ -309,7 +310,7 @@ export function CanvasPanel({ active, onOpenMarkdown, onOpenCode, contentVersion
     <div className="canvas-heading"><h1>Lienzo</h1><label>Workspace <select aria-label="Workspace del lienzo" value={workspaceId} onChange={(event) => { if (onWorkspaceSelect) onWorkspaceSelect(event.target.value); else setSelected(event.target.value); }}>
       {active.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
     </select></label></div>
-    <CanvasWorkspace key={`${active.sessionId}:${workspaceId}`} sessionId={active.sessionId} workspaceId={workspaceId} onOpenMarkdown={onOpenMarkdown} initialViewport={initialViewport} onViewportChange={onViewportChange} onProjectsChanged={onProjectsChanged} onOpenWorkspace={onWorkspaceSelect ?? setSelected} />
+    <CanvasWorkspace key={`${active.sessionId}:${workspaceId}`} sessionId={active.sessionId} workspaceId={workspaceId} onOpenMarkdown={onOpenMarkdown} initialViewport={initialViewport} onViewportChange={onViewportChange} onProjectsChanged={onProjectsChanged} onOpenWorkspace={onWorkspaceSelect ?? setSelected} revealPlacement={revealPlacement?.workspaceId === workspaceId ? revealPlacement : undefined} />
   </section></ContentVersionContext.Provider></CodeOpenContext.Provider>;
 }
 
@@ -325,10 +326,11 @@ function initialContentValue(kind: ContentNodeKind): string {
   return '';
 }
 
-function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewport, onViewportChange, onProjectsChanged, onOpenWorkspace }: { sessionId: string; workspaceId: string; onOpenMarkdown: (target: MarkdownEditorTarget) => void; initialViewport?: WorldViewport | null; onViewportChange?: (view: WorldViewport) => void; onProjectsChanged?: () => void; onOpenWorkspace?: (id: string) => void }): React.JSX.Element {
+function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewport, onViewportChange, onProjectsChanged, onOpenWorkspace, revealPlacement }: { sessionId: string; workspaceId: string; onOpenMarkdown: (target: MarkdownEditorTarget) => void; initialViewport?: WorldViewport | null; onViewportChange?: (view: WorldViewport) => void; onProjectsChanged?: () => void; onOpenWorkspace?: (id: string) => void; revealPlacement?: { workspaceId: string; placementId: string; nonce: number } }): React.JSX.Element {
   const [menu, setMenu] = useState<MenuState | null>(null), permissions = useMenuPermissions(sessionId), shortcuts = useShortcuts(), [ask, promptDialog] = useTextPrompt();
   const onViewChange = useRef(onViewportChange); onViewChange.current = onViewportChange;
   const [workspace, setWorkspace] = useState<LocalCanvasWorkspace | null>(null);
+  const lastRevealNonce = useRef(0);
   const [nodes, setNodes] = useState<CanvasFlowNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
   const [tool, setTool] = useState<CanvasTool>('select');
@@ -523,6 +525,18 @@ function CanvasWorkspace({ sessionId, workspaceId, onOpenMarkdown, initialViewpo
     }).catch(report);
     return () => { flush(); live.current = false; clearTimeout(timer.current); if (exportJob.current) void window.a3?.canvas({ action: 'export-cancel', sessionId, jobId: exportJob.current }); };
   }, [sessionId, workspaceId]);
+  useEffect(() => {
+    if (!workspace || !revealPlacement || lastRevealNonce.current === revealPlacement.nonce) return;
+    const placement = workspace.placements.find((item) => item.id === revealPlacement.placementId);
+    const bounds = hostRef.current?.getBoundingClientRect();
+    if (!placement || !bounds || bounds.width <= 0 || bounds.height <= 0) return;
+    lastRevealNonce.current = revealPlacement.nonce;
+    const zoom = current.current.zoom;
+    update({ x: bounds.width / 2 - (placement.position.x + placement.size.width / 2) * zoom,
+      y: bounds.height / 2 - (placement.position.y + placement.size.height / 2) * zoom, zoom }, true);
+    setSelection({ nodeIds: [placement.id], groupIds: [], edgeIds: [], drawingIds: [] });
+    setNodes((previous) => previous.map((node) => ({ ...node, selected: node.id === placement.id })));
+  }, [workspace, revealPlacement?.nonce, revealPlacement?.placementId]);
   useEffect(() => window.a3?.onFileDrop((notice) => {
     if (notice.error) { setError(notice.error); setStatus('Drop cancelado'); setDropNotice(null); return; }
     setDropMode(notice.kind === 'folder' ? null : 'copy'); setDropNotice(notice);

@@ -12,6 +12,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./media-gallery": {
+      "types": "./dist/media-gallery.d.ts",
+      "import": "./dist/media-gallery.js"
     }
   },
   "scripts": {

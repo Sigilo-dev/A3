@@ -7,7 +7,7 @@ import type { AccessRequest } from './service-types.js';
 
 /** Capability names are stable policy identifiers; none are inferred from agent prompts. */
 export const CAPABILITIES = [
-  'project.read', 'mount.read', 'mount.write', 'document.edit', 'diagram.edit', 'task.edit', 'delete', 'project.recover', 'process.run',
+  'project.read', 'mount.read', 'mount.index', 'mount.write', 'document.edit', 'diagram.edit', 'task.edit', 'delete', 'project.recover', 'process.run',
   'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push',
   'git.branch', 'git.restore', 'export'
 ] as const;
@@ -57,8 +57,8 @@ export interface SharedPolicyRequest { schemaVersion: '1.0.0'; requests: readonl
 
 const profileModes: Record<Profile, Partial<Record<Capability, GrantMode>>> = {
   consultar: { 'project.read': 'direct' },
-  proponer: { 'project.read': 'direct', 'document.edit': 'approval', 'diagram.edit': 'approval', 'task.edit': 'approval', 'project.recover': 'approval', export: 'approval' },
-  trabajar: { 'project.read': 'direct', 'document.edit': 'direct', 'diagram.edit': 'direct', 'task.edit': 'direct', 'project.recover': 'approval', export: 'direct' },
+  proponer: { 'project.read': 'direct', 'mount.index': 'approval', 'document.edit': 'approval', 'diagram.edit': 'approval', 'task.edit': 'approval', 'project.recover': 'approval', export: 'approval' },
+  trabajar: { 'project.read': 'direct', 'mount.index': 'direct', 'document.edit': 'direct', 'diagram.edit': 'direct', 'task.edit': 'direct', 'project.recover': 'approval', export: 'direct' },
   personalizado: { 'project.read': 'deny' }
 };
 // E0-C2 did not verify OS process isolation, network confinement, package execution,

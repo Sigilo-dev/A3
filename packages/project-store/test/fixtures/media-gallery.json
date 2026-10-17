@@ -1,0 +1,24 @@
+{
+  "projectId": "00000000-0000-4000-8000-000000000008",
+  "projectName": "Gallery fixture",
+  "records": [
+    { "kind": "project", "value": { "projectId": "00000000-0000-4000-8000-000000000008", "name": "Gallery fixture" } },
+    { "kind": "workspace", "value": { "id": "00000000-0000-4000-8000-000000000006", "name": "Principal", "revision": 3, "viewport": { "x": 12, "y": 24, "zoom": 1 } } },
+    { "kind": "workspace", "value": { "id": "00000000-0000-4000-8000-000000000009", "name": "Referencias", "revision": 2, "viewport": { "x": 0, "y": 0, "zoom": 1 } } },
+    { "kind": "resource", "value": { "id": "00000000-0000-4000-8000-000000000203", "kind": "remote-url", "url": "https://youtu.be/dQw4w9WgXcQ", "mediaType": "text/uri-list" } },
+    { "kind": "resource", "value": { "id": "00000000-0000-4000-8000-000000000201", "kind": "project-file", "path": "media\u002fphoto.png", "mediaType": "image/png" } },
+    { "kind": "resource", "value": { "id": "00000000-0000-4000-8000-000000000202", "kind": "project-file", "path": "media\u002fclip.mp4", "mediaType": "video/mp4" } },
+    { "kind": "resource", "value": { "id": "00000000-0000-4000-8000-000000000204", "kind": "project-file", "path": "media\u002funrepresented.webp", "mediaType": "image/webp" } },
+    { "kind": "entity", "value": { "id": "00000000-0000-4000-8000-000000000101", "type": "a3.content.image", "title": "Foto A", "tags": ["inspiración", "branding"], "contentResourceId": "00000000-0000-4000-8000-000000000201" } },
+    { "kind": "entity", "value": { "id": "00000000-0000-4000-8000-000000000102", "type": "a3.content.image", "title": "Foto B", "tags": ["inspiración"], "contentResourceId": "00000000-0000-4000-8000-000000000201" } },
+    { "kind": "entity", "value": { "id": "00000000-0000-4000-8000-000000000103", "type": "a3.content.video", "title": "Clip local", "tags": ["referencia"], "contentResourceId": "00000000-0000-4000-8000-000000000202" } },
+    { "kind": "entity", "value": { "id": "00000000-0000-4000-8000-000000000104", "type": "a3.content.youtube", "title": "Anuncio", "tags": ["referencia"], "contentResourceId": "00000000-0000-4000-8000-000000000203" } },
+    { "kind": "placement", "workspaceId": "00000000-0000-4000-8000-000000000006", "value": { "id": "00000000-0000-4000-8000-000000000301", "entityId": "00000000-0000-4000-8000-000000000101" } },
+    { "kind": "placement", "workspaceId": "00000000-0000-4000-8000-000000000009", "value": { "id": "00000000-0000-4000-8000-000000000302", "entityId": "00000000-0000-4000-8000-000000000102" } },
+    { "kind": "placement", "workspaceId": "00000000-0000-4000-8000-000000000006", "value": { "id": "00000000-0000-4000-8000-000000000303", "entityId": "00000000-0000-4000-8000-000000000103" } },
+    { "kind": "placement", "workspaceId": "00000000-0000-4000-8000-000000000006", "value": { "id": "00000000-0000-4000-8000-000000000304", "entityId": "00000000-0000-4000-8000-000000000104" } },
+    { "kind": "group", "workspaceId": "00000000-0000-4000-8000-000000000006", "value": { "id": "00000000-0000-4000-8000-000000000401", "name": "Campaña", "members": [{ "kind": "placement", "id": "00000000-0000-4000-8000-000000000301" }, { "kind": "group", "id": "00000000-0000-4000-8000-000000000402" }] } },
+    { "kind": "group", "workspaceId": "00000000-0000-4000-8000-000000000006", "value": { "id": "00000000-0000-4000-8000-000000000402", "name": "Producto", "members": [{ "kind": "placement", "id": "00000000-0000-4000-8000-000000000303" }] } },
+    { "kind": "collection", "value": { "id": "00000000-0000-4000-8000-000000000501", "name": "Referencias comerciales", "entityIds": ["00000000-0000-4000-8000-000000000101", "00000000-0000-4000-8000-000000000102", "00000000-0000-4000-8000-000000000104"] } }
+  ]
+}

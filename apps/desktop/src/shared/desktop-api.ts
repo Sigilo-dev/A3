@@ -1,4 +1,4 @@
-import type { CanvasContentNodeInput, CanvasDrawingPatch, CanvasPlacementMove, CanvasPlacementViewPatch, CanvasSelection, CanvasVisualEdgePatch, LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState } from '@a3/project-store';
+import type { CanvasContentNodeInput, CanvasDrawingPatch, CanvasPlacementMove, CanvasPlacementViewPatch, CanvasSelection, CanvasVisualEdgePatch, LocalCanvasWorkspace, WorkspaceViewport, LocalExplorerDeletePreview, LocalExplorerListing, LocalExplorerOpen, LocalProjectsState, MediaGalleryCatalog, MediaGalleryPreview } from '@a3/project-store';
 import type { ConceptualNodeKind, ConceptualRelationKind, Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
 import type { C4Operation } from '@a3/domain';
 import type { UmlOperation } from '@a3/domain';
@@ -9,6 +9,7 @@ export type { CanvasErState, CanvasErElement, CanvasErRelationship, CanvasErRela
 export type { CanvasUmlState, CanvasUmlElement, CanvasUmlRelationship, CanvasUmlRelationView } from '@a3/project-store';
 export type { CanvasC4State, CanvasC4Element, CanvasC4Relationship, CanvasC4RelationView } from '@a3/project-store';
 export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasConceptualRelationView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, CanvasMermaidImportPreview, CanvasPlantUmlImportPreview, CanvasStructurizrImportPreview, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace, DiagramStyleState } from '@a3/project-store';
+export type { MediaGalleryCatalog, MediaGalleryItem, MediaGalleryKind, MediaGalleryWorkspace, MediaGalleryGroup, MediaGalleryCollection, MediaGalleryRepresentation, MediaGalleryPreview } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
@@ -18,6 +19,10 @@ export const CANVAS_CHANNEL = 'a3.canvas:command';
 export const MARKDOWN_CHANNEL = 'a3.markdown:document';
 export const WORKSPACE_SESSION_CHANNEL = 'a3.workspace:session';
 export const NAVIGATION_CHANNEL = 'a3.navigation:command';
+export const GALLERY_CHANNEL = 'a3.gallery:command';
+export type GalleryRequest = { action: 'load'; sessionId: string } | { action: 'preview'; sessionId: string; resourceId: string; purpose?: 'preview' | 'playback' };
+export type GalleryValue = MediaGalleryCatalog | MediaGalleryPreview;
+export type GalleryResult = { ok: true; value: GalleryValue } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type { NavigationIndex, NavigationPage, PageLink, MenuPermissions, PageAnchor } from '@a3/project-store';
 export type NavigationRequest = { action: 'index' | 'permissions'; sessionId: string }
   | { action: 'resolve'; sessionId: string; sourceId: string; target: string; kind: 'wiki' | 'markdown' }
@@ -156,6 +161,7 @@ export interface DesktopAPI {
   workspaceSession(request: WorkspaceSessionRequest): Promise<WorkspaceSessionResult>;
   navigation(request: NavigationRequest): Promise<NavigationResult>;
   files(request: FilesRequest): Promise<FilesResult>;
+  gallery(request: GalleryRequest): Promise<GalleryResult>;
   canvas(request: Extract<CanvasRequest, { action: 'mermaid-import-preview' }>): Promise<CanvasMermaidImportResult>;
   canvas(request: Extract<CanvasRequest, { action: 'mermaid-import-apply' }>): Promise<CanvasResult>;
   canvas(request: Extract<CanvasRequest, { action: 'plantuml-import-preview' }>): Promise<CanvasPlantUmlImportResult>;

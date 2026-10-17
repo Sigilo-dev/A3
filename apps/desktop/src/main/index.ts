@@ -3,7 +3,7 @@ import { access } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
+import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, GALLERY_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
 import { createProjectController } from './project-controller';
 import { PLANTUML_ARTIFACT_FILE } from './plantuml-renderer';
 import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL } from '../shared/desktop-api';
@@ -166,6 +166,13 @@ async function startDesktop(): Promise<void> {
       return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Solicitud no autorizada.', recovery: 'Reabre A3.' } };
     }
     return projects.handleFiles(args[0]);
+  });
+  ipcMain.handle(GALLERY_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) {
+      return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Solicitud de galería no autorizada.', recovery: 'Reabre el proyecto.' } };
+    }
+    return projects.handleGallery(args[0]);
   });
   ipcMain.handle(CANVAS_CHANNEL, (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||

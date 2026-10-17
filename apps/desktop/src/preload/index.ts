@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL, type NavigationRequest, type WorkspaceSessionRequest } from '../shared/desktop-api';
-import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type DesktopAPI, type CanvasContentRequest, type CanvasRequest, type CodeRequest, type FileDropNotice, type FileDropStageResult, type FilesRequest, type MarkdownRequest, type ProjectsRequest } from '../shared/desktop-api';
+import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, GALLERY_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type DesktopAPI, type CanvasContentRequest, type CanvasRequest, type CodeRequest, type FileDropNotice, type FileDropStageResult, type FilesRequest, type GalleryRequest, type MarkdownRequest, type ProjectsRequest } from '../shared/desktop-api';
 
 const dropListeners = new Set<(notice: FileDropNotice) => void>();
 window.addEventListener('dragover', (event) => {
@@ -28,6 +28,7 @@ const api: DesktopAPI = Object.freeze({
   workspaceSession: (request: WorkspaceSessionRequest) => ipcRenderer.invoke(WORKSPACE_SESSION_CHANNEL, request),
   navigation: (request: NavigationRequest) => ipcRenderer.invoke(NAVIGATION_CHANNEL, request),
   files: (request: FilesRequest) => ipcRenderer.invoke(FILES_CHANNEL, request),
+  gallery: (request: GalleryRequest) => ipcRenderer.invoke(GALLERY_CHANNEL, request),
   canvas: ((request: CanvasRequest | CanvasContentRequest) => ipcRenderer.invoke(CANVAS_CHANNEL, request)) as DesktopAPI['canvas'],
   markdown: (request: MarkdownRequest) => ipcRenderer.invoke(MARKDOWN_CHANNEL, request),
   code: (request: CodeRequest) => ipcRenderer.invoke(CODE_CHANNEL, request),

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { CONTENT_NODE_CATALOG, CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_RELATION_KINDS, IOT_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { validIotCircuitOperation } from '@a3/domain/iot-circuit';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
-import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
 import { validCanvasView, validPageView } from '@a3/project-store';
 import type { WorkspaceSessionRequest, WorkspaceSessionResult } from '../shared/desktop-api';
@@ -31,6 +31,16 @@ function validNavigationRequest(value: unknown): value is NavigationRequest {
   if (!Number.isSafeInteger(v.expectedRevision) || Number(v.expectedRevision) < 1) return false;
   return v.action === 'rename-page' && keys(['sessionId', 'entityId', 'expectedRevision', 'title']) && typeof v.title === 'string' && v.title.length <= 200 ||
     v.action === 'move-page' && keys(['sessionId', 'entityId', 'expectedRevision', 'destination']) && typeof v.destination === 'string' && v.destination.length <= 1024;
+}
+
+function validGalleryRequest(value: unknown): value is GalleryRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>, uuid = (candidate: unknown): candidate is string => typeof candidate === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(candidate);
+  if (!uuid(input.sessionId)) return false;
+  if (input.action === 'load') return Object.keys(input).length === 2 && Object.keys(input).every((key) => ['action', 'sessionId'].includes(key));
+  return input.action === 'preview' && Object.keys(input).every((key) => ['action', 'sessionId', 'resourceId', 'purpose'].includes(key)) &&
+    (Object.keys(input).length === 3 || Object.keys(input).length === 4) && uuid(input.resourceId) &&
+    (input.purpose === undefined || input.purpose === 'preview' || input.purpose === 'playback');
 }
 
 function validSessionRequest(value: unknown): value is WorkspaceSessionRequest {
@@ -774,6 +784,17 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
         return { ok: false, error: { code, message, recovery: 'Actualiza el explorador, revisa el permiso del proyecto o vuelve a localizar el montaje. A3 conserva los bytes que no pudo modificar.' } };
       }
       return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Acción de archivos no reconocida.', recovery: 'Actualiza la vista del explorador.' } };
+    },
+    async handleGallery(value: unknown): Promise<GalleryResult> {
+      if (!validGalleryRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de galería inválida.', recovery: 'Actualiza la galería y vuelve a intentarlo.' } };
+      try {
+        return { ok: true, value: value.action === 'load'
+          ? await manager.loadMediaGallery(value.sessionId)
+          : await manager.loadMediaGalleryPreview(value.sessionId, value.resourceId, value.purpose) };
+      } catch (error) {
+        const code = error instanceof LocalProjectError ? error.code : error && typeof error === 'object' && 'code' in error ? String(error.code) : 'IO_FAILED';
+        return { ok: false, error: { code, message: error instanceof Error ? error.message : 'No se pudo cargar la galería.', recovery: 'Los recursos originales no se modificaron. Revisa los permisos o vuelve a cargar el proyecto.' } };
+      }
     }
   };
 }

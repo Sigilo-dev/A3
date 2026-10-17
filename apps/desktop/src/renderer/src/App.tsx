@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import type { AppInfo, LocalProjectsState } from '../../shared/desktop-api';
 import { ProjectsPanel } from './ProjectsPanel';
 import { FileExplorerPanel } from './FileExplorerPanel';
+import { MediaGalleryPanel } from './MediaGalleryPanel';
 import { ShortcutPreferences } from './shortcuts';
 import { DiagramStylePreferences } from './DiagramStylePreferences';
 import type { CodeEditorTarget, CodeEditorHandle } from './CodeEditor';
@@ -50,6 +51,14 @@ export function App(): React.JSX.Element {
   const closeCode = useCallback((): void => { setCodeTarget(null); setCodeDirty(false); }, []);
   const updateCodeDirty = useCallback((dirty: boolean): void => setCodeDirty(dirty), []);
   const revealFocus = useCallback((): void => setActive('canvas'), []);
+  const openGalleryWorkspace = useCallback(async (workspaceId: string): Promise<void> => {
+    if (!focus.current) throw new Error('La sesión de workspace todavía no está lista.');
+    await focus.current.openWorkspace(workspaceId);
+  }, []);
+  const showGalleryPlacement = useCallback(async (workspaceId: string, placementId: string): Promise<void> => {
+    if (!focus.current) throw new Error('La sesión de workspace todavía no está lista.');
+    await focus.current.openPlacement(workspaceId, placementId);
+  }, []);
   async function beforeProjectSwitch(): Promise<boolean> {
     if (codeDirtyRef.current && (!window.confirm('¿Guardar el código antes de cambiar de proyecto? Cancelar conserva el archivo y la sesión abiertos.') || !await codeController.current?.save())) return false;
     return await focus.current?.settle('cambiar de proyecto') ?? true;
@@ -106,7 +115,7 @@ export function App(): React.JSX.Element {
     <main id="content" className="content" tabIndex={-1}>
       <div className="breadcrumb">A3 <span>/</span> {section[1]}</div>
       {projects?.restoreNotice && <p role="status">{projects.restoreNotice}</p>}
-      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} beforeSwitch={beforeProjectSwitch} /> : active === 'canvas' ? !projects?.active && <p>Abre un proyecto para restaurar sus vistas.</p> : active === 'files' ? <FileExplorerPanel active={projects?.active} onOpenCode={openCode} contentVersion={contentVersion} onChanged={codeSaved} /> : active === 'preferences' ? <><ShortcutPreferences /><DiagramStylePreferences active={projects?.active ?? null} /></> : <><section className="intro" aria-labelledby="section-title">
+      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} beforeSwitch={beforeProjectSwitch} /> : active === 'canvas' ? !projects?.active && <p>Abre un proyecto para restaurar sus vistas.</p> : active === 'files' ? <FileExplorerPanel active={projects?.active} onOpenCode={openCode} contentVersion={contentVersion} onChanged={codeSaved} /> : active === 'gallery' ? <MediaGalleryPanel project={projects?.active ?? null} onOpenWorkspace={openGalleryWorkspace} onShowPlacement={showGalleryPlacement} /> : active === 'preferences' ? <><ShortcutPreferences /><DiagramStylePreferences active={projects?.active ?? null} /></> : <><section className="intro" aria-labelledby="section-title">
         <p className="eyebrow">Un lugar para tus ideas</p>
         <h1 id="section-title">{section[1]}</h1>
         <p className="lead">{section[2]}</p>
@@ -118,7 +127,7 @@ export function App(): React.JSX.Element {
         controllerRef={focus} onOpenCode={openCode} contentVersion={contentVersion} onSaved={codeSaved} onProjectsChanged={() => {
           void window.a3?.projects({ action: 'list' }).then((result) => { if (result.ok) acceptProjects(result.value); else setError(result.error.message); });
         }} /></Suspense>}
-      {active !== 'projects' && active !== 'canvas' && <section className="foundation" aria-labelledby="foundation-title">
+      {active !== 'projects' && active !== 'canvas' && active !== 'gallery' && <section className="foundation" aria-labelledby="foundation-title">
         <div><p className="eyebrow">Primer paso</p><h2 id="foundation-title">Una base común</h2></div>
         <p>Explora las secciones desde la barra izquierda. Esta entrega prepara la ventana y la comunicación de escritorio.</p>
         <button className="secondary" onClick={() => setActive('preferences')}>Ver Preferencias <span aria-hidden="true">↗</span></button>

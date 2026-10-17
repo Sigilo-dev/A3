@@ -10,7 +10,7 @@ const CanvasPanel = lazy(() => import('./CanvasPanel').then((m) => ({ default: m
 const MarkdownEditor = lazy(() => import('./MarkdownEditor').then((m) => ({ default: m.MarkdownEditorDialog })));
 export interface FocusWorkspaceHandle {
   openPage(target: MarkdownEditorTarget, anotherView?: boolean): Promise<void>;
-  openCanvas(): Promise<void>; settle(reason: string): Promise<boolean>; flush(): Promise<void>;
+  openCanvas(): Promise<void>; openWorkspace(workspaceId: string): Promise<void>; openPlacement(workspaceId: string, placementId: string): Promise<void>; settle(reason: string): Promise<boolean>; flush(): Promise<void>;
 }
 interface Guard { ids: string[]; reason: string; resolve: (approved: boolean) => void; }
 
@@ -21,6 +21,7 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
 }): React.JSX.Element {
   const [session, setSession] = useState<WorkspaceSession | null>(null), sessionRef = useRef(session); sessionRef.current = session;
   const [error, setError] = useState<string | null>(null), [reference, setReference] = useState<PageReference | null>(null);
+  const [canvasReveal, setCanvasReveal] = useState<{ workspaceId: string; placementId: string; nonce: number } | null>(null);
   const [guard, setGuard] = useState<Guard | null>(null), guardRef = useRef(guard); guardRef.current = guard;
   const [guardBusy, setGuardBusy] = useState(false), [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
   const dialogOrigin = useRef<HTMLElement | null>(null);
@@ -159,7 +160,16 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
       const workspace = sessionRef.current?.tabs.find((t) => t.kind === 'workspace');
       if (workspace) await activate(workspace.id);
       else if (project.workspaces[0]) { await flush(); await run({ action: 'open-workspace', workspaceId: project.workspaces[0].id }); callbacks.current.onReveal(); }
-    }, settle: (reason) => settle(reason), flush
+    }, settle: (reason) => settle(reason), flush,
+    openWorkspace: async (workspaceId) => {
+      if (!project.workspaces.some((workspace) => workspace.id === workspaceId)) throw new Error('El workspace ya no pertenece al proyecto activo.');
+      await flush(); const value = await run({ action: 'open-workspace', workspaceId }); remember(value); callbacks.current.onReveal();
+    },
+    openPlacement: async (workspaceId, placementId) => {
+      if (!project.workspaces.some((workspace) => workspace.id === workspaceId)) throw new Error('El workspace ya no pertenece al proyecto activo.');
+      await flush(); const value = await run({ action: 'open-workspace', workspaceId }); remember(value);
+      setCanvasReveal({ workspaceId, placementId, nonce: Date.now() }); callbacks.current.onReveal();
+    }
   }));
   useEffect(() => {
     live.current = true;
@@ -229,6 +239,7 @@ export function FocusWorkspace({ project, visible, onReveal, onOpenCode, control
         </div>
         {selected?.kind === 'workspace' && <div className="focus-panel" role="tabpanel" id={`panel-${selected.id}`} aria-labelledby={`tab-${selected.id}`} tabIndex={-1}>
           {visible && <Suspense fallback={<p role="status">Abriendo lienzo…</p>}><CanvasPanel active={project} workspaceId={selected.workspaceId} initialViewport={selected.view}
+            revealPlacement={canvasReveal?.workspaceId === selected.workspaceId ? canvasReveal : undefined}
             onViewportChange={(value) => stageView(selected.id, value)} onWorkspaceSelect={(workspaceId) => { void flush().then(() => run({ action: 'open-workspace', workspaceId })).catch(report); }}
             onOpenMarkdown={openPageFromCanvas} onOpenCode={onOpenCode} contentVersion={contentVersion} onProjectsChanged={onProjectsChanged} /></Suspense>}
         </div>}
