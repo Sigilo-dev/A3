@@ -1,7 +1,7 @@
 import { BrowserWindow, clipboard, dialog, type BrowserWindow as BrowserWindowType } from 'electron';
 import { validC4Operation, validUmlOperation, validateDiagramStyleProfile } from '@a3/domain';
 import { validErOperation } from '@a3/domain/er';
-import { lstat, realpath, readdir, mkdtemp, writeFile, rename, rm } from 'node:fs/promises';
+import { lstat, realpath, readdir, mkdtemp, writeFile, rename, rm, link, unlink, open } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, parse, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -584,10 +584,35 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
     async handlePlanning(value: unknown): Promise<PlanningResult> {
       if (!validPlanningRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Petición de planificación inválida.', recovery: 'Revisa los campos y los IDs.' } };
       try {
+        if (value.action === 'copy-checklist') {
+          const exported = await manager.exportPlanningChecklist(value.sessionId, value.taskIds);
+          clipboard.writeText(exported.markdown); return { ok: true, value: { copied: true } };
+        }
+        if (value.action === 'save-checklist') {
+          const exported = await manager.exportPlanningChecklist(value.sessionId, value.taskIds), parent = getWindow();
+          if (!parent) throw new LocalProjectError('WINDOW_UNAVAILABLE', 'La ventana principal no está disponible.');
+          const chosen = await dialog.showSaveDialog(parent, { title: 'Exportar checklist Markdown', defaultPath: 'a3-checklist.md', filters: [{ name: 'Markdown', extensions: ['md'] }], buttonLabel: 'Exportar como archivo nuevo' });
+          if (chosen.canceled || !chosen.filePath) return { ok: true, value: { cancelled: true, fileName: null } };
+          const current = await manager.exportPlanningChecklist(value.sessionId, value.taskIds);
+          if (current.sourceHash !== exported.sourceHash) throw new LocalProjectError('REVISION_CONFLICT', 'La selección cambió durante el diálogo. Revisa otra exportación.');
+          const destination = chosen.filePath.toLowerCase().endsWith('.md') ? chosen.filePath : chosen.filePath + '.md';
+          await inspectDropPath(dirname(destination));
+          const staged = join(dirname(destination), '.a3-checklist-' + randomUUID() + '.tmp');
+          let owned = false;
+          try {
+            const file = await open(staged, 'wx'); owned = true;
+            try { await file.writeFile(current.markdown, 'utf8'); await file.sync(); } finally { await file.close(); }
+            // Publish a complete new file without replacing an existing destination (NTFS).
+            await link(staged, destination);
+          } finally { if (owned) await unlink(staged).catch(() => undefined); }
+          return { ok: true, value: { cancelled: false, fileName: basename(destination) } };
+        }
         const result = value.action === 'load' ? await manager.loadPlanning(value.sessionId) : value.action === 'update-task' ? await manager.updatePlanningTask(value.sessionId, value.input) :
           value.action === 'create-task' ? await manager.createPlanningTask(value.sessionId, value.title, value.storyId) : value.action === 'create-story' ? await manager.createPlanningStory(value.sessionId, value.input) :
           value.action === 'add-evidence' ? await manager.addPlanningEvidence(value.sessionId, value.input) : value.action === 'set-policy' ? await manager.setPlanningPolicy(value.sessionId, value.expectedRevision, value.requireEvidenceForDone) :
           value.action === 'preview-proposal' ? await manager.previewPlanningProposal(value.sessionId, value.source) : value.action === 'apply-proposal' ? await manager.applyPlanningProposal(value.sessionId, value.token, value.selectedKeys) :
+          value.action === 'export-checklist' ? await manager.exportPlanningChecklist(value.sessionId, value.taskIds) : value.action === 'preview-checklist' ? await manager.previewPlanningChecklist(value.sessionId, value.source) :
+          value.action === 'apply-checklist' ? await manager.applyPlanningChecklist(value.sessionId, value.token, value.choices) :
           await manager.showPlanningTask(value.sessionId, value.entityId, value.workspaceId);
         return { ok: true, value: result };
       } catch (error) { return { ok: false, error: { code: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'PLANNING_FAILED', message: error instanceof Error ? error.message : 'No se guardó la planificación.',

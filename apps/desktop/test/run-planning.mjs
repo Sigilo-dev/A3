@@ -19,7 +19,8 @@ try {
     let stdout = '', stderr = ''; const timer = setTimeout(() => { child.kill(); reject(new Error(stdout + stderr + 'Planning smoke timed out')); }, 90000);
     child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; }); child.on('error', reject);
     child.on('close', (code) => { clearTimeout(timer); const result = stdout.split(/\r?\n/).find((line) => line.startsWith('A3_PLANNING_SMOKE='));
-      if (code !== 0 || !result) reject(new Error(stdout + stderr)); else { console.log(result); accept(); }
+      const exchange = stdout.split(/\r?\n/).find((line) => line.startsWith('A3_CHECKLIST_EXCHANGE_SMOKE='));
+      if (code !== 0 || !result || !exchange) reject(new Error(stdout + stderr)); else { console.log(result); console.log(exchange); accept(); }
     });
   });
   assert.deepEqual(await readFile(join(root, 'pages/readme.md')), original);

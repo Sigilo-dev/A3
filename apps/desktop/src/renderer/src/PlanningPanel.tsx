@@ -4,6 +4,7 @@ import { groupPlanningTasks, type PlanningFilter } from '@a3/domain/planning-vie
 import type { LocalProjectSession, ProjectPlanningState, PlanningProposalPreview } from '@a3/project-store';
 import type { PlanningRequest } from '../../shared/planning';
 import { requestPlanningState, TaskControls } from './TaskControls';
+import { ChecklistExchangePanel, PlanningTraceabilityPanel } from './ChecklistExchangePanel';
 
 export function PlanningPanel({ project, onChanged, onShowPlacement }: { project: LocalProjectSession | null; onChanged: () => void; onShowPlacement: (workspaceId: string, placementId: string) => Promise<void> }): React.JSX.Element {
   const [state, setState] = useState<ProjectPlanningState | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
@@ -65,6 +66,8 @@ export function PlanningPanel({ project, onChanged, onShowPlacement }: { project
     </li>)}</ul></section>)}</div>
     <section aria-label="Trazabilidad pendiente"><h2>Referencias pendientes</h2><h3>Historias/requisitos sin tarea</h3><ul data-requirements-without-task>{state.requirementsWithoutTask.map((item) => <li key={item.id}>{item.title} · {item.id}</li>)}</ul>
       <h3>Criterios sin evidencia vinculada</h3><ul data-criteria-without-evidence>{state.criteriaWithoutEvidence.map((item) => <li key={item.id}>{item.title} · {item.id}</li>)}</ul><p>Estos indicadores no demuestran cobertura total ni corrección de una checklist.</p></section>
+    <PlanningTraceabilityPanel state={state} onShowPlacement={onShowPlacement} />
+    <ChecklistExchangePanel key={sessionId} state={state} onChanged={accept} />
     <details><summary>Revisar borrador de tareas de IA</summary><p>Pega una propuesta JSON con referencias de este proyecto. La vista previa no crea tareas. No se contacta a ningún proveedor.</p>
       <button type="button" onClick={example}>Preparar ejemplo de formato</button><label>Propuesta JSON<textarea aria-label="Propuesta de tareas JSON" value={source} maxLength={256 * 1024} onChange={(event) => { setSource(event.target.value); setPreview(null); }} /></label>
       <button type="button" disabled={busy} data-proposal-preview onClick={() => void inspect()}>Previsualizar borrador</button>

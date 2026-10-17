@@ -525,6 +525,8 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .planning-panel input:not([type="checkbox"]), .planning-panel textarea, .planning-panel select, .task-controls select, .task-controls input:not([type="checkbox"]) { display: block; max-width: 100%; width: 100%; }
 .planning-panel textarea { min-height: 100px; }
 .planning-panel textarea[aria-label="Propuesta de tareas JSON"] { min-height: 240px; font-family: monospace; }
+.planning-panel textarea[aria-label="Checklist Markdown"] { min-height: 240px; font-family: monospace; }
+.planning-panel [data-checklist-comparison] pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
 .planning-list { list-style: none; padding: 0; display: grid; gap: 18px; }
 .planning-list > li { padding: 16px; border: 1px solid var(--border, #39433e); border-radius: 10px; }
 .planning-filters { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0; }

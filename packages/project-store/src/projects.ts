@@ -2,6 +2,8 @@ import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } 
 import { LocalSearchIndex, MEMORY_DEFAULTS, searchExcluded, searchFingerprint, validSearchPatterns, type SearchSource, type ProjectSearchState, type ProjectMemoryState, type MemoryDocumentInput, type MemorySummary } from './search-index.js';
 import { projectPlanning, planningPolicy, planningData, planningKind, validatePlanningSnapshot, inspectTaskProposal, type PlanningOperation, type TaskProposal } from '@a3/domain';
 import type { ProjectPlanningState, PlanningTaskUpdate, PlanningEvidenceInput, PlanningProposalPreview } from './planning.js';
+import { exportChecklistMarkdown, inspectChecklistMarkdown, planChecklistImport, projectPlanningTraceability, type ChecklistInspection, type ChecklistChoice } from '@a3/domain';
+import type { ChecklistExport, ChecklistImportPreview } from './planning.js';
 import { constants } from 'node:fs';
 import { c4Category, isC4Diagram, validC4Operation, type C4Category, type C4Change, type C4Operation } from '@a3/domain';
 import { isIotCircuit, validIotCircuitOperation, type IotCircuitData } from '@a3/domain/iot-circuit';
@@ -359,6 +361,7 @@ function comparableHistoryRecord(value: DomainRecord | null): string {
 
 /** Main-process lifecycle; renderer receives summaries and opaque preview/session IDs only. */
 export class LocalProjectManager {
+  #checklistPreviews = new Map<string, { sessionId: string; fingerprint: string; inspection: ChecklistInspection }>();
   #searchIndex: { sessionId: string; index: LocalSearchIndex; exclusions: string[] } | undefined;
   #planningProposals = new Map<string, { sessionId: string; sourceHash: string; fingerprint: string; proposal: TaskProposal; ids: Record<string, string> }>();
   #tail: Promise<unknown> = Promise.resolve();
@@ -497,7 +500,7 @@ export class LocalProjectManager {
       await this.#persist();
       await previous?.lease.close();
       this.#active = { lease: candidate.value, sessionId: randomUUID(), projectId, name, rootIdentity: await projectIdentity(root) };
-      this.#planningProposals.clear();
+      this.#planningProposals.clear(); this.#checklistPreviews.clear();
       this.#mediaPlans.clear();
       this.#focusSession = undefined; this.#restoreNotice = undefined;
       this.#viewportDrafts.clear();
@@ -610,7 +613,7 @@ export class LocalProjectManager {
     const resumeId = this.#catalog.resumeId; delete this.#catalog.resumeId;
     try { await this.#persist(); } catch (error) { if (resumeId) this.#catalog.resumeId = resumeId; throw error; }
     this.#focusSession = undefined;
-    await this.#active.lease.close(); this.#active = undefined; this.#planningProposals.clear(); this.#mediaPlans.clear(); this.#preview = undefined; this.#nameDraft = undefined; this.#resetExplorerBindings(); return this.#state();
+    await this.#active.lease.close(); this.#active = undefined; this.#planningProposals.clear(); this.#checklistPreviews.clear(); this.#mediaPlans.clear(); this.#preview = undefined; this.#nameDraft = undefined; this.#resetExplorerBindings(); return this.#state();
   }); }
   async #loadFocusSession(active: ActiveProjectBinding): Promise<WorkspaceSession> {
     if (this.#focusSession) return this.#focusSession;
@@ -1288,10 +1291,11 @@ export class LocalProjectManager {
   #planningState(sessionId: string): ProjectPlanningState {
     const active = this.#variablesContext(sessionId), service = active.lease.service, snapshot = service.state.project.snapshot;
     const project = snapshot.records.find((r) => r.kind === 'project'); demand(project?.kind === 'project', 'PROJECT_MANIFEST_MISSING', 'Falta el manifiesto.');
-    const permission = (capability: 'task.edit' | 'diagram.edit') => this.options.host.capabilities.authorizeAccess({ root: service.root, projectId: active.projectId,
+    const permission = (capability: 'task.edit' | 'diagram.edit' | 'export') => this.options.host.capabilities.authorizeAccess({ root: service.root, projectId: active.projectId,
       actor: this.options.host.authenticatedActor, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: [capability], stage: 'prepare' });
     const edit = permission('task.edit'), place = permission('diagram.edit'), writable = service.state.mode === 'writer' && !service.state.externalConflict;
-    return { ...projectPlanning(snapshot), sessionId, projectId: active.projectId, projectRevision: project.value.revision, policy: planningPolicy(project.value) ?? null,
+    const exportPermission = permission('export');
+    return { ...projectPlanning(snapshot), traceability: projectPlanningTraceability(snapshot), canExport: exportPermission.allowed || exportPermission.reason === 'approval-required', sessionId, projectId: active.projectId, projectRevision: project.value.revision, policy: planningPolicy(project.value) ?? null,
       canEdit: writable && edit.allowed, canPlace: writable && place.allowed, canSetPolicy: writable && edit.allowed && this.options.host.authenticatedActor.kind === 'user',
       readOnlyReason: !writable ? 'Proyecto en solo lectura o con cambios externos pendientes.' : !edit.allowed ? 'task.edit: ' + edit.reason : '',
       diagnostics: validatePlanningSnapshot(snapshot).map((d) => d.detail + ': ' + d.message),
@@ -1299,6 +1303,41 @@ export class LocalProjectManager {
       entities: snapshot.records.flatMap((r) => r.kind === 'entity' ? [{ id: r.value.id, title: r.value.title }] : []) };
   }
   loadPlanning(sessionId: string): Promise<ProjectPlanningState> { return this.#queue(async () => this.#planningState(sessionId)); }
+  exportPlanningChecklist(sessionId: string, taskIds: string[]): Promise<ChecklistExport> {
+    const ids = [...taskIds]; return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId);
+      const decision = await this.options.host.capabilities.authorizeCapabilities(active.lease.service.root, this.options.host.authenticatedActor, active.projectId, ['export'], 'planning.export', 'apply');
+      demand(decision.allowed, 'PERMISSION_DENIED', 'export: ' + decision.reason);
+      // Revalidate session after an interactive permission decision.
+      this.#variablesContext(sessionId);
+      const markdown = exportChecklistMarkdown(active.lease.service.state.project.snapshot, ids);
+      return { markdown, sourceHash: sha256(Buffer.from(markdown)), taskIds: ids };
+    });
+  }
+  previewPlanningChecklist(sessionId: string, source: string): Promise<ChecklistImportPreview> { return this.#queue(async () => {
+    const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+    const inspection = inspectChecklistMarkdown(snapshot, source); this.#checklistPreviews.clear();
+    let token: string | null = null;
+    if (!inspection.issues.length && !inspection.rows.some((row) => row.issues.length)) {
+      token = randomUUID(); this.#checklistPreviews.set(token, { sessionId, inspection: structuredClone(inspection), fingerprint: sha256(Buffer.from(JSON.stringify(snapshot))) });
+    }
+    return { ...inspection, token, sourceHash: sha256(Buffer.from(source)) };
+  }); }
+  applyPlanningChecklist(sessionId: string, token: string, choices: ChecklistChoice[]): Promise<ProjectPlanningState> {
+    const captured = structuredClone(choices); return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId), preview = this.#checklistPreviews.get(token), snapshot = active.lease.service.state.project.snapshot;
+      demand(preview?.sessionId === sessionId, 'CHECKLIST_PREVIEW_MISSING', 'Previsualiza la checklist en esta sesión antes de importar.');
+      demand(preview.fingerprint === sha256(Buffer.from(JSON.stringify(snapshot))), 'REVISION_CONFLICT', 'El proyecto cambió: vuelve a comparar la checklist.');
+      demand(captured.length === preview.inspection.rows.length && preview.inspection.rows.every((row) => captured.some((choice) => choice.id.toLowerCase() === row.id.toLowerCase())), 'CHECKLIST_CHOICES_REQUIRED', 'Decide por ID qué importar y qué conservar, incluidos los conflictos.');
+      const plan = planChecklistImport(snapshot, preview.inspection.rows, captured);
+      demand(!plan.issues.length, 'CHECKLIST_INVALID', plan.issues.join('\n'));
+      // Recheck grants even on a no-op exchange; portable metadata never grants task.edit.
+      const decision = await this.options.host.capabilities.authorizeCapabilities(active.lease.service.root, this.options.host.authenticatedActor, active.projectId, ['task.edit'], 'planning.import', 'apply');
+      demand(decision.allowed, 'PERMISSION_DENIED', 'task.edit: ' + decision.reason);
+      if (plan.operations.length) await this.#planningCommit(active, plan.operations);
+      this.#checklistPreviews.delete(token); return this.#planningState(sessionId);
+    });
+  }
   async #planningCommit(active: ActiveProjectBinding, operations: PlanningOperation[]): Promise<void> {
     await this.#commitCanvasCommand(active, { command: 'a3.planning.change', payload: { occurredAt: new Date().toISOString(), operations } }, operations.map((op) => op.entityId),
       operations.filter((op) => op.action === 'create').map((op) => ({ kind: 'entity' as const, id: op.entityId })));
@@ -3131,12 +3170,12 @@ export class LocalProjectManager {
   /** Interactive app shutdown must flush the draft; unlike getState it can exit with a damaged local catalog. */
   shutdown(): Promise<void> {
     const result = this.#tail.then(async () => {
-      await this.#allowSwitch(); await this.#active?.lease.close(); this.#active = undefined; this.#planningProposals.clear();
+      await this.#allowSwitch(); await this.#active?.lease.close(); this.#active = undefined; this.#planningProposals.clear(); this.#checklistPreviews.clear();
       this.#disposed = true; await this.#catalogOwnership?.close();
     });
     this.#tail = result.catch(() => undefined); return result;
   }
-  async dispose(): Promise<void> { await this.#tail; this.#disposed = true; await this.#active?.lease.close(); this.#active = undefined; this.#planningProposals.clear(); await this.#catalogOwnership?.close(); }
+  async dispose(): Promise<void> { await this.#tail; this.#disposed = true; await this.#active?.lease.close(); this.#active = undefined; this.#planningProposals.clear(); this.#checklistPreviews.clear(); await this.#catalogOwnership?.close(); }
 }
 
 async function initialize(root: string, identity: string, initial: Initialization, options: LocalProjectsOptions): Promise<void> {

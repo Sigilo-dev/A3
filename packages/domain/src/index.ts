@@ -1,6 +1,7 @@
 export type * from './models.js';
 export * from './planning.js';
 export * from './planning-views.js';
+export * from './checklist-exchange.js';
 export * from './c4.js';
 export * from './uml.js';
 export * from './er.js';

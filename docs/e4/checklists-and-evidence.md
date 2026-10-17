@@ -1,5 +1,7 @@
 # E4-C2 · checklist, nodos de tarea y evidencia
 
+La exportación/importación Markdown pendiente en esta entrega histórica se incorpora en [E4-E1](checklist-exchange-and-traceability.md), con preview, matching y conflictos. La evidencia consolidada está en [evidence.md](evidence.md).
+
 Base: E4-C1 `b7ca4ac`, contratos Entity/Resource de E0, writer/broker E1, vista del canvas E2, A3 §16 y aceptación A3-020/021. No se añaden bibliotecas ni cambios de formato a los schemas E0.
 
 ## Vistas de la misma entidad

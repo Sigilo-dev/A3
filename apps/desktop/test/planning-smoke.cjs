@@ -1,11 +1,14 @@
 const assert = require('node:assert/strict');
-const { readFileSync } = require('node:fs');
+const { readFileSync, existsSync, readdirSync } = require('node:fs');
 const { resolve } = require('node:path');
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, clipboard } = require('electron');
 const [entry, profile, root] = process.argv.slice(2);
 app.setPath('userData', profile); BrowserWindow.prototype.show = function () {};
 dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [root] });
 dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+let checklistSaveCount = 0;
+dialog.showSaveDialog = async () => ++checklistSaveCount === 1 ? { canceled: true } : { canceled: false, filePath: resolve(root, '../checklist-export.md') };
+let copiedChecklist = ''; clipboard.writeText = (text) => { copiedChecklist = text; };
 dialog.showErrorBox = (title, message) => { console.error(title, message); app.exit(3); };
 const created = new Promise((accept) => app.once('browser-window-created', (_event, win) => accept(win)));
 async function run() {
@@ -65,6 +68,51 @@ async function run() {
   assert.ok(applied.every((item) => item.data.state === 'todo' && item.data.proposal.coverageClaim === false));
   assert.equal((await request({ action: 'load', actor: { kind: 'user', id: 'spoofed' } })).ok, false);
   await js("document.querySelector('[aria-label=\"Buscar tareas\"]').focus()"); assert.equal(await js("document.activeElement.getAttribute('aria-label')"), 'Buscar tareas');
+  // E4-E1: the Markdown exchange is an explicit preview/compare/apply operation.
+  await click('[data-checklist-exchange] > summary');
+  await click('[aria-label="Exportar Probar cierre y reapertura"]'); await click('[data-checklist-export]');
+  await waitFor("document.querySelector('[data-checklist-source]').value.includes('a3-checklist')");
+  const exported = await js("document.querySelector('[data-checklist-source]').value"); assert.ok(exported.includes('- [x]'));
+  await click('[data-checklist-copy]'); await waitFor("document.querySelector('[data-checklist-status]')?.textContent.includes('Selección copiada')"); assert.equal(copiedChecklist, exported);
+  await click('[data-checklist-save]'); await waitFor("document.querySelector('[data-checklist-status]')?.textContent.includes('cancelada')");
+  assert.equal(existsSync(resolve(root, '../checklist-export.md')), false);
+  await click('[data-checklist-save]'); await waitFor("document.querySelector('[data-checklist-status]')?.textContent.includes('Selección exportada a')");
+  assert.equal(readFileSync(resolve(root, '../checklist-export.md'), 'utf8'), exported);
+  assert.equal(readdirSync(resolve(root, '..')).some((name) => name.startsWith('.a3-checklist-')), false);
+  await js(`(() => { const input = document.querySelector('[data-checklist-exchange] input[type=file]'); const transfer = new DataTransfer(); transfer.items.add(new File([${JSON.stringify(exported)}], 'checklist.md', {type:'text/markdown'})); input.files = transfer.files; input.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+  await waitFor("document.querySelector('[data-checklist-status]')?.textContent.includes('Archivo cargado')"); assert.equal(await js("document.querySelector('[data-checklist-source]').value"), exported);
+  await click('[data-checklist-save]'); await waitFor("document.querySelector('[data-checklist-error]')?.textContent.includes('EEXIST')");
+  assert.equal(readFileSync(resolve(root, '../checklist-export.md'), 'utf8'), exported);
+  await set('[data-checklist-source]', exported.replace('- [x]', '- [ ]')); await click('[data-checklist-preview]');
+  await waitFor("Boolean(document.querySelector('[data-checklist-comparison]'))");
+  assert.equal((await request({ action: 'load' })).value.items.find((item) => item.id === taskId).data.state, 'done');
+  await set('[aria-label="Decisión ' + taskId + '"]', 'import'); await click('[data-checklist-apply]');
+  await waitFor("document.querySelector('[data-checklist-status]')?.textContent.includes('Decisiones aplicadas')");
+  assert.equal((await request({ action: 'load' })).value.items.find((item) => item.id === taskId).data.state, 'todo');
+  // The original checked export now conflicts with a newer task revision.
+  await set('[data-checklist-source]', exported); await click('[data-checklist-preview]');
+  await waitFor("document.querySelector('[data-checklist-comparison]')?.textContent.includes('conflict')");
+  assert.equal(await js("document.querySelector('[data-checklist-apply]').disabled"), true);
+  await set('[aria-label="Decisión ' + taskId + '"]', 'keep'); await click('[data-checklist-apply]');
+  await waitFor("document.querySelector('[data-checklist-status]')?.textContent.includes('Decisiones aplicadas')");
+  assert.equal((await request({ action: 'load' })).value.items.find((item) => item.id === taskId).data.state, 'todo');
+  const broken = exported.replace('"references":[', '"references":[{"kind":"resource","id":"00000000-0000-4000-8000-000000009997"},');
+  await set('[data-checklist-source]', broken); await click('[data-checklist-preview]');
+  await waitFor("document.querySelector('[data-checklist-comparison]')?.textContent.includes('planning-reference-missing')");
+  assert.equal(await js("document.querySelector('[data-checklist-source]').value"), broken);
+  assert.equal(await js("document.querySelector('[data-checklist-apply]').disabled"), true);
+  const foreign = exported.replace(active.projectId, '00000000-0000-4000-8000-000000009999');
+  await set('[data-checklist-source]', foreign); await click('[data-checklist-preview]');
+  await waitFor("document.querySelector('[data-checklist-comparison]')?.textContent.includes('otro proyecto')");
+  assert.equal(await js("document.querySelector('[data-checklist-apply]').disabled"), true);
+  await click('[data-planning-traceability] > summary');
+  const trace = await js("document.querySelector('[data-planning-traceability]').innerText");
+  assert.ok(trace.includes('historia:')); assert.ok(trace.includes('evidencia:')); assert.ok(trace.includes('origen de evidencia:')); assert.ok(trace.includes('nodo:'));
+  const invalidExchange = await request({ action: 'apply-checklist', token: '00000000-0000-4000-8000-000000009998', choices: [{ id: taskId, decision: 'import', actor: 'spoofed' }] });
+  assert.equal(invalidExchange.ok, false); assert.equal(invalidExchange.error.code, 'INVALID_REQUEST');
+  assert.equal((await request({ action: 'save-checklist', taskIds: [taskId], filePath: 'untrusted.md' })).ok, false);
+  await js("document.querySelector('[data-checklist-preview]').focus()"); assert.equal(await js("document.activeElement.hasAttribute('data-checklist-preview')"), true);
+  console.log('A3_CHECKLIST_EXCHANGE_SMOKE=' + JSON.stringify({ passed: true, checks: ['Markdown export and host clipboard routing', 'native file save and cancel', 'existing destination preserved', 'load Markdown file', 'preview without writes', 'explicit import', 'conflict comparison and keep current', 'broken reference preserves source', 'foreign context rejected', 'traceability links', 'strict exchange IPC', 'keyboard focus'] }));
   console.log('A3_PLANNING_SMOKE=' + JSON.stringify({ passed: true, checks: ['host evidence policy', 'evidence recording', 'node to checklist sync', 'checklist to node sync', 'two workspace identity', 'actor/evidence activity', 'list search/grouping', 'stale row conflict and preserved draft', 'referenced proposal preview/accept', 'strict IPC', 'keyboard focus', 'renderer without Node'] })); win.close();
 }
 void run().catch((error) => { console.error(error); app.exit(2); }); require(entry);
