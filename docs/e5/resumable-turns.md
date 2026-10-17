@@ -28,3 +28,5 @@ Resultado en Windows (2026-10-17): **24 pruebas de turnos + 13 de adaptador apro
 **A3-028/029:** sin ampliación de aceptación por estas pruebas; no hubo login, consumo del plan ni turno de inferencia. **A3-031/032:** no se habilitaron herramientas, procesos arbitrarios ni una capacidad de sandbox no demostrada. No hay nuevos canales IPC de agente/renderer.
 
 El único estado persistido de la sesión es local por proyecto/raíz. Las credenciales, cookies, errores crudos y payloads de herramientas no forman parte del journal. Los textos del transcript sí son contenido de conversación explícito y deben tratarse como datos del usuario.
+
+El bloque siguiente, E5-D1, define contratos tipados de lectura y validación con scope fijado por el host. Siguen sin registrarse en app-server/MCP hasta validar el transporte; véase [E5-D1](a3-tool-contracts.md).

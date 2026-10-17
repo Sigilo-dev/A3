@@ -6,6 +6,8 @@ export { decodeDocument, encodeDocument, serializeRecord, supportedVersion, sha2
 export { decodeCodeText, encodeCodeText, codeLineEnding } from './code-text.js';
 export type { CodeDocument, CodeOpenTarget, CodeEncoding, CodeLineEnding, DecodedCodeText } from './code-text.js';
 export type * from './service-types.js';
+export { A3_TOOL_SCHEMAS, ProjectAgentTools, bindProjectAgentTools, describeA3Tools } from './agent-tools.js';
+export type { A3ToolCall, A3ToolErrorCode, A3ToolName, A3ToolResult, A3ToolScope, A3ToolSelection, ProjectAgentToolOptions } from './agent-tools.js';
 export type { ProjectVariablesState, SetProjectVariables, VariablesQuery } from './variables.js';
 export type { PromptContextEntityRole, PromptContextEntitySelection, PromptContextSelection, PromptContextCatalog, PromptContextCompileInput,
   PromptContextVariableTrace, PromptContextExecutionTrace, ProjectPromptContextResult } from './prompt-context.js';

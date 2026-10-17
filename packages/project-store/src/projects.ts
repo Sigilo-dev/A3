@@ -26,6 +26,7 @@ import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
 import { initialPageView, insertFocusTab, readWorkspaceSession, writeWorkspaceSession, validCanvasView, validPageView, type WorkspaceSession, type WorkspaceSessionAction, type PageReference } from './workspace-session.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
+import { bindProjectAgentTools, type A3ToolSelection, type A3ToolScope, type ProjectAgentTools } from './agent-tools.js';
 import { defaultShortcuts, validateShortcuts, type ShortcutBindings } from '@a3/domain';
 import { resolvePageLink, type NavigationIndex, type PageLink } from './navigation.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
@@ -1010,6 +1011,29 @@ export class LocalProjectManager {
   }
   loadPromptContextCatalog(sessionId: string): Promise<PromptContextCatalog> {
     return this.#queue(async () => this.#promptContextCatalog(sessionId));
+  }
+  /** Bind tools to the current project and a host-selected, immutable set of IDs. */
+  createA3ToolSession(sessionId: string, selection: A3ToolSelection): ProjectAgentTools {
+    const active = this.#variablesContext(sessionId);
+    const scope: A3ToolScope = { ...structuredClone(selection), projectId: active.projectId, sessionId: active.sessionId, rootIdentity: active.rootIdentity };
+    const records = active.lease.service.state.project.snapshot.records;
+    const contains = (kind: DomainRecord['kind'], id: string): boolean => records.some((record) => record.kind === kind && 'id' in record.value &&
+      typeof record.value.id === 'string' && record.value.id.toLowerCase() === id.toLowerCase());
+    demand(scope.entityIds.every((id) => contains('entity', id)) && scope.resourceIds.every((id) => contains('resource', id)) &&
+      scope.relationIds.every((id) => contains('relation', id)) && scope.workspaceIds.every((id) => contains('workspace', id)),
+    'AGENT_SCOPE_INVALID', 'El scope incluye IDs que no pertenecen al proyecto abierto.');
+    demand(scope.relationIds.every((id) => {
+      const relation = records.find((record) => record.kind === 'relation' && record.value.id.toLowerCase() === id.toLowerCase());
+      return relation?.kind === 'relation' && scope.entityIds.some((entityId) => entityId.toLowerCase() === relation.value.source.entityId.toLowerCase()) &&
+        scope.entityIds.some((entityId) => entityId.toLowerCase() === relation.value.target.entityId.toLowerCase());
+    }), 'AGENT_SCOPE_INVALID', 'Una relación elegida queda fuera del conjunto de entidades del proyecto.');
+    demand(scope.memoryResourceIds.every((id) => {
+      const resource = records.find((record) => record.kind === 'resource' && record.value.id.toLowerCase() === id.toLowerCase());
+      return resource?.kind === 'resource' && resource.value.kind === 'project-file' && /^memory\/(?!.*\.\.)[^\\:]+\.md$/i.test(resource.value.path) && !searchExcluded(resource.value.path);
+    }), 'AGENT_SCOPE_INVALID', 'La búsqueda de memoria solo puede usar documentos Markdown del área de memoria local.');
+    return bindProjectAgentTools({ service: active.lease.service, host: this.options.host, scope, context: {
+      isCurrent: () => this.#active === active && active.sessionId === sessionId && active.projectId.toLowerCase() === scope.projectId.toLowerCase() && active.rootIdentity === scope.rootIdentity
+    } });
   }
   compileProjectPromptContext(sessionId: string, input: PromptContextCompileInput): Promise<ProjectPromptContextResult> {
     const captured = structuredClone(input);
