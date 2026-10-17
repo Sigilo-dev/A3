@@ -1,4 +1,6 @@
 export type * from './types.js';
+export { LocalSearchIndex, searchExcluded, validSearchPatterns } from './search-index.js';
+export type { ProjectSearchState, ProjectMemoryState, SearchSource, SearchHit, SearchStats, MemorySummary, MemorySummarySource } from './search-index.js';
 export type * from './planning.js';
 export { decodeDocument, encodeDocument, serializeRecord, supportedVersion, sha256 } from './codec.js';
 export { decodeCodeText, encodeCodeText, codeLineEnding } from './code-text.js';

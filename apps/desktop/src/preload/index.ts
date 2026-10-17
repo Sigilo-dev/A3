@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { MEMORY_SEARCH_CHANNEL, type MemorySearchRequest } from '../shared/memory-search';
 import { PLANNING_CHANNEL, type PlanningRequest } from '../shared/planning';
 import { VARIABLES_CHANNEL } from '../shared/desktop-api';
 import type { VariablesRequest } from '../shared/variables';
@@ -27,6 +28,7 @@ window.addEventListener('drop', (event) => {
 }, true);
 
 const api: DesktopAPI = Object.freeze({
+  memorySearch: (request: MemorySearchRequest) => ipcRenderer.invoke(MEMORY_SEARCH_CHANNEL, request),
   planning: (request: PlanningRequest) => ipcRenderer.invoke(PLANNING_CHANNEL, request),
   variables: (request: VariablesRequest) => ipcRenderer.invoke(VARIABLES_CHANNEL, request),
   getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL),

@@ -13,6 +13,7 @@ import { AvEngine } from './av-engine';
 import { validAvRequest, type AvResult } from '../shared/av-conversion';
 import { validVariablesRequest, type VariablesResult } from '../shared/variables';
 import { validPlanningRequest, type PlanningResult } from '../shared/planning';
+import { validMemorySearchRequest, type MemorySearchResult } from '../shared/memory-search';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
@@ -575,6 +576,11 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
+    async handleMemorySearch(value: unknown): Promise<MemorySearchResult> {
+      if (!validMemorySearchRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de memoria/búsqueda inválida.', recovery: 'Revisa los campos.' } };
+      try { return { ok: true, value: value.action === 'memory' ? await manager.loadMemory(value.sessionId) : value.action === 'initialize' ? await manager.initializeMemory(value.sessionId) : value.action === 'summary' ? await manager.createMemorySummary(value.sessionId, value.input) : await manager.searchProject(value.sessionId, value.query, value.rebuild, value.exclusions) }; }
+      catch (error) { return { ok: false, error: { code: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'MEMORY_SEARCH_FAILED', message: error instanceof Error ? error.message : 'No se completó la operación.', recovery: 'Los documentos originales se conservan; revisa permisos, conflictos y diagnósticos. Puedes reconstruir el índice.' } }; }
+    },
     async handlePlanning(value: unknown): Promise<PlanningResult> {
       if (!validPlanningRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Petición de planificación inválida.', recovery: 'Revisa los campos y los IDs.' } };
       try {

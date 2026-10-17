@@ -1,0 +1,10 @@
+{
+  "projectA": "contexto exclusivo andino alpaca",
+  "projectB": "contexto exclusivo costero pelicano",
+  "before": "requisito inicial integridadlunar",
+  "after": "requisito actualizado orbitasolar",
+  "code": "export const garantia = 'codigoseguro';\n",
+  "excluded": "contenido excluido termitasecreta",
+  "patterns": ["private/**", "**/*.generated.ts"],
+  "summary": "# Resumen revisado\n\nSe conserva el contexto original y su referencia explícita.\n"
+}

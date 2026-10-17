@@ -1,4 +1,5 @@
 import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } from 'node:fs/promises';
+import { LocalSearchIndex, MEMORY_DEFAULTS, searchExcluded, searchFingerprint, validSearchPatterns, type SearchSource, type ProjectSearchState, type ProjectMemoryState, type MemoryDocumentInput, type MemorySummary } from './search-index.js';
 import { projectPlanning, planningPolicy, planningData, planningKind, validatePlanningSnapshot, inspectTaskProposal, type PlanningOperation, type TaskProposal } from '@a3/domain';
 import type { ProjectPlanningState, PlanningTaskUpdate, PlanningEvidenceInput, PlanningProposalPreview } from './planning.js';
 import { constants } from 'node:fs';
@@ -358,6 +359,7 @@ function comparableHistoryRecord(value: DomainRecord | null): string {
 
 /** Main-process lifecycle; renderer receives summaries and opaque preview/session IDs only. */
 export class LocalProjectManager {
+  #searchIndex: { sessionId: string; index: LocalSearchIndex; exclusions: string[] } | undefined;
   #planningProposals = new Map<string, { sessionId: string; sourceHash: string; fingerprint: string; proposal: TaskProposal; ids: Record<string, string> }>();
   #tail: Promise<unknown> = Promise.resolve();
   #catalog: Catalog = { version: 1, recents: [], pending: [] };
@@ -384,6 +386,7 @@ export class LocalProjectManager {
   #plantUmlImportPreviews = new Map<string, PlantUmlImportPreviewBinding>();
   #structurizrImportPreviews = new Map<string, StructurizrImportPreviewBinding>();
   #resetExplorerBindings = (): void => {
+    this.#searchIndex = undefined;
     this.#explorerSessionId = ''; this.#explorerItems.clear(); this.#explorerPaths.clear(); this.#explorerPages.clear(); this.#explorerDeletes.clear(); this.#codeDocuments.clear();
   };
   constructor(private readonly options: LocalProjectsOptions) {
@@ -1153,6 +1156,135 @@ export class LocalProjectManager {
     });
   }
   loadProjectVariables(sessionId: string, query: VariablesQuery = {}): Promise<ProjectVariablesState> { return this.#queue(async () => this.#variablesState(sessionId, query)); }
+  #memoryState(sessionId: string): ProjectMemoryState {
+    const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+    const permission = this.options.host.capabilities.authorizeAccess({ root: active.lease.service.root, projectId: active.projectId, actor: this.options.host.authenticatedActor,
+      operation: 'write', paths: ['memory'], refs: [], resources: [], requiredCapabilities: ['document.edit'], stage: 'prepare' });
+    const writable = active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && permission.allowed;
+    const documents: ProjectMemoryState['documents'] = [];
+    for (const record of snapshot.records) {
+      if (record.kind !== 'entity' || !record.value.contentResourceId) continue;
+      const resource = snapshot.records.find((r) => r.kind === 'resource' && r.value.id === record.value.contentResourceId);
+      if (resource?.kind !== 'resource' || resource.value.kind !== 'project-file') continue;
+      const property = record.value.properties['a3.memory.role'];
+      const role = typeof property === 'string' ? property : MEMORY_DEFAULTS.find((item) => item.path === resource.value.path)?.role ?? '';
+      if (!role && !resource.value.path.startsWith('memory/')) continue;
+      const raw = record.value.properties['a3.memory.summary']; let summary: MemorySummary | undefined, diagnostic: string | undefined;
+      if (raw !== undefined) {
+        const value = recordObject(raw), actor = value ? recordObject(value.actor) : undefined;
+        if (value && typeof value.recordedAt === 'string' && Number.isFinite(Date.parse(value.recordedAt)) && actor && typeof actor.id === 'string' && typeof actor.kind === 'string' &&
+            Array.isArray(value.sources) && value.sources.length > 0 && value.sources.every((source) => { const s = recordObject(source); return s && ['entity', 'resource'].includes(String(s.kind)) && typeof s.id === 'string' && uuid.test(s.id) && typeof s.label === 'string' && typeof s.hash === 'string' && /^[a-f0-9]{64}$/.test(s.hash); })) summary = raw as unknown as MemorySummary;
+        else diagnostic = 'El resumen no contiene procedencia/fecha interpretable; conserva y revisa su fuente.';
+      }
+      if (role === 'summary' && !summary) diagnostic = 'Resumen sin fuentes/fecha válidas; no se presenta como memoria verificada.';
+      documents.push({ entityId: record.value.id, resourceId: resource.value.id, title: record.value.title, path: resource.value.path, role: role || 'document', ...(summary ? { summary } : {}), ...(diagnostic ? { diagnostic } : {}) });
+    }
+    return { sessionId, projectId: active.projectId, canWrite: writable, reason: writable ? '' : 'La memoria necesita document.edit y un proyecto escribible sin conflictos.', documents,
+      missingRoles: MEMORY_DEFAULTS.filter((item) => !documents.some((doc) => doc.role === item.role)).map((item) => item.role) };
+  }
+  loadMemory(sessionId: string): Promise<ProjectMemoryState> { return this.#queue(async () => this.#memoryState(sessionId)); }
+  searchProject(sessionId: string, query: string, rebuild = false, exclusions?: string[]): Promise<ProjectSearchState> {
+    const patterns = exclusions ? [...exclusions] : undefined; return this.#queue(async () => {
+      const active = this.#explorerContext(sessionId); this.#variablesContext(sessionId);
+      demand(typeof query === 'string' && query.length <= 500 && (patterns === undefined || validSearchPatterns(patterns)), 'SEARCH_REQUEST_INVALID', 'Consulta o patrones de exclusión inválidos.');
+      if (this.#searchIndex?.sessionId !== sessionId) this.#searchIndex = { sessionId, index: new LocalSearchIndex(), exclusions: [] };
+      const index = this.#searchIndex; if (patterns) index.exclusions = patterns;
+      const sources: SearchSource[] = [], diagnostics: string[] = [], records = active.lease.service.state.project.snapshot.records;
+      const entities = records.filter((r) => r.kind === 'entity');
+      let bytes = 0, count = 0, partial = false;
+      const add = (origin: string, text: string, hash: string, resourceId?: string, itemId?: string): void => {
+        const owners = entities.filter((r) => resourceId && r.value.contentResourceId === resourceId);
+        const entityIds = owners.map((r) => r.value.id), tags = [...new Set(owners.flatMap((r) => r.value.tags))];
+        const metadata = owners.flatMap((r) => typeof r.value.properties['a3.content.description'] === 'string' ? [r.value.properties['a3.content.description']] : []);
+        const placements = records.flatMap((r) => {
+          if (r.kind !== 'placement' || !entityIds.includes(r.value.entityId)) return [];
+          const workspace = records.find((w) => w.kind === 'workspace' && w.value.id === r.workspaceId);
+          return [{ workspaceId: r.workspaceId, workspaceName: workspace?.kind === 'workspace' ? workspace.value.name : r.workspaceId, placementId: r.value.id }];
+        });
+        sources.push({ key: resourceId ? 'resource:' + resourceId : 'file:' + origin, origin, title: owners.map((r) => r.value.title).join(' · ') || origin.split('/').at(-1) || origin,
+          tags, text: [text, ...metadata].join('\n'), hash, entityIds, placements, ...(resourceId ? { resourceId } : {}), ...(itemId ? { itemId } : {}) });
+      };
+      const folders = [''];
+      while (folders.length && count < 5000) {
+        const folder = folders.shift()!; let offset: number | null = 0;
+        while (offset !== null && count < 5000) {
+          const listing = await active.lease.service.listExplorerDirectory(folder, offset);
+          if (!listing.ok) { partial = true; diagnostics.push(folder + ': ' + listing.diagnostics.map((d) => d.detail).join(', ')); break; }
+          for (const entry of listing.value.entries) {
+            if (++count > 5000) break;
+            if (searchExcluded(entry.path, index.exclusions)) continue;
+            if (entry.kind === 'directory') { folders.push(entry.path); continue; }
+            if (entry.kind !== 'file') { diagnostics.push(entry.path + ': enlace no seguido'); continue; }
+            if ((entry.size ?? 0) > 2 * 1024 * 1024 || bytes + (entry.size ?? 0) > 32 * 1024 * 1024) { partial = true; diagnostics.push(entry.path + ': omitido por presupuesto (2 MiB/archivo, 32 MiB/proyecto)'); continue; }
+            const read = await active.lease.service.readCodeFile(entry.path, entry.identity);
+            if (!read.ok) { partial = true; diagnostics.push(entry.path + ': ' + read.diagnostics.map((d) => d.detail).join(', ')); continue; }
+            bytes += read.value.bytes.byteLength; const decoded = decodeCodeText(read.value.bytes); if (decoded.content === null) continue;
+            const prior = this.#explorerPaths.get(entry.path.toLowerCase()), itemId = prior?.identity === entry.identity ? prior.id : randomUUID();
+            this.#explorerPaths.set(entry.path.toLowerCase(), { id: itemId, identity: entry.identity });
+            this.#explorerItems.set(itemId, { sessionId, path: entry.path, identity: entry.identity, kind: 'file', ...(entry.resourceId ? { resourceId: entry.resourceId } : {}) });
+            add(entry.path, decoded.content, read.value.hash, entry.resourceId, itemId);
+          }
+          offset = listing.value.nextOffset;
+        }
+      }
+      if (count >= 5000) { partial = true; diagnostics.push('Catálogo parcial: límite de 5000 entradas.'); }
+      for (const record of records) {
+        if (record.kind !== 'resource' || record.value.kind !== 'mounted-file' || searchExcluded(record.value.path, index.exclusions)) continue;
+        const permission = this.options.host.capabilities.authorizeAccess({ root: active.lease.service.root, projectId: active.projectId, actor: this.options.host.authenticatedActor,
+          operation: 'write', paths: [], refs: [refOf(record)], resources: [record.value], requiredCapabilities: ['mount.index'], stage: 'apply' });
+        if (!permission.allowed) { diagnostics.push('@mount/' + record.value.mountId + ': indexación no concedida'); continue; }
+        if (bytes >= 32 * 1024 * 1024) { partial = true; diagnostics.push('Montaje omitido por presupuesto.'); continue; }
+        const read = await active.lease.service.openResource(record.value.id, Math.min(2 * 1024 * 1024, 32 * 1024 * 1024 - bytes));
+        if (!read.ok) { partial = true; diagnostics.push(record.value.path + ': montaje ausente o sin lectura concedida'); continue; }
+        bytes += read.value.bytes.byteLength; const decoded = decodeCodeText(read.value.bytes);
+        if (decoded.content !== null) add('@mount/' + record.value.mountId + '/' + record.value.path, decoded.content, read.value.sha256, record.value.id);
+      }
+      for (const entity of entities) {
+        if (entity.value.contentResourceId) continue;
+        sources.push({ key: 'entity:' + entity.value.id, origin: 'entity:' + entity.value.id, title: entity.value.title, text: typeof entity.value.properties['a3.content.description'] === 'string' ? entity.value.properties['a3.content.description'] : '', tags: entity.value.tags,
+          hash: searchFingerprint(entity.value), entityIds: [entity.value.id], placements: records.flatMap((r) => r.kind === 'placement' && r.value.entityId === entity.value.id ? [{ workspaceId: r.workspaceId, workspaceName: r.workspaceId, placementId: r.value.id }] : []) });
+      }
+      this.#variablesContext(sessionId);
+      const stats = index.index.update(sources, rebuild), result = index.index.search(query);
+      return { sessionId, projectId: active.projectId, query, ...result, stats, diagnostics, exclusions: [...index.exclusions], partial };
+    });
+  }
+  initializeMemory(sessionId: string): Promise<ProjectMemoryState> { return this.#queue(async () => {
+    const active = this.#variablesContext(sessionId), state = this.#memoryState(sessionId); demand(state.canWrite, 'PERMISSION_DENIED', state.reason);
+    const snapshot = active.lease.service.state.project.snapshot, documents: MemoryDocumentInput[] = [];
+    for (const role of state.missingRoles) {
+      const definition = MEMORY_DEFAULTS.find((item) => item.role === role)!;
+      const existing = snapshot.records.find((r) => r.kind === 'resource' && r.value.kind === 'project-file' && r.value.path === definition.path);
+      if (existing?.kind === 'resource') {
+        const entityId = randomUUID();
+        await this.#commitCanvasCommand(active, { command: 'a3.core.create-document', payload: { record: { kind: 'entity', value: { schemaVersion: '1.0.0', id: entityId, revision: 1, title: definition.title,
+          type: 'a3.core.page', typeVersion: '1.0.0', contentResourceId: existing.value.id, tags: ['memory'], properties: { 'a3.memory.role': role }, ports: [], bindings: {}, extensions: {} } } } }, [entityId], { kind: 'entity', id: entityId });
+      } else documents.push({ ...definition, entityId: randomUUID(), resourceId: randomUUID() });
+    }
+    if (documents.length) {
+      const plan = await active.lease.service.prepareMemoryDocuments(randomUUID(), documents);
+      demand(plan.ok, 'MEMORY_INITIALIZATION_FAILED', plan.diagnostics.map((d) => d.detail + ': ' + d.message).join('\n'));
+      const committed = await active.lease.service.commit(plan.value); demand(committed.ok, 'MEMORY_INITIALIZATION_FAILED', committed.diagnostics.map((d) => d.message).join('\n'));
+    }
+    return this.#memoryState(sessionId);
+  }); }
+  createMemorySummary(sessionId: string, input: { title: string; content: string; sourceIds: string[] }): Promise<ProjectMemoryState> {
+    const captured = structuredClone(input); return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+      demand(captured.sourceIds.length > 0 && captured.sourceIds.length <= 64 && new Set(captured.sourceIds).size === captured.sourceIds.length, 'MEMORY_SOURCES_REQUIRED', 'Selecciona fuentes explícitas del proyecto.');
+      const sources: MemorySummary['sources'] = [];
+      for (const id of captured.sourceIds) {
+        const resource = snapshot.records.find((r) => r.kind === 'resource' && r.value.id === id);
+        demand(resource?.kind === 'resource' && resource.value.kind === 'project-file' && !searchExcluded(resource.value.path), 'MEMORY_SOURCE_INVALID', 'Selecciona una fuente documental interna autorizada.');
+        const opened = await active.lease.service.readCodeFile(resource.value.path); demand(opened.ok, 'MEMORY_SOURCE_UNAVAILABLE', 'No se pudo verificar la fuente de memoria.');
+        sources.push({ kind: 'resource', id, label: resource.value.path, hash: opened.value.hash });
+      }
+      const entityId = randomUUID(), summary: MemorySummary = { recordedAt: new Date().toISOString(), actor: this.options.host.authenticatedActor, sources };
+      const plan = await active.lease.service.prepareMemoryDocuments(randomUUID(), [{ entityId, resourceId: randomUUID(), title: captured.title, role: 'summary', path: `memory/summaries/${entityId}.md`, content: captured.content, summary }]);
+      demand(plan.ok, 'MEMORY_SUMMARY_FAILED', plan.diagnostics.map((d) => d.message).join('\n'));
+      const committed = await active.lease.service.commit(plan.value); demand(committed.ok, 'MEMORY_SUMMARY_FAILED', committed.diagnostics.map((d) => d.message).join('\n')); return this.#memoryState(sessionId);
+    });
+  }
   #planningState(sessionId: string): ProjectPlanningState {
     const active = this.#variablesContext(sessionId), service = active.lease.service, snapshot = service.state.project.snapshot;
     const project = snapshot.records.find((r) => r.kind === 'project'); demand(project?.kind === 'project', 'PROJECT_MANIFEST_MISSING', 'Falta el manifiesto.');

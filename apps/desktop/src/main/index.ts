@@ -9,6 +9,7 @@ import { AV_CONVERSION_CHANNEL, IMAGE_CONVERSION_CHANNEL } from '../shared/deskt
 import { PLANTUML_ARTIFACT_FILE } from './plantuml-renderer';
 import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL } from '../shared/desktop-api';
 import { VARIABLES_CHANNEL } from '../shared/desktop-api';
+import { MEMORY_SEARCH_CHANNEL } from '../shared/memory-search';
 import { PLANNING_CHANNEL } from '../shared/planning';
 
 const APP_URL = 'a3://desktop/index.html';
@@ -197,6 +198,11 @@ async function startDesktop(): Promise<void> {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
         !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Planificación no autorizada.', recovery: 'Reabre el proyecto.' } };
     return projects.handlePlanning(args[0]);
+  });
+  ipcMain.handle(MEMORY_SEARCH_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Memoria/búsqueda no autorizada.', recovery: 'Reabre el proyecto.' } };
+    return projects.handleMemorySearch(args[0]);
   });
   ipcMain.handle(VARIABLES_CHANNEL, (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||

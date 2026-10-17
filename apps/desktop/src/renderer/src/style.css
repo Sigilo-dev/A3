@@ -533,3 +533,12 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .task-node { max-height: 265px; overflow: auto; }
 .task-node .task-controls { padding-right: 6px; }
 .task-controls [role="alert"], .planning-panel [role="alert"] { color: #ffa7a7; }
+.memory-search-panel { max-width: 1100px; }
+.memory-search-panel fieldset { display: grid; gap: 12px; border: 1px solid #394b58; border-radius: 8px; margin: 16px 0; }
+.memory-search-panel label { display: block; }
+.memory-search-panel input:not([type="checkbox"]), .memory-search-panel textarea { display: block; width: 100%; }
+.memory-search-panel textarea { min-height: 100px; }
+.memory-documents, .search-results { display: grid; gap: 18px; list-style: none; padding: 0; }
+.memory-documents > li, .search-results > li { padding: 16px; border: 1px solid #394b58; border-radius: 8px; overflow-wrap: anywhere; }
+.memory-search-panel code, .memory-search-panel small { display: block; overflow-wrap: anywhere; }
+.memory-search-panel [role="alert"] { color: #ffa7a7; }

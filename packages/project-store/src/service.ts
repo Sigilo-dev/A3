@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePlan, reversibleCanvasCommand, validateSnapshot, type CommandContext, type Diagnostic, type DomainRecord, type JsonValue, type PreparedPlan, type Resource, type TypeRegistry } from '@a3/domain';
 import { decodeDocument, encodeDocument, issue, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText } from './code-text.js';
+import { MEMORY_DEFAULTS, type MemoryDocumentInput } from './search-index.js';
 import { buildNavigationIndex, rewritePageReferences, type NavigationIndex, type NavigationSource } from './navigation.js';
 import { MountPathError, inspectLocalMountFile, readLocalMountFile, readMountedResource, readMountedResourceDetailed, type MountActionPreview } from './mounts.js';
 import { canonicalJson, freeze, object, pointerToken } from './json.js';
@@ -1338,6 +1339,51 @@ export class ProjectService {
           requiredCapabilities: [...(source.value.kind === 'mounted-file' ? ['document.edit', 'project.read', 'mount.read'] as const : ['document.edit', 'project.read'] as const),
             ...(/^(?:audio|video)\//.test(request.mediaType) ? ['media.convert' as const] : [])] });
       } catch (error) { return failure([this.#operationError('resource', error)]); }
+    });
+  }
+  /** Create/adopt explicit memory only. Existing Markdown bytes are never overwritten. */
+  prepareMemoryDocuments(operationId: string, input: MemoryDocumentInput[]): Promise<StoreResult<PreparedWrite>> {
+    const documents = structuredClone(input);
+    return this.#queue(async () => {
+      try {
+        const current = await this.#currentForWrite(); if (!current.ok) return current;
+        let scan = current.value; const records = [...scan.project.snapshot.records], images: Image[] = [], resources: Resource[] = [], paths: string[] = [];
+        if (!uuid.test(operationId) || documents.length < 1 || documents.length > 3) throw new PathError('memory-request-invalid', 'Inicialización de memoria inválida.');
+        if (!this.#authorized('write', documents.map((item) => item.path), [], [], ['document.edit'], 'prepare')) return failure([this.#denied('memory')]);
+        for (const item of documents) {
+          const standard = MEMORY_DEFAULTS.find((entry) => entry.role === item.role);
+          if (!uuid.test(item.entityId) || !uuid.test(item.resourceId) || item.entityId === item.resourceId || !item.title.trim() || item.title.length > 200 ||
+              typeof item.content !== 'string' || Buffer.byteLength(item.content) > 2 * 1024 * 1024 ||
+              (standard ? item.path !== standard.path || item.summary !== undefined : item.role !== 'summary' || !/^memory\/summaries\/[0-9a-f-]{36}\.md$/i.test(item.path) || !item.summary ||
+                !Number.isFinite(Date.parse(item.summary.recordedAt)) || !equal(item.summary.actor, this.options.host.authenticatedActor) || !item.summary.sources.length || item.summary.sources.length > 64 ||
+                item.summary.sources.some((source) => !uuid.test(source.id) || !/^[a-f0-9]{64}$/.test(source.hash) || !['entity', 'resource'].includes(source.kind) || !records.some((r) => r.kind === source.kind && 'id' in r.value && r.value.id === source.id)))) throw new PathError('memory-request-invalid', 'Documento o procedencia de memoria inválidos.');
+          this.#sourcePath(item.path);
+          if (records.some((r) => 'id' in r.value && [item.entityId, item.resourceId].includes(String(r.value.id)) || r.kind === 'resource' && r.value.kind === 'project-file' && r.value.path.toLowerCase() === item.path.toLowerCase())) throw new PathError('memory-destination-in-use', 'El destino o ID ya está registrado; conserva el documento existente.');
+          const resource: DomainRecord = { kind: 'resource', value: { schemaVersion: '1.0.0', revision: 1, id: item.resourceId, kind: 'project-file', path: item.path, mediaType: 'text/markdown', extensions: {} } };
+          const entity: DomainRecord = { kind: 'entity', value: { schemaVersion: '1.0.0', revision: 1, id: item.entityId, type: 'a3.core.page', typeVersion: '1.0.0', title: item.title, contentResourceId: item.resourceId,
+            tags: ['memory'], properties: { 'a3.memory.role': item.role, ...(item.summary ? { 'a3.memory.summary': item.summary as unknown as JsonValue } : {}) }, ports: [], bindings: {}, extensions: {} } };
+          const newRecords = [resource, entity]; const recordPaths = newRecords.map((r) => recordPath(r, this.#catalog));
+          scan = await this.#withExtraPaths(scan, [item.path, ...recordPaths]); paths.push(item.path, ...recordPaths);
+          const observed = scan.files.get(item.path);
+          if (observed?.problem) throw new PathError('memory-path-unavailable', 'La ruta de memoria no es accesible.');
+          if (observed?.hash !== null && observed?.hash !== undefined) {
+            if (item.summary) throw new PathError('memory-destination-exists', 'No se reemplaza un resumen existente.');
+            if (!this.#authorized('read-resource', [item.path], [], [])) return failure([this.#denied(item.path)]);
+            const bytes = await fileBytes(this.root, item.path, 2 * 1024 * 1024);
+            if (sha256(bytes) !== observed.hash) return failure([conflict(item.path)]);
+            const decoded = decodeCodeText(bytes); if (decoded.content === null || !decoded.encoding?.startsWith('utf-8')) throw new PathError('memory-encoding', 'La memoria existente requiere lectura segura; no se reemplaza.');
+          } else images.push({ path: item.path, bytes: Buffer.from(item.content), ref: refOf(resource) });
+          for (const [index, record] of newRecords.entries()) {
+            const path = recordPaths[index]!;
+            if (scan.files.get(path)?.hash !== null || scan.files.get(path)?.problem) return failure([conflict(path, 'memory-destination-exists')]);
+            const encoded = serializeRecord({ kind: record.kind, path }, record); if (!encoded.ok) return encoded;
+            images.push({ path, bytes: encoded.bytes, ref: refOf(record) });
+          }
+          records.push(...newRecords); resources.push(resource.value);
+        }
+        const invalid = validateSnapshot({ records }, this.#registry).filter((d) => d.severity === 'error'); if (invalid.length) return failure(domainIssues(invalid));
+        return this.#makePlan(scan, operationId, images, records, resources, sha256(jsonBytes({ operationId, documents })), { externalPaths: paths, requiredCapabilities: ['project.read', 'document.edit'] });
+      } catch (error) { return failure([this.#operationError('memory', error)]); }
     });
   }
   prepareResourceWrite(input: ResourceWriteRequest): Promise<StoreResult<PreparedWrite>> {
