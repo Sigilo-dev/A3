@@ -82,6 +82,8 @@ export type GitVersionCommand =
   | { kind: 'publish'; branch: string; previous: string | null; next: string }
   | { kind: 'branch'; branch: string; current: string; head: string }
   | { kind: 'objects' | 'pack'; oid: string }
+  | { kind: 'commit-message'; oid: string }
+  | { kind: 'commit-list'; oid: string }
   | { kind: 'object-batch'; oids: readonly string[] }
   | { kind: 'branches' | 'log' };
 export function validGitBranch(branch: string): boolean {
@@ -128,6 +130,8 @@ export async function runGitVersionCommand(binary: VerifiedGitBinary, cwd: strin
       if (!command.oids.length || command.oids.length > 5000) throw new GitStatusError('output-limit');
       args = ['cat-file', '--batch']; options.input = Buffer.from(command.oids.map(oid).join('\n') + '\n'); options.publishing = true; break;
     case 'pack': args = ['pack-objects', '--stdout', '--revs']; options.input = Buffer.from(oid(command.oid) + '\n'); options.publishing = true; break;
+    case 'commit-message': args = ['show', '-s', '--format=%B', oid(command.oid)]; break;
+    case 'commit-list': args = ['rev-list', '--max-count=5001', oid(command.oid)]; break;
   }
   return run(binary.path, [...safe, ...args], cwd, undefined, options);
 }

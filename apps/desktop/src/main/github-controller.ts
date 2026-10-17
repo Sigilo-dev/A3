@@ -6,10 +6,11 @@ import type { Actor } from '@a3/domain';
 import type { LocalProjectManager, ProjectCapabilityBroker } from '@a3/project-store';
 import { validGithubRequest, type GithubResult } from '../shared/github-publishing.ts';
 import { GithubPublishing } from './github-publishing.ts';
-import { GithubError, OfficialGithubApi, githubNeed } from './github-api.ts';
+import { GithubError, OfficialGithubApi, githubDestination, githubNeed } from './github-api.ts';
 import { ProtectedGithubVault, validGithubToken } from './github-vault.ts';
 import { inspectGitInstallation, runGithubStaging, forgetGithubStaging } from './git-process.ts';
 import type { GitProjectController } from './git-controller.ts';
+import type { GitAutomationPublisher } from './git-automation.ts';
 
 export class GithubProjectController {
   private readonly vault: ProtectedGithubVault;
@@ -19,12 +20,12 @@ export class GithubProjectController {
   private readonly pendingConnections = new Set<AbortController>();
   private connectionBusy = false;
   private credentialQueue: Promise<unknown> = Promise.resolve();
-  constructor(userData: string, private readonly manager: LocalProjectManager, private readonly broker: ProjectCapabilityBroker, private readonly actor: Actor, private readonly window: () => BrowserWindow | null, git: GitProjectController) {
+  constructor(userData: string, private readonly manager: LocalProjectManager, private readonly broker: ProjectCapabilityBroker, private readonly actor: Actor, private readonly window: () => BrowserWindow | null, private readonly git: GitProjectController) {
     this.vault = new ProtectedGithubVault(userData, safeStorage);
     this.publishing = new GithubPublishing(this.api, this.vault, {
       context: async (sessionId) => { const project = await this.current(sessionId); githubNeed(project.mode === 'writer' && !project.pendingName && !project.pendingViewport && !project.externalConflict, 'project-not-ready'); return { root: project.root, projectId: project.projectId }; },
       authorize: (sessionId, stage) => this.authorize(sessionId, stage),
-      source: (sessionId) => git.publishingSource(sessionId),
+      source: (sessionId) => this.git.publishingSource(sessionId),
       confirm: async (review) => this.confirm('Confirmar destino de publicación', `Cuenta: ${review.account.login}\nRaíz: ${review.root}\nURL: ${review.url}\nVisibilidad: ${review.visibility}\nRama destino: ${review.branch}\nCommit: ${review.commit}\nAcción: ${review.kind}\nExclusiones: ${review.exclusions.join(', ')}\n${review.kind === 'create' ? 'Crear no sube archivos; un push exige otra revisión.' : 'Sube el commit y su historia alcanzable. No hace force push.'}`),
       push: async (input, signal) => {
         const installation = await inspectGitInstallation(); githubNeed(installation.state === 'available', installation.state); if (installation.state !== 'available') return;
@@ -43,6 +44,52 @@ export class GithubProjectController {
     this.unsubscribe = broker.subscribeRevocations(() => this.cancelAll());
   }
   cancelAll(): void { this.publishing.cancelAll(); for (const controller of this.pendingConnections) controller.abort(); }
+  async automationPublisher(sessionId: string): Promise<GitAutomationPublisher | undefined> {
+    try { await this.current(sessionId); if (!this.vault.available() || !await this.vault.read()) return undefined; }
+    catch { return undefined; }
+    const authorizeDirect = async (): Promise<void> => {
+      const project = await this.current(sessionId);
+      githubNeed(project.mode === 'writer' && !project.pendingName && !project.pendingViewport && !project.externalConflict, 'project-not-ready');
+      const state = this.broker.getPolicyState({ root: project.root, projectId: project.projectId });
+      const push = state.capabilities.find((entry) => entry.capability === 'git.push');
+      githubNeed(push?.available && push.effectiveMode === 'direct', 'permission-denied');
+      githubNeed(await this.authorize(sessionId, 'apply'), 'permission-denied');
+    };
+    const verify = async (destinationUrl: string, branch: string, head?: string): Promise<void> => {
+      await authorizeDirect();
+      const destination = githubDestination(destinationUrl), token = await this.vault.read(); githubNeed(token, 'authorization-expired');
+      await this.api.user(token!);
+      const remote = await this.api.repository(token!, destination.url);
+      githubNeed(remote.fullName.toLowerCase() === `${destination.owner}/${destination.name}`.toLowerCase() && remote.canPush, 'remote-permission-denied');
+      const source = await this.git.publishingSource(sessionId), snapshot = await source.snapshot();
+      githubNeed(snapshot.branch === branch && (!head || snapshot.head === head), 'destination-mismatch');
+      const remoteHead = await this.api.branchHead?.(token!, destination.url, branch);
+      if (remoteHead) githubNeed(await source.containsCommit(remoteHead), 'remote-conflict');
+    };
+    return {
+      check: verify,
+      publish: async (destinationUrl, branch, head, signal) => {
+        await verify(destinationUrl, branch, head);
+        const token = await this.vault.read(); githubNeed(token, 'authorization-expired');
+        const source = await this.git.publishingSource(sessionId), snapshot = await source.snapshot();
+        githubNeed(snapshot.branch === branch && snapshot.head === head, 'destination-mismatch');
+        const pack = await source.pack(head), installation = await inspectGitInstallation(); if (installation.state !== 'available') throw new GithubError(installation.state);
+        const staging = await mkdtemp(join(tmpdir(), 'a3-github-auto-'));
+        const boundedSignal = (): AbortSignal => signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000);
+        try {
+          await runGithubStaging(installation.binary, staging, { kind: 'init' }, boundedSignal());
+          await runGithubStaging(installation.binary, staging, { kind: 'unpack', pack }, boundedSignal());
+          await authorizeDirect();
+          const renewed = await this.vault.read(); githubNeed(renewed && renewed === token, 'authorization-expired');
+          await runGithubStaging(installation.binary, staging, { kind: 'push', url: destinationUrl, branch, oid: head, token: renewed! }, boundedSignal());
+        } finally {
+          forgetGithubStaging(staging);
+          const target = resolve(staging); if (dirname(target) !== resolve(tmpdir()) || !basename(target).startsWith('a3-github-auto-')) throw new GithubError('invalid-staging');
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        }
+      }
+    };
+  }
   dispose(): void { this.cancelAll(); this.unsubscribe(); }
   private mutateCredentials(action: () => Promise<void>): Promise<void> { const next = this.credentialQueue.then(action); this.credentialQueue = next.catch(() => undefined); return next; }
   private async current(sessionId: string) { const active = (await this.manager.getState()).active; githubNeed(active?.sessionId === sessionId, 'stale-session'); return active!; }

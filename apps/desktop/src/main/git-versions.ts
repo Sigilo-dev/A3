@@ -120,6 +120,26 @@ export class LocalGitVersions {
     const log = status.unborn ? [] : text(await this.run({ kind: 'log' })).trimEnd().split('\n').filter(Boolean).map((line) => { const [oid, date, subject] = line.split('\0'); return { oid: oid!, date: date ?? '', subject: secretLike(subject ?? '') ? '[mensaje oculto: posible secreto]' : subject ?? '' }; });
     return { root: this.repository.root, status, branches, log };
   }); }
+  automationFingerprint(paths: readonly string[]): Promise<string> { return this.serial(async () => {
+    await this.allow('git.diff'); await this.quiet();
+    const unique = [...new Set(paths)].sort(); need(unique.length > 0 && unique.length <= 128, 'invalid-selection');
+    await this.status();
+    const payload: unknown[] = [];
+    for (const path of unique) {
+      safePath(path); await this.filters(path);
+      payload.push([path, digest(await bytesAt(join(this.repository.root, path)))]);
+    }
+    return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  }); }
+  automationCommitMessage(oid: string): Promise<string> { return this.serial(async () => {
+    await this.allow('git.diff'); need(/^[a-f0-9]{40}$/.test(oid), 'invalid-object');
+    return text(await this.run({ kind: 'commit-message', oid }));
+  }); }
+  containsCommit(oid: string): Promise<boolean> { return this.serial(async () => {
+    await this.allow('git.diff'); need(/^[a-f0-9]{40}$/.test(oid), 'invalid-object');
+    const status = await this.status(); need(status.head, 'not-repository');
+    return text(await this.run({ kind: 'commit-list', oid: status.head! })).split(/\r?\n/).some((line) => line === oid);
+  }); }
   cancel(token: string): void { this.reviews.delete(token); }
   publishingSnapshot(): Promise<{ head: string; branch: string; files: { path: string; bytes: number }[]; bytes: number; objects: number }> { return this.serial(async () => {
     await this.allow('git.diff'); await this.quiet(); const status = await this.status();

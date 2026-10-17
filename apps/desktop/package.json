@@ -28,7 +28,7 @@
     "test:auth:smoke": "node test/run-codex-authorization.mjs",
     "test:ai:controls": "node --experimental-strip-types --test test/codex-agent-view.test.mjs",
     "pretest:git": "npm run build --workspace @a3/domain && npm run build --workspace @a3/project-store",
-    "test:git": "node --experimental-strip-types --experimental-transform-types --test test/git-status.test.mjs test/git-versions.test.mjs test/git-mounted-repositories.test.mjs",
+    "test:git": "node --experimental-strip-types --experimental-transform-types --test test/git-status.test.mjs test/git-versions.test.mjs test/git-mounted-repositories.test.mjs test/git-automation.test.mjs",
     "test:git:smoke": "node test/run-git-versions.mjs",
     "pretest:github": "npm run build --workspace @a3/domain && npm run build --workspace @a3/project-store",
     "test:github": "node --experimental-strip-types --experimental-transform-types --test test/github-publishing.test.mjs",

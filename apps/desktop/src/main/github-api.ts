@@ -11,6 +11,7 @@ export interface GithubRepository { id: number; fullName: string; visibility: 'p
 export interface GithubApi {
   user(token: string, signal?: AbortSignal): Promise<GithubAccount>;
   repository(token: string, url: string, signal?: AbortSignal): Promise<GithubRepository>;
+  branchHead?(token: string, url: string, branch: string, signal?: AbortSignal): Promise<string | null>;
   create(token: string, name: string, visibility: 'public' | 'private', signal?: AbortSignal): Promise<GithubRepository>;
 }
 function account(value: unknown): GithubAccount {
@@ -28,7 +29,7 @@ function repository(value: unknown): GithubRepository {
 export class OfficialGithubApi implements GithubApi {
   constructor(private readonly request: typeof fetch = fetch) {}
   private async call(token: string, path: string, signal?: AbortSignal, body?: object): Promise<unknown> {
-    githubNeed(/^(?:\/user|\/user\/repos|\/repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/.test(path), 'invalid-destination');
+    githubNeed(/^(?:\/user|\/user\/repos|\/repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/git\/ref\/heads\/[A-Za-z0-9_.%/-]+)?)$/.test(path), 'invalid-destination');
     try {
       const response = await this.request('https://api.github.com' + path, { method: body ? 'POST' : 'GET', redirect: 'error',
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
@@ -43,6 +44,14 @@ export class OfficialGithubApi implements GithubApi {
   }
   async user(token: string, signal?: AbortSignal): Promise<GithubAccount> { return account(await this.call(token, '/user', signal)); }
   async repository(token: string, url: string, signal?: AbortSignal): Promise<GithubRepository> { const d = githubDestination(url); return repository(await this.call(token, `/repos/${d.owner}/${d.name}`, signal)); }
+  async branchHead(token: string, url: string, branch: string, signal?: AbortSignal): Promise<string | null> {
+    const d = githubDestination(url); githubNeed(/^(?![-/])(?!.*(?:\.\.|\/\/|@\{|\.lock(?:\/|$)))[\p{L}\p{N}_./-]{1,120}$/u.test(branch) && branch.split('/').every((part) => !!part && !part.startsWith('.') && !part.endsWith('.')), 'invalid-branch');
+    try {
+      const result = await this.call(token, `/repos/${d.owner}/${d.name}/git/ref/heads/${branch.split('/').map(encodeURIComponent).join('/')}`, signal) as { object?: { sha?: unknown } };
+      const sha = result?.object?.sha;
+      githubNeed(typeof sha === 'string' && /^[a-f0-9]{40}$/.test(sha), 'invalid-api-response'); return sha as string;
+    } catch (error) { if (error instanceof GithubError && error.code === 'remote-unavailable') return null; throw error; }
+  }
   async create(token: string, name: string, visibility: 'public' | 'private', signal?: AbortSignal): Promise<GithubRepository> {
     githubNeed(/^[A-Za-z0-9_.-]{1,100}$/.test(name), 'invalid-destination');
     return repository(await this.call(token, '/user/repos', signal, { name, private: visibility === 'private', auto_init: false }));

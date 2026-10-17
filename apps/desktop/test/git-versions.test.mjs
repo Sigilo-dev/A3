@@ -50,6 +50,16 @@ test('Git IPC rejects arbitrary commands, roots, tokens and oversized input', ()
   assert.equal(validGitRequest({ action: 'review', sessionId, input: { kind: 'stage', paths: ['notes.md'] } }), true);
 });
 
+test('A3-037 automation fingerprint is stable across its own selective stage and reads a recovered commit marker', native, async (t) => {
+  const c = await context(t); await c.file('notes.md', 'selected automation change\n');
+  const before = await c.service.automationFingerprint(['notes.md']), stage = await c.service.review({ kind: 'stage', paths: ['notes.md'] });
+  await c.service.apply(stage.token);
+  assert.equal(await c.service.automationFingerprint(['notes.md']), before);
+  const marker = 'A3-Automation-Id: 12345678-1234-4234-8234-123456789012';
+  const commit = await c.service.review({ kind: 'commit', message: `chore: automation fixture\n\n${marker}`, ...fixture.author });
+  const applied = await c.service.apply(commit.token); assert.match(await c.service.automationCommitMessage(applied.commit), /A3-Automation-Id: 12345678-1234-4234-8234-123456789012/);
+});
+
 test('A3-034: reviewed hunk stage is partial, commit uses only reviewed index, explicit branch leaves HEAD unchanged', native, async (t) => {
   const c = await context(t), changed = Array.from({ length: 40 }, (_, index) => index === 2 || index === 33 ? `changed ${index}` : `line ${index}`).join('\n') + '\n';
   await c.file('notes.md', changed); await c.file('other.md', 'unselected change\n');

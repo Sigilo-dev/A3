@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { LocalProjectSession } from '../../shared/desktop-api';
-import type { GitApplied, GitMountChoice, GitProjectView, GitRequest, GitReviewInput, GitReviewView } from '../../shared/git-operations';
+import type { GitApplied, GitAutomationPolicy, GitAutomationSnapshot, GitMountChoice, GitProjectView, GitRequest, GitReviewInput, GitReviewView } from '../../shared/git-operations';
 import { GithubPublishingPanel } from './GithubPublishingPanel';
 
 export function GitPanel({ active, onChanged, initialMountId, onMountChange }: { active: LocalProjectSession | null; onChanged(): void; initialMountId?: string | null; onMountChange?(mountId: string | null): void }): React.JSX.Element {
@@ -10,6 +10,8 @@ export function GitPanel({ active, onChanged, initialMountId, onMountChange }: {
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [message, setMessage] = useState(''), [name, setName] = useState(''), [email, setEmail] = useState(''), [branch, setBranch] = useState(''), [commit, setCommit] = useState('');
   const [receipt, setReceipt] = useState<GitApplied | null>(null);
+  const [automation, setAutomation] = useState<GitAutomationSnapshot | null>(null), [automationPreview, setAutomationPreview] = useState<readonly { path: string; text: string }[]>([]);
+  const [automationDraft, setAutomationDraft] = useState<GitAutomationPolicy>({ schemaVersion: '1.0.0', mode: 'manual', idleMs: 300_000, branch: 'main', paths: [], messageTemplate: 'chore: update {count} files', authorName: '', authorEmail: '', pushAfterCommit: false });
   const request = useCallback(async (input: GitRequest) => {
     const result = await window.a3?.git(input);
     if (!result) throw new Error('El puente local de Git no está disponible.');
@@ -26,7 +28,11 @@ export function GitPanel({ active, onChanged, initialMountId, onMountChange }: {
     if (selectedMount && selectedMount.status !== 'available') { setView(null); setError(`La raíz del montaje no está disponible (${selectedMount.status}). Relocalízala desde Archivos.`); return; }
     if (selectedMount && !selectedMount.capabilities.git) { setView(null); setError('Git no está concedido para este montaje. Concede la capacidad de Git para esta raíz.'); return; }
     const result = await request({ action: 'load', sessionId: active.sessionId, ...(mountId ? { mountId } : {}) });
-    if ('status' in result) { setView(result); setSelected([]); }
+    if ('status' in result) {
+      setView(result); setSelected([]);
+      const automationState = await request({ action: 'automation-state', sessionId: active.sessionId, ...(mountId ? { mountId } : {}) });
+      if ('policy' in automationState && 'run' in automationState) { setAutomation(automationState); setAutomationDraft(automationState.policy); setSelected([...automationState.policy.paths]); }
+    }
   }, [active, request, mountId]);
   useEffect(() => { void load().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'No se pudo leer Git.')); }, [load]);
   const act = async (operation: () => Promise<void>): Promise<void> => {
@@ -52,6 +58,36 @@ export function GitPanel({ active, onChanged, initialMountId, onMountChange }: {
     const result = await request({ action: 'mount-capability', sessionId: active.sessionId, mountId, granted });
     if ('changed' in result && result.changed) { setNotice(granted ? 'Git quedó concedido para esta raíz.' : 'Git quedó revocado para esta raíz.'); await load(); }
   }); };
+  const saveAutomation = (): void => { if (!active) return; void act(async () => {
+    const policy = { ...automationDraft, branch: automationDraft.branch || view?.status.branch || 'main', paths: [...selected] };
+    const result = await request({ action: 'automation-save', sessionId: active.sessionId, ...(mountId ? { mountId } : {}), policy });
+    if ('saved' in result) {
+      setAutomationDraft(policy); setNotice('Política local guardada para esta raíz. El push conserva una autorización separada y revocable.');
+      const state = await request({ action: 'automation-state', sessionId: active.sessionId, ...(mountId ? { mountId } : {}) }); if ('policy' in state && 'run' in state) setAutomation(state);
+    }
+  }); };
+  const previewAutomation = (): void => { if (!active) return; void act(async () => {
+    const result = await request({ action: 'automation-preview', sessionId: active.sessionId, ...(mountId ? { mountId } : {}) });
+    if ('preview' in result) setAutomationPreview(result.diffs.map((diff) => ({ path: diff.path, text: diff.text })));
+  }); };
+  const resumeAutomation = (): void => { if (!active || mountId) return; void act(async () => {
+    const result = await request({ action: 'automation-resume', sessionId: active.sessionId }); if ('run' in result) setAutomation(result);
+  }); };
+  const previewMatchesSavedPolicy = !!automation && JSON.stringify({ ...automationDraft, paths: [...selected] }) === JSON.stringify(automation.policy);
+  useEffect(() => {
+    if (!active || !automation || automation.policy.mode !== 'auto-after-idle') return;
+    let stopped = false, lastCommit = automation.run.commit;
+    const tick = async (): Promise<void> => {
+      try {
+        const result = await request({ action: 'automation-state', sessionId: active.sessionId, ...(mountId ? { mountId } : {}) });
+        if (stopped || !('run' in result) || !('policy' in result)) return;
+        setAutomation(result);
+        if (result.run.commit && result.run.commit !== lastCommit && ['committed', 'pushed'].includes(result.run.state)) { lastCommit = result.run.commit; onChanged(); const latest = await request({ action: 'load', sessionId: active.sessionId, ...(mountId ? { mountId } : {}) }); if ('status' in latest) setView(latest); }
+      } catch { /* The visible automation state remains available; the next tick retries the status read. */ }
+    };
+    const timer = window.setInterval(() => { void tick(); }, 15_000); void tick();
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [active, automation?.policy.mode, mountId, onChanged, request]);
   const ready = view?.status.state === 'ready';
   return <section className="git-panel" aria-labelledby="git-title">
     <p className="eyebrow">Proyecto A3 · Git local</p><h1 id="git-title">Versiones locales</h1>
@@ -90,6 +126,28 @@ export function GitPanel({ active, onChanged, initialMountId, onMountChange }: {
           <p>Crear una rama conserva la rama activa y el contenido actual.</p><button type="submit">Revisar creación de rama</button>
         </fieldset></form>
       </>}
+      {ready && <section aria-labelledby="git-automation-title" className="git-automation">
+        <h2 id="git-automation-title">Automatización de esta raíz</h2>
+        <p>Solo usa archivos elegidos aquí. La espera comienza cuando cambia su contenido. Los conflictos, otra rama o permisos revocados detienen el lote. No se ejecutan scripts del repositorio.</p>
+        <label>Política<select aria-label="Política de automatización" value={automationDraft.mode} onChange={(event) => setAutomationDraft((value) => ({ ...value, mode: event.target.value as GitAutomationPolicy['mode'], pushAfterCommit: event.target.value === 'auto-after-idle' ? value.pushAfterCommit : false }))}>
+          <option value="manual">Solo manual</option><option value="auto-after-idle">Commit después de inactividad</option>
+        </select></label>
+        <label>Rama permitida<input aria-label="Rama de automatización" value={automationDraft.branch} onChange={(event) => setAutomationDraft((value) => ({ ...value, branch: event.target.value }))} /></label>
+        <label>Espera (minutos)<input aria-label="Espera de automatización" type="number" min={0.5} max={1440} step={0.5} value={automationDraft.idleMs / 60_000} onChange={(event) => setAutomationDraft((value) => ({ ...value, idleMs: Math.round(Number(event.target.value) * 60_000) }))} /></label>
+        <label>Plantilla de mensaje<input aria-label="Plantilla de mensaje" maxLength={512} value={automationDraft.messageTemplate} onChange={(event) => setAutomationDraft((value) => ({ ...value, messageTemplate: event.target.value }))} /></label>
+        {automationDraft.mode === 'auto-after-idle' && <>
+          <label>Autor del commit<input aria-label="Autor automático" required value={automationDraft.authorName} onChange={(event) => setAutomationDraft((value) => ({ ...value, authorName: event.target.value }))} /></label>
+          <label>Email del autor<input aria-label="Email del autor automático" type="email" required value={automationDraft.authorEmail} onChange={(event) => setAutomationDraft((value) => ({ ...value, authorEmail: event.target.value }))} /></label>
+          <label><input type="checkbox" aria-label="Habilitar publicación automática" checked={automationDraft.pushAfterCommit} disabled={!!mountId || !automation?.capabilities.push || !automation?.capabilities.pushCredentialAvailable} onChange={(event) => setAutomationDraft((value) => ({ ...value, pushAfterCommit: event.target.checked }))} /> Habilitar push automático con permiso Git push directo</label>
+          {automationDraft.pushAfterCommit && <label>Destino GitHub exacto<input aria-label="Destino GitHub automático" type="url" required value={automationDraft.destinationUrl ?? ''} placeholder="https://github.com/owner/repository.git" onChange={(event) => setAutomationDraft((value) => ({ ...value, destinationUrl: event.target.value }))} /></label>}
+        </>}
+        <p>Archivos seleccionados: {selected.length ? selected.join(', ') : 'ninguno'}. La selección se guarda junto a la política.</p>
+        <div className="git-actions"><button type="button" disabled={busy || !!review} onClick={saveAutomation}>Guardar política</button><button type="button" className="secondary" disabled={busy || !!review || !previewMatchesSavedPolicy || !automation?.policy.paths.length} onClick={previewAutomation}>Previsualizar diff</button></div>
+        {automation && <p role="status">Estado: {automation.run.state}{automation.run.code ? ` · ${automation.run.code}` : ''}{automation.run.branch ? ` · rama ${automation.run.branch}` : ''}{automation.run.commit ? ` · commit ${automation.run.commit.slice(0, 12)}` : ''} · stage {automation.capabilities.stage ? 'directo' : 'denegado'} · commit {automation.capabilities.commit ? 'directo' : 'denegado'} · permiso push {automation.capabilities.push ? 'directo' : 'denegado'} · credencial GitHub {automation.capabilities.pushCredentialAvailable ? 'guardada' : 'ausente / no compatible en esta raíz'}</p>}
+        {automation?.run.state === 'push-pending' || automation?.run.state === 'blocked' && ['authorization-expired', 'authorization-unavailable', 'remote-unavailable', 'github-unavailable', 'remote-conflict', 'remote-permission-denied'].includes(automation.run.code ?? '') ? <button type="button" disabled={busy || !!review || !!mountId || (!!automation.run.commit && !automation.capabilities.push)} onClick={resumeAutomation}>{automation.run.commit ? 'Reintentar solo este push pendiente' : 'Reintentar tras resolver el bloqueo'}</button> : null}
+        {automation?.run.diffs?.map((diff) => <article key={`run-${diff.path}`}><h3>Diff ejecutado · {diff.path}</h3><pre aria-label={`Diff ejecutado ${diff.path}`}>{diff.text}</pre></article>)}
+        {automationPreview.map((diff) => <article key={diff.path}><h3>{diff.path}</h3><pre aria-label={`Diff propuesto ${diff.path}`}>{diff.text}</pre></article>)}
+      </section>}
       {review && <section className="git-review" aria-labelledby="git-review-title"><h2 id="git-review-title">Revisar {review.kind}</h2>
         <p>Raíz: <code>{review.root}</code> · Rama: {review.branch ?? 'sin rama'}</p>
         {review.message && <p>Mensaje: {review.message}</p>}{review.targetBranch && <p>Rama nueva: {review.targetBranch}</p>}{review.targetCommit && <p>Versión: {review.targetCommit}</p>}

@@ -597,9 +597,10 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
         message: error instanceof Error ? error.message : 'No se pudo pegar el contenido.', recovery: 'El portapapeles no se modificó y el lienzo permanece intacto.' } };
     }
   };
-  const git = new GitProjectController(manager, capabilities, authenticatedActor, getWindow);
+  const git = new GitProjectController(manager, capabilities, authenticatedActor, getWindow, stateDirectory);
   const history = new ProjectHistoryController(manager);
   const github = new GithubProjectController(stateDirectory, manager, capabilities, authenticatedActor, getWindow, git);
+  git.setAutomationPublisher(async (sessionId) => github.automationPublisher(sessionId));
   return {
     manager,
     capabilities,
