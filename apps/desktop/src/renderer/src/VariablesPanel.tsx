@@ -31,7 +31,8 @@ export function VariablesPanel({ project, onChanged }: { project: LocalProjectSe
   }
   async function call(request: VariablesRequest): Promise<ProjectVariablesState> {
     const result = await window.a3?.variables(request); if (!result) throw new Error('El puente local no está disponible.');
-    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message} ${result.error.recovery}`); return result.value;
+    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message} ${result.error.recovery}`);
+    if (!('sets' in result.value)) throw new Error('La operación no devolvió el estado de variables.'); return result.value;
   }
   async function load(): Promise<void> {
     if (!project) return; const generation = ++loadGeneration.current;

@@ -39,10 +39,17 @@ async function run() {
   await set('[data-variable-name-input]', 'demo.bad'); await set('[data-variable-type]', 'number'); await set('[data-variable-value]', '"wrong type"'); await click('[data-variable-save]');
   await waitFor("Boolean(document.querySelector('[data-variable-error]'))"); assert.match(await text('[data-variable-error]'), /incompatible|Tipo|inválid/i);
   assert.equal((await request({ action: 'set', input: { scope: { kind: 'execution' }, variables: [], expectedRevision: null }, query: {} })).ok, false);
+  await click('[data-section="prompts"]'); await waitFor("Boolean(document.querySelector('[aria-label=\"Plantilla Markdown\"]')) && document.querySelector('[aria-label=\"Contexto workspace\"]')?.options.length > 1");
+  await set('[aria-label="Contexto workspace"]', W1); await set('[aria-label="Plantilla Markdown"]', 'Usa {{demo.name}} y revisa {{demo.absent}}.');
+  await set('[aria-label="Variables obligatorias"]', 'demo.absent'); await new Promise((accept) => setTimeout(accept, 100)); await click('button.primary');
+  await waitFor("Boolean(document.querySelector('[aria-label=\"Vista previa exportable\"]'))");
+  const compiled = await js("document.querySelector('[aria-label=\"Vista previa exportable\"]').value");
+  assert.match(compiled, /workspace label/); assert.match(compiled, /A3: variable sin resolver demo\.absent/);
+  assert.equal(await js("document.querySelector('[data-auto-send-allowed]').dataset.autoSendAllowed"), 'false');
   await click('[data-section="canvas"]'); await waitFor("Boolean([...document.querySelectorAll('.canvas-entity-header strong')].find((e)=>e.textContent.includes('workspace label')))");
   await click('[data-section="variables"]'); await waitFor("document.querySelector('[data-variable-effective]')?.textContent.includes('project label')");
   assert.equal((await text('[data-variable-effective]')).includes('temporary only'), false);
   await js("document.querySelector('[data-variable-name-input]').focus()"); assert.equal(await js("document.activeElement.hasAttribute('data-variable-name-input')"), true);
-  console.log('A3_VARIABLES_SMOKE=' + JSON.stringify({ passed: true, checks: ['project variable UI', 'workspace override', 'bound label in two views', 'explicit scope inspector', 'temporary execution is not persisted', 'invalid type feedback', 'strict IPC/no execution writes', 'keyboard focus', 'renderer without Node'] })); win.close();
+  console.log('A3_VARIABLES_SMOKE=' + JSON.stringify({ passed: true, checks: ['project variable UI', 'workspace override', 'bound label in two views', 'explicit scope inspector', 'derived prompt preview with required-variable gate', 'temporary execution is not persisted', 'invalid type feedback', 'strict IPC/no execution writes', 'keyboard focus', 'renderer without Node'] })); win.close();
 }
 void run().catch((error) => { console.error(error); app.exit(2); }); require(entry);

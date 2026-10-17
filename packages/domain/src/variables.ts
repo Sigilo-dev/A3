@@ -7,6 +7,18 @@ export interface EffectiveVariable {
   dependencies: { name: string; scope: VariableSelectorScope }[];
 }
 export interface EffectiveField { name: string; value: JsonValue; valueType: ValueSpec['valueType']; source: 'literal' | 'variable'; variable?: EffectiveVariable; }
+export interface VariableTextIssue {
+  name?: string; detail: string; message: string; required: boolean; offset?: number; line?: number; column?: number;
+}
+export interface VariableTextResolution {
+  /** A derived string; callers must keep the original source unchanged. */
+  text: string;
+  /** Copy/export form with explicit diagnostics when any reference is unresolved. */
+  markedExport: string;
+  variables: EffectiveVariable[];
+  unresolved: VariableTextIssue[];
+  canSendAutomatically: boolean;
+}
 type Lookup = (ref: DocumentRef) => DomainRecord | undefined;
 /** E1 fields that were opaque remain opaque until an explicit versioned edit. */
 export function interpretedVariables(set: VariableSet): Variable[] {
@@ -75,6 +87,80 @@ export function resolveVariable(snapshot: DomainSnapshot, name: string, context:
 export function resolveValidatedVariable(snapshot: DomainSnapshot, name: string, context: VariableContext, lookup: Lookup): Outcome<JsonValue> {
   const result = resolveIndexedVariable(snapshot, name, context, lookup);
   return result.ok ? { ...result, value: result.value.value } : result;
+}
+
+/** Resolves only explicit {{namespace.name}} tokens into a derived view. It never edits source text. */
+export function resolveVariableText(snapshot: DomainSnapshot, source: string, context: VariableContext = {}, requiredNames: readonly string[] = []): VariableTextResolution {
+  const unresolved: VariableTextIssue[] = [], used = new Map<string, EffectiveVariable>();
+  if (typeof source !== 'string' || source.length > 2 * 1024 * 1024 || !isJson(context) || !Array.isArray(requiredNames) ||
+    requiredNames.length > 256 || Array.from(requiredNames).some((name) => typeof name !== 'string' || !NAMESPACE_PATTERN.test(name))) {
+    const issue: VariableTextIssue = { detail: 'variable-template-invalid', message: 'La plantilla o su contexto supera el contrato de resolución.', required: true };
+    return { text: String(source ?? ''), markedExport: `> **A3: resolución de variables bloqueada**\n> ${issue.message}\n\n${String(source ?? '')}`, variables: [], unresolved: [issue], canSendAutomatically: false };
+  }
+  const required = new Set(requiredNames);
+  let lookup: Lookup;
+  try { lookup = indexSnapshot(snapshot); }
+  catch {
+    const issue: VariableTextIssue = { detail: 'variable-invalid', message: 'El snapshot del proyecto no se puede indexar para compilar.', required: true };
+    return { text: source, markedExport: `> **A3: resolución de variables bloqueada**\n> ${issue.message}\n\n${source}`, variables: [], unresolved: [issue], canSendAutomatically: false };
+  }
+  const cache = new Map<string, Outcome<EffectiveVariable>>();
+  const effective = (name: string): Outcome<EffectiveVariable> => {
+    let value = cache.get(name); if (!value) { value = resolveIndexedVariable(snapshot, name, context, lookup); cache.set(name, value); }
+    return value;
+  };
+  const loc = (value: string, offset: number): Pick<VariableTextIssue, 'offset' | 'line' | 'column'> => {
+    const before = value.slice(0, offset), lines = before.split('\n'); return { offset, line: lines.length, column: lines.at(-1)!.length + 1 };
+  };
+  let tokenCount = 0;
+  const render = (value: string, active: Set<string>, origin?: string): string => {
+    const token = /\{\{([^{}]*)\}\}/g; let result = '', last = 0, match: RegExpExecArray | null;
+    while ((match = token.exec(value))) {
+      result += value.slice(last, match.index);
+      const name = match[1]!.trim(), position = loc(value, match.index);
+      if (++tokenCount > 10000) {
+        unresolved.push({ ...(origin ? { name: origin } : {}), detail: 'variable-template-token-limit', message: 'La plantilla supera el límite seguro de 10 000 referencias.', required: true, ...position });
+        return result + value.slice(match.index);
+      }
+      if (!NAMESPACE_PATTERN.test(name)) {
+        unresolved.push({ ...(origin ? { name: origin } : {}), detail: 'variable-template-syntax-invalid', message: 'El token debe usar un nombre con namespace, por ejemplo {{proyecto.nombre}}.', required: true, ...position });
+        result += `[A3: variable inválida ${match[0]}]`; last = token.lastIndex; continue;
+      }
+      const resolved = effective(name);
+      if (!resolved.ok) {
+        const issue = resolved.diagnostics[0]!;
+        unresolved.push({ name, detail: issue.detail, message: issue.message, required: required.has(name), ...position });
+        result += `[A3: variable sin resolver ${name} · ${issue.detail}]`; last = token.lastIndex; continue;
+      }
+      const identity = `${resolved.value.scope.kind}:${resolved.value.scope.kind === 'execution' ? '' : resolved.value.scope.ownerId.toLowerCase()}:${name}`;
+      if (active.size >= 64) {
+        unresolved.push({ name, detail: 'variable-depth-limit', message: 'La cadena de interpolación supera el límite de 64 niveles.', required: required.has(name), ...position });
+        result += `[A3: límite de profundidad ${name}]`; last = token.lastIndex; continue;
+      }
+      if (active.has(identity)) {
+        unresolved.push({ name, detail: 'variable-cycle', message: `Se detectó una referencia cíclica al resolver ${name}.`, required: required.has(name), ...position });
+        result += `[A3: ciclo de variable ${name}]`; last = token.lastIndex; continue;
+      }
+      used.set(identity, resolved.value);
+      const replacement = typeof resolved.value.value === 'string' ? render(resolved.value.value, new Set([...active, identity]), name) : JSON.stringify(resolved.value.value);
+      result += replacement; last = token.lastIndex;
+      if (result.length > 4 * 1024 * 1024) {
+        unresolved.push({ ...(origin ? { name: origin } : {}), detail: 'variable-template-output-limit', message: 'La salida compilada supera el límite seguro de 4 MiB.', required: true, ...position });
+        return result.slice(0, 4 * 1024 * 1024);
+      }
+    }
+    return result + value.slice(last);
+  };
+  const text = render(source, new Set());
+  // Required declarations are checked even when the template accidentally omits their token.
+  for (const name of required) {
+    const resolved = effective(name);
+    if (resolved.ok) used.set(`${resolved.value.scope.kind}:${resolved.value.scope.kind === 'execution' ? '' : resolved.value.scope.ownerId.toLowerCase()}:${name}`, resolved.value);
+    else if (!unresolved.some((issue) => issue.name === name && issue.required)) unresolved.push({ name, detail: resolved.diagnostics[0]?.detail ?? 'variable-missing',
+      message: resolved.diagnostics[0]?.message ?? `La variable obligatoria ${name} no se resolvió.`, required: true });
+  }
+  const markedExport = unresolved.length ? `> **A3: exportación con variables sin resolver**\n> ${unresolved.map((issue) => `- ${issue.name ?? 'plantilla'} · ${issue.detail}: ${issue.message}`).join('\n> ')}\n\n${text}` : text;
+  return { text, markedExport, variables: [...used.values()], unresolved, canSendAutomatically: !unresolved.some((issue) => issue.required) };
 }
 function resolveIndexedVariable(snapshot: DomainSnapshot, name: string, context: VariableContext, lookup: Lookup, explicit?: VariableSelectorScope): Outcome<EffectiveVariable> {
   if (typeof name !== 'string' || !NAMESPACE_PATTERN.test(name) || !isJson(context) || explicit !== undefined && !validVariableScope(explicit, true)) return fail('variable-invalid', 'Nombre o contexto de variables inválido.');

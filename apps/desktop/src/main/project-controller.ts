@@ -357,7 +357,8 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       const hydrated: CanvasExportWorkspace[] = [];
       let embeddedBytes = 0;
       for (const source of sources) {
-        const content: Record<string, { text?: string; dataUrl?: string }> = {};
+        const content: Record<string, { text?: string; dataUrl?: string }> = {}, resolvedContentByEntity: Record<string, { text?: string }> = {}, variableDiagnostics: string[] = [];
+        let entities = [...source.entities];
         const placementIds = new Set<string>(), groupMap = new Map(source.groups.map((group) => [group.id.toLowerCase(), group]));
         const addGroup = (id: string, seen = new Set<string>()): void => {
           const key = id.toLowerCase(); if (seen.has(key)) return; seen.add(key);
@@ -374,20 +375,33 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           }
         }
         for (const entity of source.entities) {
-          if (!entity.contentResourceId || !source.placements.some((p) => p.entityId.toLowerCase() === entity.id.toLowerCase() && placementIds.has(p.id.toLowerCase()))) continue;
+          const included = source.placements.some((p) => p.entityId.toLowerCase() === entity.id.toLowerCase() && placementIds.has(p.id.toLowerCase()));
+          if (!included) continue;
           checkCancelled();
+          variableDiagnostics.push(...(entity.displayDiagnostics ?? []).map((message) => `${entity.title}: ${message}`));
+          const description = entity.displayProperties?.['a3.content.description'] ?? entity.displayProperties?.description ?? entity.displayProperties?.body ??
+            entity.properties.description ?? entity.properties.body ?? entity.properties['a3.content.description'];
+          const exportBody = entity.exportBody ?? (typeof description === 'string' ? description : undefined);
+          const exportTitle = entity.exportTitle ?? entity.displayTitle ?? entity.title;
+          entities = entities.map((item) => item.id.toLowerCase() === entity.id.toLowerCase() ? { ...item, exportTitle, ...(exportBody !== undefined ? { exportBody } : {}) } : item);
+          if (!entity.contentResourceId) continue;
           try {
             const preview = await manager.loadCanvasContent(request.sessionId, source.workspaceId, entity.id, entity.contentResourceId, 'preview');
             const key = entity.contentResourceId.toLowerCase();
-            if (preview.text !== null) content[key] = { text: preview.text };
-            else if (preview.bytes && /^image\/(?:png|jpeg|gif|webp|avif|bmp)$/.test(preview.mediaType ?? '') && embeddedBytes + preview.bytes.byteLength <= 20 * 1024 * 1024) {
+            if (preview.text !== null) {
+              content[key] = { text: preview.text };
+              if (['a3.core.page', 'a3.content.short-text', 'a3.content.markdown'].includes(entity.type)) {
+                resolvedContentByEntity[entity.id.toLowerCase()] = { text: preview.text };
+                variableDiagnostics.push(...(preview.variableDiagnostics ?? []).map((message) => `${entity.title}: ${message}`));
+              }
+            } else if (preview.bytes && /^image\/(?:png|jpeg|gif|webp|avif|bmp)$/.test(preview.mediaType ?? '') && embeddedBytes + preview.bytes.byteLength <= 20 * 1024 * 1024) {
               embeddedBytes += preview.bytes.byteLength;
               content[key] = { dataUrl: `data:${preview.mediaType};base64,${Buffer.from(preview.bytes).toString('base64')}` };
             }
           } catch { /* Missing, denied or unsupported media stays represented by its safe poster card. */ }
           await new Promise<void>((resolve) => setImmediate(resolve));
         }
-        hydrated.push({ ...source, content });
+        hydrated.push({ ...source, entities, content, resolvedContentByEntity, variableDiagnostics });
       }
       checkCancelled();
       const rendered = await renderCanvasExportSvgAsync(hydrated, { scope: request.scope, selection: request.selection,
@@ -563,8 +577,9 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
     async handleVariables(value: unknown): Promise<VariablesResult> {
       if (!validVariablesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de variables inválida.', recovery: 'Revisa los campos y el ámbito; ejecución nunca se guarda.' } };
       try {
-        const state = value.action === 'load' ? await manager.loadProjectVariables(value.sessionId, value.query) : value.action === 'set' ?
-          await manager.setProjectVariables(value.sessionId, value.input, value.query) : await manager.bindProjectVariable(value.sessionId, value.entityId, value.expectedRevision, value.field, value.binding, value.query);
+        const state = value.action === 'load' ? await manager.loadProjectVariables(value.sessionId, value.query) : value.action === 'compile' ?
+          await manager.resolveProjectVariableText(value.sessionId, value.source, value.query, value.requiredNames) : value.action === 'set' ?
+            await manager.setProjectVariables(value.sessionId, value.input, value.query) : await manager.bindProjectVariable(value.sessionId, value.entityId, value.expectedRevision, value.field, value.binding, value.query);
         return { ok: true, value: state };
       } catch (error) { return { ok: false, error: { code: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'VARIABLES_FAILED',
         message: error instanceof Error ? error.message : 'No se pudo completar la operación de variables.', recovery: 'El borrador y los archivos se conservan. Recarga para comparar revisiones, revisa permisos y tipos.' } }; }

@@ -1,0 +1,7 @@
+{
+  "basic": "# {{demo.name}}\nBackend: {{demo.backend}} · enabled={{demo.enabled}} · ports={{demo.ports}}",
+  "nested": "{{demo.greeting}}",
+  "missingRequired": "Use {{demo.absent}} before implementation.",
+  "malformed": "Value {{not-qualified}} stays visibly diagnosed.",
+  "cycle": "{{demo.loop}}"
+}

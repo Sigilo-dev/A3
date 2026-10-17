@@ -6,6 +6,7 @@ import { LocalProjectManager, sha256 } from '../dist/index.js';
 import { scratch, fixtureHost, E1, W1 } from './fixture.mjs';
 const W2 = '00000000-0000-4000-8000-000000000007';
 const scenario = JSON.parse(await readFile(new URL('../../../fixtures/e4/variables/scenario.json', import.meta.url), 'utf8'));
+const templateCases = JSON.parse(await readFile(new URL('../../../fixtures/e4/variables/template-cases.json', import.meta.url), 'utf8'));
 const windows = { skip: process.platform !== 'win32' };
 async function project(t) {
   const { root, tempRoot } = await scratch(t), host = await fixtureHost(root, 'typed-variables');
@@ -80,6 +81,42 @@ test('A3-018: query execution values and bindings cannot leak into a different p
   const invalid = await c.manager.loadProjectVariables(c.sessionId, { referenceScope: { kind: 'project', ownerId: c.projectId }, executionVariables: [{ name: 'demo.bad', valueType: 'number', source: { kind: 'literal', value: 'text' } }] });
   assert.ok(invalid.executionDiagnostics.some((d) => d.detail === 'variable-type-invalid'));
 });
+
+test('A3-018/A3-019: project compiler resolves by selected workspace, marks unresolved exports, and never writes source', windows, async (t) => {
+  const c = await project(t), { manager } = c;
+  await put(c, { kind: 'project', ownerId: c.projectId }, scenario.project);
+  await put(c, { kind: 'workspace', ownerId: W1 }, scenario.firstWorkspace);
+  await put(c, { kind: 'workspace', ownerId: W2 }, scenario.secondWorkspace);
+  const resource = JSON.parse(await readFile(join(c.root, '.a3/resources/00000000-0000-4000-8000-000000000004.json'), 'utf8'));
+  const sourceFile = join(c.root, resource.path), originalSource = await readFile(sourceFile);
+  const variablesFile = join(c.root, '.a3/variables/project.json'), originalVariables = await readFile(variablesFile);
+  const first = await manager.resolveProjectVariableText(c.sessionId, templateCases.basic, { workspaceId: W1, entityId: E1 });
+  const second = await manager.resolveProjectVariableText(c.sessionId, templateCases.basic, { workspaceId: W2, entityId: E1 });
+  assert.match(first.text, /first workspace/); assert.match(second.text, /second workspace/);
+  assert.equal(first.variables.find((item) => item.name === 'demo.name').scope.kind, 'workspace');
+  const missing = await manager.resolveProjectVariableText(c.sessionId, templateCases.missingRequired, { workspaceId: W1, entityId: E1 }, ['demo.absent']);
+  assert.equal(missing.canSendAutomatically, false); assert.match(missing.markedExport, /A3: variable sin resolver demo\.absent/);
+  const ambiguous = await manager.resolveProjectVariableText(c.sessionId, '{{demo.name}}', { entityId: E1 }, ['demo.name']);
+  assert.equal(ambiguous.unresolved[0].detail, 'variable-context-required');
+  assert.deepEqual(await readFile(sourceFile), originalSource); assert.deepEqual(await readFile(variablesFile), originalVariables);
+});
+
+test('A3-018/A3-019: canvas Markdown preview and deterministic SVG export use resolved copies, preserving the Markdown bytes', windows, async (t) => {
+  const c = await project(t), descriptor = JSON.parse(await readFile(join(c.root, '.a3/resources/00000000-0000-4000-8000-000000000004.json'), 'utf8'));
+  await c.manager.closeActive(c.sessionId); const resourcePath = join(c.root, descriptor.path), source = Buffer.from('# {{demo.name}}\n\n{{demo.absent}}');
+  await writeFile(resourcePath, source); c.sessionId = (await c.manager.openFolder(c.root)).active.sessionId;
+  await put(c, { kind: 'project', ownerId: c.projectId }, scenario.project);
+  const preview = await c.manager.loadCanvasContent(c.sessionId, W1, E1, '00000000-0000-4000-8000-000000000004');
+  assert.match(preview.text, /# project label/); assert.match(preview.text, /A3: variable sin resolver demo\.absent/);
+  assert.equal(preview.variableDiagnostics?.length, 1); assert.deepEqual(await readFile(resourcePath), source);
+  const workspace = await c.manager.loadCanvasExportWorkspaces(c.sessionId, W1, 'diagram');
+  const { renderCanvasExportSvg } = await import('../dist/canvas-export.js');
+  const rendered = renderCanvasExportSvg([{ ...workspace[0], resolvedContentByEntity: { [E1.toLowerCase()]: { text: preview.text } }, variableDiagnostics: preview.variableDiagnostics }],
+    { scope: 'diagram', selection: { placements: [], groups: [], drawings: [], edges: [] }, background: 'opaque', margin: 8, scale: 1 });
+  assert.match(rendered.svg, /project label/); assert.ok(rendered.diagnostics.some((message) => message.includes('demo.absent · variable-missing')));
+  assert.deepEqual(await readFile(resourcePath), source);
+});
+
 test('A3-048: a corrupt or unknown-version variable set is diagnosed, never treated as an empty writable scope', windows, async (t) => {
   const c = await project(t); await put(c, { kind: 'project', ownerId: c.projectId }, scenario.project);
   const path = join(c.root, '.a3/variables/project.json');

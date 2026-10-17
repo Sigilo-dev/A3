@@ -5,6 +5,12 @@ body { margin: 0; }
 .variables-panel h1 { font-size: 32px; }
 .variables-panel h2 { margin-top: 28px; font-size: 19px; }
 .variables-context, .variables-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.prompt-compiler { max-width: 1100px; }
+.prompt-compiler textarea { width: 100%; resize: vertical; font: 13px/1.55 ui-monospace, Consolas, monospace; }
+.prompt-source, .prompt-result textarea { min-height: 180px; }
+.prompt-result { margin-top: 22px; padding: 16px; border: 1px solid #394b58; border-radius: 8px; background: #111a20; }
+.prompt-actions { display: flex; gap: 10px; margin-top: 10px; }
+.canvas-variable-warning { color: #ffd38a; font-size: 11px; overflow-wrap: anywhere; }
 .variables-panel select, .variables-panel textarea { display: block; width: 100%; min-width: 0; font: inherit; padding: 9px; border: 1px solid #41515e; border-radius: 5px; background: #10151b; color: #e8edf0; }
 .variables-panel textarea { min-height: 70px; }
 .variables-panel :is(select, textarea, button):focus-visible { outline: 2px solid #c3ed82; outline-offset: 2px; }

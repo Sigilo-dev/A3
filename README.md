@@ -13,6 +13,7 @@ E3-B2 incorpora el modelo entidad–relación separado de UML: tablas, campos, c
 E3-G3 añade conversión local de audio/video con FFmpeg/ffprobe opcionales verificados, cinco perfiles comprobados y salidas nuevas confirmadas por el escritor. Consulta [configuración, pruebas y límites](docs/e3/audio-video-conversion.md) y la [evidencia consolidada E3](docs/e3/evidence.md).
 
 E4-A1 añade variables tipadas por proyecto/workspace/entidad/ejecución, referencias por ID y bindings declarados con inspector de valor y ámbito efectivo. Consulta [contrato 1.1, pruebas y límites](docs/e4/typed-variables.md).
+E4-A2 resuelve `{{namespace.nombre}}` en vistas y previews de compilación sin reescribir fuentes, con diagnósticos y bloqueo de envío automático para variables obligatorias pendientes. Consulta [resolución, pruebas y límites](docs/e4/variable-resolution-and-compilation.md).
 
 La especificación y los prompts de planificación se mantienen localmente y no se publican. E0-A aporta contratos, JSON Schemas y fixtures comprobables, sin UI ni servicios de producción.
 

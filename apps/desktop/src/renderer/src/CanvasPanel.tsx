@@ -122,6 +122,7 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
     <NodeResizer isVisible={selected && data.canWrite && data.tool === 'select' && data.placement.style['a3.ui.locked'] !== true} minWidth={180} minHeight={130} color="#c3ed82"
       onResizeEnd={(_, size) => data.onResizeEnd(data.placement.id, { x: size.x, y: size.y }, { width: size.width, height: size.height })} />
     <header className="canvas-entity-header"><strong>{data.entity.displayTitle ?? (data.entity.title || data.entity.type)}{data.placement.style['a3.ui.locked'] === true ? ' · Bloqueado' : ''}</strong><small>{data.entity.type}@{data.entity.typeVersion}</small></header>
+    {data.entity.displayDiagnostics && data.entity.displayDiagnostics.length > 0 && <p className="canvas-variable-warning" role="status" title={data.entity.displayDiagnostics.join('\n')}>Variable sin resolver · abre Variables para revisar</p>}
     {!data.entity.typeAvailable && <p className="canvas-fallback-label">Tipo o paquete no instalado · propiedades conservadas</p>}
     <div className="canvas-entity-body nodrag nopan nowheel">
       <UmlNodeBody entity={data.entity} />

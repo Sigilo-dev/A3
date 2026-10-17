@@ -9,7 +9,7 @@ import { STRUCTURIZR_DSL_SOURCE_TYPE, STRUCTURIZR_JSON_SOURCE_TYPE } from '@a3/d
 import { StructurizrSourceRenderer } from './StructurizrSourceRenderer';
 
 function textProperty(entity: CanvasEntitySummary, key: string): string {
-  const value = entity.properties[key];
+  const value = entity.displayProperties?.[key] ?? entity.properties[key];
   return typeof value === 'string' ? value : '';
 }
 
@@ -43,7 +43,7 @@ export function CanvasContentBody({ entity, placementId, placementStyle, diagram
   const description = textProperty(entity, 'a3.content.description');
   const altText = textProperty(entity, 'a3.content.alt-text');
   const language = textProperty(entity, 'a3.content.language');
-  const title = entity.title || entity.type;
+  const title = entity.displayTitle ?? (entity.title || entity.type);
   const unavailable = !resource ? 'Falta el descriptor del recurso; el contenido se conserva para reparación.' :
     preview?.state === 'unavailable' ? 'Recurso no disponible o sin permiso. El descriptor se conserva.' :
     preview?.state === 'too-large' ? 'El recurso supera el límite seguro de vista previa; el original permanece intacto.' : '';
@@ -116,6 +116,7 @@ export function CanvasContentBody({ entity, placementId, placementStyle, diagram
   if (markdown || shortText || code || drawing) return <section className="canvas-content-card" data-content-renderer={drawing ? 'drawing' : code ? 'code' : shortText ? 'short-text' : 'markdown'}>
     <div className="canvas-content-heading"><strong>{title}</strong>{code && language && <small>{language}</small>}</div>
     {description && <p>{description}</p>}
+    {preview?.variableDiagnostics && preview.variableDiagnostics.length > 0 && <p className="canvas-variable-warning" role="status">{preview.variableDiagnostics.join(' · ')}</p>}
     {text !== null ? drawing ? <DrawingAssetPreview source={text} /> : <pre className={`canvas-content-preview${code ? ' is-code' : ''}`}>{text.slice(0, markdown ? 1800 : 1400)}</pre> :
       <p className="canvas-content-state">{unavailable || (preview?.state === 'too-large' ? 'Contenido extenso; el original está intacto.' : preview?.state === 'binary' ? 'El recurso no es texto UTF-8.' :
         resource?.kind === 'remote-url' ? 'Referencia URL conservada; el origen no se consulta automáticamente.' : 'Vista previa disponible cuando el nodo está visible.')}</p>}

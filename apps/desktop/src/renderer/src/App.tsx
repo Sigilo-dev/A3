@@ -10,6 +10,7 @@ import type { FocusWorkspaceHandle } from './FocusWorkspace';
 const FocusWorkspace = lazy(() => import('./FocusWorkspace').then((module) => ({ default: module.FocusWorkspace })));
 const CodeEditorDialog = lazy(() => import('./CodeEditor').then((module) => ({ default: module.CodeEditorDialog })));
 const VariablesPanel = lazy(() => import('./VariablesPanel').then((module) => ({ default: module.VariablesPanel })));
+const PromptCompilerPanel = lazy(() => import('./PromptCompilerPanel').then((module) => ({ default: module.PromptCompilerPanel })));
 
 const sections = [
   ['projects', 'Proyectos', 'Inicio y selección de proyectos locales.'],
@@ -116,7 +117,7 @@ export function App(): React.JSX.Element {
     <main id="content" className="content" tabIndex={-1}>
       <div className="breadcrumb">A3 <span>/</span> {section[1]}</div>
       {projects?.restoreNotice && <p role="status">{projects.restoreNotice}</p>}
-      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} beforeSwitch={beforeProjectSwitch} /> : active === 'canvas' ? !projects?.active && <p>Abre un proyecto para restaurar sus vistas.</p> : active === 'files' ? <FileExplorerPanel active={projects?.active} onOpenCode={openCode} contentVersion={contentVersion} onChanged={codeSaved} /> : active === 'gallery' ? <MediaGalleryPanel project={projects?.active ?? null} onOpenWorkspace={openGalleryWorkspace} onShowPlacement={showGalleryPlacement} /> : active === 'variables' ? <Suspense fallback={<p>Cargando variables…</p>}><VariablesPanel key={projects?.active?.sessionId} project={projects?.active ?? null} onChanged={codeSaved} /></Suspense> : active === 'preferences' ? <><ShortcutPreferences /><DiagramStylePreferences active={projects?.active ?? null} /></> : <><section className="intro" aria-labelledby="section-title">
+      {active === 'projects' ? <ProjectsPanel state={projects} onChange={acceptProjects} beforeSwitch={beforeProjectSwitch} /> : active === 'canvas' ? !projects?.active && <p>Abre un proyecto para restaurar sus vistas.</p> : active === 'files' ? <FileExplorerPanel active={projects?.active} onOpenCode={openCode} contentVersion={contentVersion} onChanged={codeSaved} /> : active === 'gallery' ? <MediaGalleryPanel project={projects?.active ?? null} onOpenWorkspace={openGalleryWorkspace} onShowPlacement={showGalleryPlacement} /> : active === 'variables' ? <Suspense fallback={<p>Cargando variables…</p>}><VariablesPanel key={projects?.active?.sessionId} project={projects?.active ?? null} onChanged={codeSaved} /></Suspense> : active === 'prompts' ? <Suspense fallback={<p>Cargando compilador…</p>}><PromptCompilerPanel key={projects?.active?.sessionId} project={projects?.active ?? null} /></Suspense> : active === 'preferences' ? <><ShortcutPreferences /><DiagramStylePreferences active={projects?.active ?? null} /></> : <><section className="intro" aria-labelledby="section-title">
         <p className="eyebrow">Un lugar para tus ideas</p>
         <h1 id="section-title">{section[1]}</h1>
         <p className="lead">{section[2]}</p>
@@ -128,7 +129,7 @@ export function App(): React.JSX.Element {
         controllerRef={focus} onOpenCode={openCode} contentVersion={contentVersion} onSaved={codeSaved} onProjectsChanged={() => {
           void window.a3?.projects({ action: 'list' }).then((result) => { if (result.ok) acceptProjects(result.value); else setError(result.error.message); });
         }} /></Suspense>}
-      {active !== 'projects' && active !== 'canvas' && active !== 'gallery' && active !== 'variables' && <section className="foundation" aria-labelledby="foundation-title">
+      {active !== 'projects' && active !== 'canvas' && active !== 'gallery' && active !== 'variables' && active !== 'prompts' && <section className="foundation" aria-labelledby="foundation-title">
         <div><p className="eyebrow">Primer paso</p><h2 id="foundation-title">Una base común</h2></div>
         <p>Explora las secciones desde la barra izquierda. Esta entrega prepara la ventana y la comunicación de escritorio.</p>
         <button className="secondary" onClick={() => setActive('preferences')}>Ver Preferencias <span aria-hidden="true">↗</span></button>

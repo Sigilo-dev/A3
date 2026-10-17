@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { defaultRegistry, resolveEffectiveVariable, resolveEntityField, findNodeType, validateSnapshot } from '../dist/src/index.js';
+import { defaultRegistry, resolveEffectiveVariable, resolveEntityField, resolveVariableText, findNodeType, validateSnapshot } from '../dist/src/index.js';
 import { fixture, variableSet, find, literal, E1, W1, W2, R1, id, run, success, rejection, context } from './fixture.mjs';
 const scenario = JSON.parse(await readFile(new URL('../../../fixtures/e4/variables/scenario.json', import.meta.url), 'utf8'));
+const templateCases = JSON.parse(await readFile(new URL('../../../fixtures/e4/variables/template-cases.json', import.meta.url), 'utf8'));
 function state() { const s = fixture(), projectId = s.records.find((r) => r.kind === 'project').value.projectId;
   const record = variableSet({ kind: 'project', ownerId: projectId }, structuredClone(scenario.project)); record.value.schemaVersion = '1.1.0';
   s.records.push(record); return { s, projectId }; }
@@ -74,4 +75,51 @@ test('E4 format: E1 source.scope stays opaque until an explicit 1.1 edit; removi
 test('future variable documents cannot be interpreted by the pure resolver', () => {
   const { s } = state(); s.records.find((r) => r.kind === 'variable-set').value.schemaVersion = '2.0.0';
   assert.equal(resolveEffectiveVariable(s, 'demo.name').diagnostics[0].detail, 'variable-version-unsupported');
+});
+
+test('A3-018/A3-019: template resolution is a derived view with scope provenance and structured values', () => {
+  const { s } = state(), source = templateCases.basic, before = structuredClone(s);
+  const result = resolveVariableText(s, source);
+  assert.equal(result.text, '# project label\nBackend: rust · enabled=true · ports=[80,443]');
+  assert.equal(result.canSendAutomatically, true); assert.equal(result.unresolved.length, 0);
+  assert.deepEqual(result.variables.map((item) => item.name), ['demo.name', 'demo.backend', 'demo.enabled', 'demo.ports']);
+  assert.ok(result.variables.every((item) => item.scope.kind === 'project')); assert.deepEqual(s, before);
+});
+
+test('A3-018/A3-019: nested text variables resolve without changing their source and detect interpolation cycles', () => {
+  const { s, projectId } = state(), record = find(s, 'variable-set', projectId);
+  record.value.variables.push({ name: 'demo.greeting', valueType: 'string', source: { kind: 'literal', value: 'Hola, {{demo.name}}' } },
+    { name: 'demo.loop', valueType: 'string', source: { kind: 'literal', value: '{{demo.loop}}' } });
+  record.value.schemaVersion = '1.1.0'; const before = structuredClone(s);
+  const nested = resolveVariableText(s, templateCases.nested);
+  assert.equal(nested.text, 'Hola, project label'); assert.deepEqual(nested.variables.map((item) => item.name), ['demo.greeting', 'demo.name']);
+  const cycle = resolveVariableText(s, templateCases.cycle, {}, ['demo.loop']);
+  assert.match(cycle.text, /ciclo de variable demo\.loop/); assert.equal(cycle.canSendAutomatically, false);
+  assert.equal(cycle.unresolved[0].detail, 'variable-cycle'); assert.deepEqual(s, before);
+});
+
+test('A3-018/A3-019: required unresolved references block automatic sending while export includes diagnostics', () => {
+  const { s } = state(), before = structuredClone(s), result = resolveVariableText(s, templateCases.missingRequired, {}, ['demo.absent']);
+  assert.equal(result.canSendAutomatically, false); assert.equal(result.unresolved[0].detail, 'variable-missing');
+  assert.match(result.markedExport, /exportación con variables sin resolver/); assert.match(result.markedExport, /A3: variable sin resolver demo\.absent/);
+  assert.equal(result.unresolved[0].line, 1); assert.ok(result.unresolved[0].column > 1); assert.deepEqual(s, before);
+});
+
+test('A3-018: malformed token and ambiguous entity context are diagnosed and visibly marked', () => {
+  const { s } = state(); s.records.push(variableSet({ kind: 'workspace', ownerId: W1 }, scenario.firstWorkspace), variableSet({ kind: 'workspace', ownerId: W2 }, scenario.secondWorkspace));
+  const malformed = resolveVariableText(s, templateCases.malformed);
+  assert.equal(malformed.unresolved[0].detail, 'variable-template-syntax-invalid'); assert.equal(malformed.canSendAutomatically, false);
+  const ambiguous = resolveVariableText(s, '{{demo.name}}', { entityId: E1 }, ['demo.name']);
+  assert.equal(ambiguous.unresolved[0].detail, 'variable-context-required'); assert.equal(ambiguous.canSendAutomatically, false);
+});
+
+test('A3-018/A3-019: compiler reports alias cycles and invalid declarations; optional missing values stay marked', () => {
+  const { s, projectId } = state(), record = find(s, 'variable-set', projectId);
+  record.value.variables.push({ name: 'demo.a', valueType: 'string', source: { kind: 'reference', name: 'demo.b' } },
+    { name: 'demo.b', valueType: 'string', source: { kind: 'reference', name: 'demo.a' } });
+  const aliasCycle = resolveVariableText(s, '{{demo.a}}', {}, ['demo.a']); assert.equal(aliasCycle.unresolved[0].detail, 'variable-cycle');
+  const optional = resolveVariableText(s, '{{demo.optional}}'); assert.equal(optional.canSendAutomatically, true); assert.match(optional.markedExport, /variable sin resolver demo\.optional/);
+  const invalid = structuredClone(s); find(invalid, 'variable-set', projectId).value.variables.find((item) => item.name === 'demo.name').source.value = 9;
+  const invalidValue = resolveVariableText(invalid, '{{demo.name}}', {}, ['demo.name']);
+  assert.equal(invalidValue.unresolved[0].detail, 'variable-type-invalid'); assert.equal(invalidValue.canSendAutomatically, false);
 });

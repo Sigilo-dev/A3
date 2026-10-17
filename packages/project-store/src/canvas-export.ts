@@ -15,7 +15,11 @@ export interface CanvasExportOptions {
   background: 'transparent' | 'opaque' | 'project'; margin: number; scale: number;
 }
 export interface CanvasExportContent { text?: string; dataUrl?: string; }
-export interface CanvasExportWorkspace extends LocalCanvasWorkspace { content?: Readonly<Record<string, CanvasExportContent>>; }
+export interface CanvasExportWorkspace extends LocalCanvasWorkspace {
+  content?: Readonly<Record<string, CanvasExportContent>>;
+  resolvedContentByEntity?: Readonly<Record<string, CanvasExportContent>>;
+  variableDiagnostics?: readonly string[];
+}
 export interface CanvasExportBounds { x: number; y: number; width: number; height: number; }
 export interface CanvasExportResult { svg: string; width: number; height: number; bounds: CanvasExportBounds; rasterized: string[]; diagnostics: string[]; }
 export interface PdfPagePlan { index: number; total: number; bounds: CanvasExportBounds; }
@@ -78,7 +82,7 @@ export function renderCanvasExportSvg(workspaces: readonly CanvasExportWorkspace
   if (!finite(options.margin) || options.margin < 0 || options.margin > 500 || !finite(options.scale) || options.scale < 0.1 || options.scale > 4) throw new Error('Margen o escala fuera del rango admitido.');
   const itemCount = workspaces.reduce((sum, workspace) => sum + workspace.placements.length + workspace.visualEdges.length + workspace.drawings.length, 0);
   if (itemCount > 15000) throw new Error('El diagrama excede el límite local de 15 000 primitivas. Divide el alcance en grupos o workspaces para exportar por partes.');
-  const diagnostics: string[] = [], rasterized: string[] = [], layers: string[] = [], allPoints: { x: number; y: number }[] = [];
+  const diagnostics: string[] = workspaces.flatMap((workspace) => workspace.variableDiagnostics ?? []), rasterized: string[] = [], layers: string[] = [], allPoints: { x: number; y: number }[] = [];
   let workspaceOffset = 0;
   for (const workspace of workspaces) {
     const picked = selectedIds(workspace, options), itemById = new Map(workspace.entities.map((entity) => [entity.id.toLowerCase(), entity]));
@@ -152,7 +156,7 @@ export function renderCanvasExportSvg(workspaces: readonly CanvasExportWorkspace
       const left = x(placement.position.x), top = placement.position.y, width = placement.size.width, height = placement.size.height;
       const fill = options.background === 'project' ? workspace.diagramStyle.colors?.secondary ?? '#f8fafc' : '#ffffff';
       const border = workspace.diagramStyle.colors?.line ?? '#64748b', color = workspace.diagramStyle.colors?.text ?? '#1e293b';
-      const content = entity.contentResourceId ? workspace.content?.[entity.contentResourceId.toLowerCase()] ?? workspace.content?.[entity.contentResourceId] : undefined;
+      const content = workspace.resolvedContentByEntity?.[entity.id.toLowerCase()] ?? (entity.contentResourceId ? workspace.content?.[entity.contentResourceId.toLowerCase()] ?? workspace.content?.[entity.contentResourceId] : undefined);
       const umlData = workspace.uml.elements.find((item) => item.id.toLowerCase() === entity.id.toLowerCase())?.data;
       const erData = workspace.er.elements.find((item) => item.id.toLowerCase() === entity.id.toLowerCase())?.data;
       const c4Data = workspace.c4.elements.find((item) => item.id.toLowerCase() === entity.id.toLowerCase())?.data;
@@ -160,7 +164,7 @@ export function renderCanvasExportSvg(workspaces: readonly CanvasExportWorkspace
       const resourceHref = safeHref(entity.contentResource?.url) ?? (entity.contentResource ? `a3-resource:${encodeURIComponent(entity.contentResource.id)}` : undefined);
       if (isImage && content?.dataUrl && /^data:image\/(?:png|jpeg|gif|webp|avif|bmp);base64,[a-z0-9+/=]+$/i.test(content.dataUrl)) {
         const imageLinkOpen = resourceHref ? `<a href="${esc(resourceHref)}" target="_blank" rel="noopener noreferrer">` : '', imageLinkClose = resourceHref ? '</a>' : '';
-        layers.push(`${imageLinkOpen}<image href="${content.dataUrl}" x="${left + 8}" y="${top + 32}" width="${width - 16}" height="${height - 42}" preserveAspectRatio="xMidYMid meet"/><rect class="node" x="${left}" y="${top}" width="${width}" height="${height}" rx="8" fill="none" stroke="${border}"/><text class="node-title" x="${left + 10}" y="${top + 21}">${esc(entity.title)}</text>${imageLinkClose}`);
+        layers.push(`${imageLinkOpen}<image href="${content.dataUrl}" x="${left + 8}" y="${top + 32}" width="${width - 16}" height="${height - 42}" preserveAspectRatio="xMidYMid meet"/><rect class="node" x="${left}" y="${top}" width="${width}" height="${height}" rx="8" fill="none" stroke="${border}"/><text class="node-title" x="${left + 10}" y="${top + 21}">${esc(entity.exportTitle ?? entity.title)}</text>${imageLinkClose}`);
         rasterized.push(`${entity.title} (imagen raster incrustada)`);
       } else {
         if (isImage) diagnostics.push(`${entity.title}: poster de imagen no disponible; se muestra tarjeta de referencia.`);
@@ -169,14 +173,15 @@ export function renderCanvasExportSvg(workspaces: readonly CanvasExportWorkspace
         const anchorClose = href ? '</a>' : '';
         const typedSummary = umlData ?? erData ?? c4Data;
         const iotSummary = entity.ports.length ? { puertos: entity.ports.map((port) => ({ ...port })) } : undefined;
-        const body = content?.text ?? String(entity.properties.description ?? entity.properties.body ?? entity.properties['a3.content.description'] ??
+        const bodySource = entity.exportBody ?? content?.text ?? String(entity.properties.description ?? entity.properties.body ?? entity.properties['a3.content.description'] ??
           (typedSummary ? JSON.stringify(typedSummary) : iotSummary ? JSON.stringify(iotSummary) : ''));
+        const body = bodySource;
         const media = ['a3.content.video', 'a3.content.audio', 'a3.content.youtube'].includes(entity.type);
         const rasterLabel = media ? '<rect x="12" y="34" width="68" height="42" rx="4" fill="#e2e8f0"/><text x="24" y="59" class="body">▶ poster</text>' : '';
         if (media) diagnostics.push(`${entity.title}: medio representado como poster y referencia; reproducción no incluida.`);
         if (/^(a3\.diagram\.|a3\.content\.diagram)/.test(entity.type)) diagnostics.push(`${entity.title}: vista previa de fuente/propiedades; este exportador no ejecuta motores ni plugins.`);
         const bodyText = textLines(body.slice(0, 800), left + 10, top + 46, Math.max(18, Math.floor((width - 20) / 7)), 16);
-        layers.push(`${anchorOpen}<g><rect class="node" x="${left}" y="${top}" width="${width}" height="${height}" rx="${workspace.diagramStyle.borders?.radius ?? 8}" fill="${fill}" stroke="${border}"/><text class="node-title" fill="${color}" x="${left + 10}" y="${top + 22}">${esc(entity.title)}</text><text class="node-type" x="${left + 10}" y="${top + 36}">${esc(entity.type.replace(/^a3\./, ''))}</text>${rasterLabel}${bodyText}</g>${anchorClose}`);
+        layers.push(`${anchorOpen}<g><rect class="node" x="${left}" y="${top}" width="${width}" height="${height}" rx="${workspace.diagramStyle.borders?.radius ?? 8}" fill="${fill}" stroke="${border}"/><text class="node-title" fill="${color}" x="${left + 10}" y="${top + 22}">${esc(entity.exportTitle ?? entity.title)}</text><text class="node-type" x="${left + 10}" y="${top + 36}">${esc(entity.type.replace(/^a3\./, ''))}</text>${rasterLabel}${bodyText}</g>${anchorClose}`);
         if (!entity.typeAvailable) diagnostics.push(`${entity.title}: tipo/paquete sin renderer; se exporta fallback declarativo.`);
       }
       allPoints.push({ x: left, y: top }, { x: left + width, y: top + height });

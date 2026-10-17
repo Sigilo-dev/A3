@@ -31,7 +31,7 @@ import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
 import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
 import { buildMediaGalleryCatalog, mediaGalleryKind, type MediaGalleryAvailability, type MediaGalleryCatalog } from './media-gallery.js';
-import { findNodeType, resolveEntityField, validateVariable, type VariableBinding } from '@a3/domain';
+import { findNodeType, resolveEntityField, resolveVariableText, validateVariable, type VariableBinding, type VariableTextResolution } from '@a3/domain';
 import { projectVariablesState, type ProjectVariablesState, type SetProjectVariables, type VariablesQuery } from './variables.js';
 import type { DerivedMediaType, DerivedResourceSource, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, PreparedWrite, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
 
@@ -76,7 +76,7 @@ export interface LocalProjectsState {
 export interface WorkspaceViewport { x: number; y: number; zoom: number; }
 export interface DiagramStyleState { projectRevision: number; profile: DiagramStyleProfile; canWrite: boolean; diagnostics: readonly string[]; }
 export interface CanvasEntitySummary {
-  displayTitle?: string;
+  displayTitle?: string; displayDiagnostics?: string[]; displayProperties?: Entity['properties']; exportTitle?: string; exportBody?: string;
   c4Category?: C4Category;
   id: string; revision: number; type: string; typeVersion: string; title: string; properties: Entity['properties']; ports: Entity['ports'];
   contentResourceId?: string; contentResource?: CanvasResourceDescriptor; typeAvailable: boolean;
@@ -105,7 +105,7 @@ export interface CanvasPlacementMove { id: string; expectedRevision: number; pos
 export interface CanvasPlacementViewPatch { id: string; expectedRevision: number; position?: { x: number; y: number }; style?: ExtensionMap; }
 export interface CanvasSelectionRef { id: string; expectedRevision: number; }
 export interface CanvasSelection { placements: CanvasSelectionRef[]; drawings: CanvasSelectionRef[]; groups: CanvasSelectionRef[]; }
-export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; mediaType?: string; bytes?: Uint8Array; }
+export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; mediaType?: string; bytes?: Uint8Array; variableDiagnostics?: string[]; }
 export interface MediaGalleryPreview { resourceId: string; mediaType?: string; state: 'binary' | 'remote' | 'too-large' | 'unavailable'; bytes?: Uint8Array; url?: string; }
 export interface MediaConversionSource extends DerivedResourceSource { bytes: Uint8Array; name: string; }
 export interface MediaConversionPrepared { token: string; resourceId: string; path: string; bytes: number; }
@@ -855,15 +855,29 @@ export class LocalProjectManager {
       .map(({ value }) => ({ id: value.id, revision: value.revision, entityId: value.entityId, position: value.position, size: value.size, style: value.style }));
     const placedIds = new Set(placements.map((placement) => placement.entityId.toLowerCase()));
     const entities = choices.filter(({ value }) => placedIds.has(value.id.toLowerCase()))
-      .map(({ value }) => ({ id: value.id, revision: value.revision, type: value.type, typeVersion: value.typeVersion,
-        ...(value.bindings['a3.display.label'] && findNodeType(registry, value) ? (() => {
-          const resolved = resolveEntityField(snapshot, findNodeType(registry, value)!, value, 'a3.display.label', { workspaceId });
-          return resolved.ok && typeof resolved.value.value === 'string' ? { displayTitle: resolved.value.value } : {};
-        })() : {}),
+      .map(({ value }) => {
+        const context = { workspaceId, entityId: value.id }, definition = findNodeType(registry, value);
+        const titleResolution = resolveVariableText(snapshot, value.title, context);
+        const fieldResolution = value.bindings['a3.display.label'] && definition ? resolveEntityField(snapshot, definition, value, 'a3.display.label', context) : undefined;
+        const displaySource = fieldResolution?.ok && typeof fieldResolution.value.value === 'string' ? fieldResolution.value.value : value.title;
+        const displayResolution = displaySource === value.title ? titleResolution : resolveVariableText(snapshot, displaySource, context);
+        const displayProperties = { ...value.properties }, propertyDiagnostics: string[] = [];
+        for (const key of ['a3.content.description', 'description', 'body']) if (typeof value.properties[key] === 'string' && String(value.properties[key]).includes('{{')) {
+          const propertyResolution = resolveVariableText(snapshot, String(value.properties[key]), context); displayProperties[key] = propertyResolution.text;
+          propertyDiagnostics.push(...propertyResolution.unresolved.map((item) => `${item.detail}: ${item.message}`));
+        }
+        const hasTitleBinding = !!value.bindings['a3.display.label'];
+        const displayDiagnostics = [...(fieldResolution && !fieldResolution.ok ? fieldResolution.diagnostics.map((item) => `${item.detail}: ${item.message}`) : []),
+          ...displayResolution.unresolved.map((item) => `${item.detail}: ${item.message}`), ...propertyDiagnostics];
+        return { id: value.id, revision: value.revision, type: value.type, typeVersion: value.typeVersion,
+        ...(hasTitleBinding || value.title.includes('{{') ? { displayTitle: displayResolution.text, exportTitle: displayResolution.text } : {}),
+        ...(propertyDiagnostics.length || ['a3.content.description', 'description', 'body'].some((key) => displayProperties[key] !== value.properties[key]) ? { displayProperties } : {}),
+        ...(displayDiagnostics.length ? { displayDiagnostics } : {}),
         title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
           ...(resources.get(value.contentResourceId.toLowerCase()) ? { contentResource: resourceDescriptor(resources.get(value.contentResourceId.toLowerCase())!) } : {}) } : {}),
         ...(c4Category(value, registry) ? { c4Category: c4Category(value, registry)! } : {}),
-        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined || erTable(value) && erData(value) !== undefined || isIotComponent(value) || isIotCircuit(value) }));
+        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined || erTable(value) && erData(value) !== undefined || isIotComponent(value) || isIotCircuit(value) };
+      });
     const entityChoices = choices.filter(({ value }) => !isC4Diagram(value)).map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
     const resourceChoices = resourceRecords.map((record) => resourceDescriptor(record));
     const placementIds = new Map(placements.map((placement) => [placement.id.toLowerCase(), placement.id]));
@@ -939,6 +953,14 @@ export class LocalProjectManager {
     }); return result;
   }
   loadProjectVariables(sessionId: string, query: VariablesQuery = {}): Promise<ProjectVariablesState> { return this.#queue(async () => this.#variablesState(sessionId, query)); }
+  resolveProjectVariableText(sessionId: string, source: string, query: VariablesQuery = {}, requiredNames: string[] = []): Promise<VariableTextResolution> {
+    return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
+      this.#variablesState(sessionId, query);
+      demand(typeof source === 'string' && source.length <= 2 * 1024 * 1024, 'VARIABLE_TEMPLATE_LIMIT', 'La plantilla supera el límite de 2 MiB.');
+      return resolveVariableText(snapshot, source, query, requiredNames);
+    });
+  }
   setProjectVariables(sessionId: string, input: SetProjectVariables, query: VariablesQuery = {}): Promise<ProjectVariablesState> {
     const captured = structuredClone(input); return this.#queue(async () => {
       const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
@@ -1439,7 +1461,15 @@ export class LocalProjectManager {
         return { entityId, resourceId, text: null, state: tooLarge ? 'too-large' : 'unavailable', mediaType };
       }
       if (purpose === 'playback' || mediaType.startsWith('image/')) return { entityId, resourceId, text: null, state: 'binary', mediaType, bytes: opened.value.bytes };
-      try { return { entityId, resourceId, text: new TextDecoder('utf-8', { fatal: true }).decode(opened.value.bytes), state: 'ready', mediaType }; }
+      try {
+        const decoded = new TextDecoder('utf-8', { fatal: true }).decode(opened.value.bytes);
+        if (purpose === 'preview' && ['a3.core.page', 'a3.content.short-text', 'a3.content.markdown'].includes(entity.value.type)) {
+          const resolved = resolveVariableText(snapshot, decoded, { workspaceId, entityId: entity.value.id });
+          return { entityId, resourceId, text: resolved.text, state: 'ready', mediaType,
+            ...(resolved.unresolved.length ? { variableDiagnostics: resolved.unresolved.map((item) => `${item.name ?? 'variable'} · ${item.detail}: ${item.message}`) } : {}) };
+        }
+        return { entityId, resourceId, text: decoded, state: 'ready', mediaType };
+      }
       catch { return { entityId, resourceId, text: null, state: 'binary', mediaType }; }
     });
   }
