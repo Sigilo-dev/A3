@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { CodexAuthorization, AUTH_ENDPOINT, TOKEN_ENDPOINT, DISCOVERY_ENDPOINT, AUTH_SCOPES, RESOURCE } from '../src/main/codex-authorization.ts';
 import { SystemCredentialVault, emptyCredentials } from '../src/main/codex-credential-vault.ts';
+import { CodexProviderStatusAdapter, classifyProviderSignal } from '../src/shared/codex-provider-status.ts';
 
 const fixture = JSON.parse(await readFile(new URL('../../../fixtures/e5/codex-auth/provider.json', import.meta.url), 'utf8'));
 const keys = await generateKeyPair('RS256'), publicKey = { ...await exportJWK(keys.publicKey), kid: 'synthetic-key', alg: 'RS256', use: 'sig' };
@@ -15,13 +16,13 @@ async function until(predicate) { for (let i = 0; i < 300; i++) { if (await pred
 function callback(url, headers) { return new Promise((accept, reject) => { get(url, { headers }, (res) => { res.resume(); res.once('end', () => accept(res.statusCode)); }).on('error', reject); }); }
 function setup(options = {}) {
   let saved = options.saved ?? emptyCredentials(), authorization, exchanged = 0, refreshes = 0, revocations = 0, scopes = fixture.scopes;
-  const forms = [], urls = [], flags = { claims: {}, token: {}, ...options.flags };
+  const forms = [], urls = [], opened = [], flags = { claims: {}, token: {}, ...options.flags };
   const vault = {
     available: () => options.available ?? true,
     load: async () => { if (options.corrupt) throw new Error('Do not expose this sensitive diagnostic'); return structuredClone(saved); },
     save: async (state) => { if (options.failSave) throw new Error('Do not expose this sensitive diagnostic'); saved = structuredClone(state); }
   };
-  const service = new CodexAuthorization({ vault, timeoutMs: options.timeoutMs ?? 5000, openBrowser: async (url) => { authorization = new URL(url); if (options.browserFails) throw new Error('sensitive URL'); },
+  const service = new CodexAuthorization({ vault, timeoutMs: options.timeoutMs ?? 5000, openBrowser: async (url) => { authorization = new URL(url); opened.push(url); if (options.browserFails) throw new Error('sensitive URL'); },
     fetch: async (url, init) => {
       urls.push(url); assert.equal(init.redirect, 'error'); assert.equal(init.credentials, 'omit');
       if (flags.networkFailure) throw new Error('synthetic-secret-access-token');
@@ -47,7 +48,7 @@ function setup(options = {}) {
     for (const [name, value] of Object.entries({ state: authorization.searchParams.get('state'), code: 'synthetic-code', client_id: fixture.clientId, ...params })) if (value !== undefined) url.searchParams.set(name, value);
     const status = await callback(url); await until(async () => (await state()).status !== 'authorizing'); return status;
   };
-  return { service, state, start, complete, flags, forms, urls, vault, setScopes(value) { scopes = value; }, get authorization() { return authorization; }, get saved() { return saved; }, get exchanged() { return exchanged; }, get refreshes() { return refreshes; }, get revocations() { return revocations; } };
+  return { service, state, start, complete, flags, forms, urls, opened, vault, setScopes(value) { scopes = value; }, get authorization() { return authorization; }, get saved() { return saved; }, get exchanged() { return exchanged; }, get refreshes() { return refreshes; }, get revocations() { return revocations; } };
 }
 function isolated(name, run) { test(name, async () => { const value = setup(); try { await run(value); } finally { value.service.dispose(); } }); }
 
@@ -105,6 +106,7 @@ isolated('separate registrations remain selectable and never combine credentials
   await s.start(); s.flags.audience = 'oaiapp_second_synthetic'; s.flags.subject = 'synthetic-second-account'; await s.complete({ client_id: 'oaiapp_second_synthetic' });
   assert.equal(s.saved.accounts.length, 2); assert.deepEqual(s.saved.accounts[0], first); assert.notEqual(s.saved.activeId, first.id);
   await s.service.handle({ action: 'select', accountId: first.id }); assert.equal(s.saved.activeId, first.id); assert.deepEqual(s.saved.accounts[0], first);
+  assert.equal((await s.state()).diagnostic, 'PLAN_GRANTED_NOT_TESTED');
 });
 isolated('renewal rotates the entire token set, serializes attempts and disconnect retains registration', async (s) => {
   await s.start(); await s.complete(); const id = s.saved.activeId;
@@ -163,6 +165,51 @@ test('provider admission failures are redacted, keep manual mode and never switc
       assert.ok(s.urls.every((url) => url.startsWith('https://auth.openai.com/')));
     } finally { s.service.dispose(); }
   }
+});
+isolated('fake provider adapter persists eligibility, quota and recovery by account', async (s) => {
+  await s.start(); await s.complete(); const id = s.saved.activeId, tokens = structuredClone(s.saved.accounts[0].tokens);
+  const adapter = new CodexProviderStatusAdapter((result) => s.service.recordProviderOutcome(id, result));
+  const notEligible = await adapter.accept({ kind: 'http-error', ...fixture.providerOutcomes.notEligible });
+  assert.deepEqual(notEligible, { outcome: 'not-eligible', diagnostic: 'PLAN_NOT_ELIGIBLE' });
+  let state = await s.state(); assert.equal(state.status, 'not-eligible'); assert.equal(state.planPermission, true); assert.equal(state.inferenceVerified, false);
+  assert.equal(s.service.canStartTurn(id), false); assert.deepEqual(s.saved.accounts[0].tokens, tokens);
+  const openedBefore = s.opened.length; assert.equal((await s.service.handle({ action: 'connect', accountId: id })).value.status, 'not-eligible'); assert.equal(s.opened.length, openedBefore);
+  const restarted = setup({ saved: s.saved }); try { state = await restarted.state(); assert.equal(state.status, 'not-eligible'); assert.equal(state.planPermission, true); } finally { restarted.service.dispose(); }
+  const expired = structuredClone(s.saved); expired.accounts[0].tokens.expiresAt = 1;
+  const expiredRestart = setup({ saved: expired }); try { state = await expiredRestart.state(); assert.equal(state.status, 'expired'); assert.equal(state.diagnostic, 'TOKEN_EXPIRED'); } finally { expiredRestart.service.dispose(); }
+  await adapter.accept({ kind: 'completed' }); state = await s.state(); assert.equal(state.status, 'connected'); assert.equal(state.inferenceVerified, true); assert.equal(s.service.canStartTurn(id), true);
+  await adapter.accept({ kind: 'http-error', ...fixture.providerOutcomes.limitExhausted }); state = await s.state(); assert.equal(state.status, 'limit-exhausted'); assert.equal(state.inferenceVerified, true);
+  assert.equal(s.service.canStartTurn(id), false); assert.deepEqual(s.saved.accounts[0].tokens, tokens);
+  await s.service.handle({ action: 'open-usage' }); assert.equal(s.opened.at(-1), 'https://chatgpt.com/settings/usage');
+  await adapter.accept({ kind: 'interrupted' }); state = await s.state(); assert.equal(state.status, 'unavailable'); assert.equal(s.service.canStartTurn(id), true);
+  assert.equal(state.diagnostic, 'INFERENCE_INTERRUPTED');
+  assert.deepEqual(s.saved.accounts[0].tokens, tokens);
+  await adapter.accept({ kind: 'http-error', ...fixture.providerOutcomes.rateLimited }); state = await s.state();
+  assert.equal(state.status, 'unavailable'); assert.equal(state.diagnostic, 'PROVIDER_RATE_LIMITED');
+  await adapter.accept({ kind: 'http-error', ...fixture.providerOutcomes.routeRejected }); state = await s.state();
+  assert.equal(state.status, 'unavailable'); assert.equal(state.diagnostic, 'PROVIDER_ACCESS_DENIED');
+  assert.equal(JSON.stringify(s.saved).includes('synthetic-private-provider-detail'), false);
+  const invalid = await adapter.accept({ kind: 'http-error', status: 400, body: { error: { code: 'invalid_request_error', message: 'synthetic-private-error-message' } } });
+  assert.equal(invalid.outcome, 'request-failed'); assert.equal(JSON.stringify(s.saved).includes('synthetic-private-error-message'), false);
+});
+isolated('credential rejection refreshes only through OAuth and terminal refresh marks expired', async (s) => {
+  await s.start(); await s.complete(); const id = s.saved.activeId;
+  const adapter = new CodexProviderStatusAdapter((result) => s.service.recordProviderOutcome(id, result));
+  await adapter.accept({ kind: 'http-error', ...fixture.providerOutcomes.credentialRejected });
+  assert.equal(s.refreshes, 1); assert.equal((await s.state()).status, 'connected'); assert.equal((await s.state()).diagnostic, 'AUTH_REFRESHED_RETRY_REQUEST');
+  s.flags.error = 'invalid_grant'; await adapter.accept({ kind: 'http-error', status: 401, body: { error: { code: 'subscription_sharing_invalid_user' } } });
+  assert.equal(s.refreshes, 2); assert.equal((await s.state()).status, 'expired'); assert.equal((await s.state()).diagnostic, 'REAUTHORIZATION_REQUIRED');
+  assert.equal(s.saved.accounts[0].tokens, undefined); assert.equal(s.service.canStartTurn(id), false);
+  await s.service.handle({ action: 'disconnect' }); assert.equal((await s.state()).status, 'disconnected'); assert.equal(s.saved.accounts[0].reauthorizationRequired, undefined);
+});
+test('official error shapes map to fixed statuses without persisting provider details', async () => {
+  for (const key of ['notEligible', 'limitExhausted', 'rateLimited', 'unavailable', 'unavailableUser', 'credentialRejected', 'scopeRejected', 'routeRejected']) {
+    const result = classifyProviderSignal({ kind: 'http-error', ...fixture.providerOutcomes[key] }); assert.equal(JSON.stringify(result).includes('synthetic-private-provider-detail'), false);
+  }
+  assert.deepEqual(classifyProviderSignal({ kind: 'http-error', ...fixture.providerOutcomes.unavailable }), { outcome: 'unavailable', diagnostic: 'PROVIDER_TEMPORARILY_UNAVAILABLE' });
+  assert.deepEqual(classifyProviderSignal({ kind: 'http-error', ...fixture.providerOutcomes.rateLimited }), { outcome: 'unavailable', diagnostic: 'PROVIDER_RATE_LIMITED' });
+  assert.deepEqual(classifyProviderSignal({ kind: 'http-error', ...fixture.providerOutcomes.scopeRejected }), { outcome: 'unavailable', diagnostic: 'PROVIDER_PERMISSION_REJECTED' });
+  assert.deepEqual(classifyProviderSignal({ kind: 'http-error', ...fixture.providerOutcomes.routeRejected }), { outcome: 'unavailable', diagnostic: 'PROVIDER_ACCESS_DENIED' });
 });
 test('Windows OS vault writes encrypted bytes, round-trips and preserves unreadable original; Linux fails closed', async () => {
   const temp = await mkdtemp(join(tmpdir(), 'a3-auth-vault-')); const { createCipheriv, createDecipheriv, randomBytes } = await import('node:crypto');

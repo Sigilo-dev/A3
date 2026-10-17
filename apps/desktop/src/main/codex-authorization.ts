@@ -3,6 +3,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose';
 import type { CodexAuthRequest, CodexAuthResult, CodexAuthState } from '../shared/codex-auth';
 import type { CredentialState, CredentialVault, Registration, TokenSet } from './codex-credential-vault';
+import type { ProviderOutcome, ReportableProviderResult } from '../shared/codex-provider-status';
 
 const ISSUER = 'https://auth.openai.com';
 export const AUTH_ENDPOINT = ISSUER + '/api/accounts/authorize';
@@ -10,6 +11,7 @@ export const TOKEN_ENDPOINT = ISSUER + '/api/accounts/oauth/token';
 export const DISCOVERY_ENDPOINT = ISSUER + '/.well-known/openid-configuration';
 export const RESOURCE = 'https://api.openai.com/v1';
 export const AUTH_SCOPES = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
+export const CHATGPT_USAGE_URL = 'https://chatgpt.com/settings/usage';
 const random = (): string => randomBytes(32).toString('base64url');
 const matches = (left: string, right: string): boolean => Buffer.byteLength(left) === Buffer.byteLength(right) && timingSafeEqual(Buffer.from(left), Buffer.from(right));
 const hasPlan = (tokens?: TokenSet): boolean => !!tokens && ['resource.invoke', 'chatgpt.tokens.use.direct'].every((scope) => tokens.scopes.includes(scope));
@@ -47,10 +49,20 @@ export class CodexAuthorization {
     if (!this.loaded) {
       try {
         this.state = await this.options.vault.load(); this.loaded = true;
-        const tokens = this.state.accounts.find((account) => account.id === this.state.activeId)?.tokens;
-        this.diagnostic = !tokens ? 'NOT_CONFIGURED' : tokens.expiresAt <= this.now() + 30000 ? 'REAUTHORIZATION_REQUIRED' : hasPlan(tokens) ? 'PLAN_GRANTED_NOT_TESTED' : 'PLAN_PERMISSION_MISSING';
+        this.diagnostic = this.accountDiagnostic(this.state.accounts.find((item) => item.id === this.state.activeId));
       } catch { throw new AuthFailure('SECURE_STORAGE_UNREADABLE'); }
     }
+  }
+  private accountDiagnostic(account?: Registration): string {
+    if (account?.reauthorizationRequired) return 'REAUTHORIZATION_REQUIRED';
+    const tokens = account?.tokens;
+    if (tokens && tokens.expiresAt <= this.now() + 30000) return 'TOKEN_EXPIRED';
+    if (account?.providerCondition === 'not-eligible') return 'PLAN_NOT_ELIGIBLE';
+    if (account?.providerCondition === 'limit-exhausted') return 'USAGE_LIMIT_EXHAUSTED';
+    if (account?.providerCondition === 'unavailable') return 'PROVIDER_TEMPORARILY_UNAVAILABLE';
+    if (!tokens) return 'NOT_CONFIGURED';
+    if (!hasPlan(tokens)) return 'PLAN_PERMISSION_MISSING';
+    return account?.inferenceVerified ? 'INFERENCE_CONFIRMED' : 'PLAN_GRANTED_NOT_TESTED';
   }
   private async persist(next: CredentialState, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
@@ -68,10 +80,11 @@ export class CodexAuthorization {
     const fresh = !!token && token.expiresAt > this.now() + 30000;
     return {
       status: !available || this.diagnostic.startsWith('SECURE_STORAGE_') ? 'unavailable' : this.pending ? 'authorizing' :
-        !token ? 'disconnected' : !fresh ? 'expired' : hasPlan(token) ? 'connected' : 'identity-only',
-      accounts: this.state.accounts.map((account) => ({ id: account.id, label: 'Cuenta · ' + account.id.slice(-8), signedIn: !!account.tokens })),
+        selected?.reauthorizationRequired ? 'expired' : token && !fresh ? 'expired' : (selected?.providerCondition ??
+          (!selected || !token ? 'disconnected' : !hasPlan(token) ? 'identity-only' : 'connected')),
+      accounts: this.state.accounts.map((account) => ({ id: account.id, label: 'Cuenta · ' + account.id.slice(-8), signedIn: !!account.tokens && account.tokens.expiresAt > this.now() + 30000 })),
       activeAccountId: this.state.activeId, diagnostic: this.diagnostic,
-      planPermission: available && fresh && hasPlan(token), inferenceVerified: false, manualAvailable: true
+      planPermission: available && fresh && hasPlan(token), inferenceVerified: available && fresh && !!selected?.inferenceVerified, manualAvailable: true
     };
   }
   private track<T>(task: Promise<T>): Promise<T> {
@@ -82,7 +95,7 @@ export class CodexAuthorization {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return this.denied();
     const request = input as CodexAuthRequest;
     const allowed = request.action === 'connect' ? ['action', 'accountId', 'enablePlan'] : request.action === 'select' ? ['action', 'accountId'] : ['action'];
-    if (Object.keys(input).some((key) => !allowed.includes(key)) || !['state', 'connect', 'select', 'cancel', 'disconnect', 'refresh'].includes(request.action) ||
+    if (Object.keys(input).some((key) => !allowed.includes(key)) || !['state', 'connect', 'select', 'cancel', 'disconnect', 'refresh', 'open-usage'].includes(request.action) ||
         ('accountId' in request && (typeof request.accountId !== 'string' || !request.accountId || request.accountId.length > 64)) ||
         request.action === 'select' && !request.accountId ||
         ('enablePlan' in request && typeof request.enablePlan !== 'boolean')) return this.denied();
@@ -93,6 +106,10 @@ export class CodexAuthorization {
       if (!this.loaded && !this.busy) { this.busy = true; try { await this.load(); } catch (error) { this.diagnostic = this.code(error); } finally { this.busy = false; } }
       return { ok: true, value: this.view() };
     }
+    if (request.action === 'open-usage') {
+      try { await this.options.openBrowser(CHATGPT_USAGE_URL); return { ok: true, value: this.view() }; }
+      catch { return { ok: false, error: { code: 'OPEN_USAGE_FAILED', message: 'No se pudo abrir el panel de uso de ChatGPT.' } }; }
+    }
     if (this.busy || this.callbackBusy || this.pending) return { ok: false, error: { code: 'AUTH_BUSY', message: 'Cancela o termina la autorización pendiente.' } };
     this.busy = true;
     const abort = new AbortController(); this.abort = abort;
@@ -101,7 +118,8 @@ export class CodexAuthorization {
       if (request.action === 'connect') await this.connect(request, abort);
       else if (request.action === 'select') {
         if (!this.state.accounts.some((account) => account.id === request.accountId)) throw new AuthFailure('UNKNOWN_ACCOUNT');
-        await this.persist({ ...this.state, activeId: request.accountId }); this.diagnostic = 'ACCOUNT_SELECTED';
+        await this.persist({ ...this.state, activeId: request.accountId });
+        this.diagnostic = this.accountDiagnostic(this.state.accounts.find((account) => account.id === request.accountId));
       } else if (request.action === 'refresh') await this.refresh(abort.signal);
       else await this.disconnect(abort.signal);
     } catch (error) { if (!abort.signal.aborted) this.diagnostic = this.code(error); }
@@ -110,6 +128,53 @@ export class CodexAuthorization {
   }
   private denied(): CodexAuthResult { return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Solicitud de autorización no permitida.' } }; }
   private code(error: unknown): string { return error instanceof AuthFailure ? error.code : 'AUTH_UNAVAILABLE'; }
+
+  /** Trusted provider adapter in main only; no IPC, plugin or project can submit outcomes. */
+  async recordProviderOutcome(accountId: string, result: ReportableProviderResult): Promise<void> {
+    const diagnostics: Record<ProviderOutcome, readonly string[]> = {
+      completed: ['INFERENCE_CONFIRMED'],
+      'credential-rejected': ['AUTH_REJECTED_REFRESHING'],
+      'not-eligible': ['PLAN_NOT_ELIGIBLE'],
+      'limit-exhausted': ['USAGE_LIMIT_EXHAUSTED'],
+      unavailable: ['INFERENCE_INTERRUPTED', 'PROVIDER_TEMPORARILY_UNAVAILABLE', 'PROVIDER_PERMISSION_REJECTED', 'PROVIDER_ACCESS_DENIED', 'PROVIDER_RATE_LIMITED']
+    };
+    const outcome = result?.outcome;
+    if (!result || typeof outcome !== 'string' || !diagnostics[outcome]?.includes(result.diagnostic) ||
+        typeof accountId !== 'string' || accountId.length > 64 || this.disposed || this.busy || this.callbackBusy || this.pending) return;
+    await this.load();
+    if (accountId !== this.state.activeId) return;
+    const account = this.state.accounts.find((item) => item.id === accountId);
+    if (!account) return;
+    if (outcome === 'credential-rejected') {
+      const abort = new AbortController(); this.abort = abort; this.busy = true;
+      try { await this.refresh(abort.signal); this.diagnostic = 'AUTH_REFRESHED_RETRY_REQUEST'; }
+      catch (error) {
+        const code = this.code(error);
+        this.diagnostic = code === 'REAUTHORIZATION_REQUIRED' ? 'REAUTHORIZATION_REQUIRED' : code;
+        if (code !== 'REAUTHORIZATION_REQUIRED') await this.persistAccount({ ...account, providerCondition: 'unavailable' });
+      } finally { this.busy = false; this.abort = undefined; }
+      return;
+    }
+    if (!account.tokens || account.tokens.expiresAt <= this.now() + 30000 || !hasPlan(account.tokens)) return;
+    const next = { ...account };
+    if (outcome === 'completed') { delete next.providerCondition; delete next.reauthorizationRequired; next.inferenceVerified = true; this.diagnostic = 'INFERENCE_CONFIRMED'; }
+    else {
+      next.providerCondition = outcome;
+      this.diagnostic = result.diagnostic;
+    }
+    await this.persistAccount(next);
+  }
+  /** Host app-server gate. Its account ID comes from the active A3 account binding, never renderer input. */
+  canStartTurn(accountId: string): boolean {
+    const account = this.state.accounts.find((item) => item.id === accountId), tokens = account?.tokens;
+    return !this.disposed && !this.busy && !this.pending && this.state.activeId === accountId && !!tokens &&
+      tokens.expiresAt > this.now() + 30000 && hasPlan(tokens) && account.providerCondition !== 'not-eligible' && account.providerCondition !== 'limit-exhausted';
+  }
+  private async persistAccount(account: Registration): Promise<void> {
+    this.busy = true;
+    try { await this.persist({ ...this.state, accounts: this.state.accounts.map((item) => item.id === account.id ? account : item) }); }
+    finally { this.busy = false; }
+  }
 
   private async response(url: string, signal: AbortSignal, form?: URLSearchParams): Promise<Response> {
     const response = await this.fetcher(url, { method: form ? 'POST' : 'GET', redirect: 'error', credentials: 'omit',
@@ -142,6 +207,7 @@ export class CodexAuthorization {
   private async connect(request: Extract<CodexAuthRequest, { action: 'connect' }>, abort: AbortController): Promise<void> {
     const account = request.accountId ? this.state.accounts.find((item) => item.id === request.accountId) : undefined;
     if (request.accountId && !account) throw new AuthFailure('UNKNOWN_ACCOUNT');
+    if (account?.providerCondition === 'not-eligible' || account?.providerCondition === 'limit-exhausted') throw new AuthFailure(account.providerCondition === 'not-eligible' ? 'PLAN_NOT_ELIGIBLE' : 'USAGE_LIMIT_EXHAUSTED');
     if (!account && this.state.accounts.length >= 32) throw new AuthFailure('ACCOUNT_LIMIT');
     await this.discovery(abort.signal);
     // Persist the stable host identifier before the first browser authorization.
@@ -251,16 +317,24 @@ export class CodexAuthorization {
       const tokens = this.tokens(data, account.tokens);
       if (!tokens.refreshToken) throw new AuthFailure('INVALID_TOKEN_RESPONSE');
       if (data.id_token !== undefined && await this.identity(tokens.idToken, account.clientId, discovery, signal) !== account.subject) throw new AuthFailure('ACCOUNT_MISMATCH');
-      signal.throwIfAborted(); await this.replace({ ...account, tokens }, signal); this.diagnostic = hasPlan(tokens) ? 'PLAN_GRANTED_NOT_TESTED' : 'PLAN_PERMISSION_MISSING';
+      signal.throwIfAborted();
+      const refreshed = { ...account, tokens };
+      delete refreshed.reauthorizationRequired;
+      await this.replace(refreshed, signal);
+      this.diagnostic = this.accountDiagnostic(refreshed);
     } catch (error) {
-      if (error instanceof AuthFailure && error.code === 'REAUTHORIZATION_REQUIRED') await this.replace({ ...account, tokens: undefined });
+      if (error instanceof AuthFailure && error.code === 'REAUTHORIZATION_REQUIRED') await this.replace({ ...account, tokens: undefined, reauthorizationRequired: true });
       throw error;
     }
   }
   private async replace(account: Registration, signal?: AbortSignal): Promise<void> { await this.persist({ ...this.state, accounts: this.state.accounts.map((item) => item.id === account.id ? account : item) }, signal); }
   private async disconnect(signal: AbortSignal): Promise<void> {
     const account = this.state.accounts.find((item) => item.id === this.state.activeId);
-    if (!account?.tokens) { this.diagnostic = 'DISCONNECTED'; return; }
+    if (!account) { this.diagnostic = 'DISCONNECTED'; return; }
+    if (!account.tokens) {
+      const disconnected = { ...account }; delete disconnected.providerCondition; delete disconnected.reauthorizationRequired;
+      await this.replace(disconnected); this.diagnostic = 'DISCONNECTED'; return;
+    }
     let revoked = !account.tokens.refreshToken;
     try {
       if (account.tokens.refreshToken) {
@@ -269,7 +343,8 @@ export class CodexAuthorization {
         revoked = response.status === 200; await response.body?.cancel();
       }
     } catch { /* Clear locally even when the provider cannot confirm revocation. */ }
-    await this.replace({ ...account, tokens: undefined }); this.diagnostic = revoked ? 'DISCONNECTED' : 'REMOTE_REVOCATION_UNCONFIRMED';
+    const disconnected = { ...account, tokens: undefined }; delete disconnected.providerCondition; delete disconnected.reauthorizationRequired;
+    await this.replace(disconnected); this.diagnostic = revoked ? 'DISCONNECTED' : 'REMOTE_REVOCATION_UNCONFIRMED';
   }
   private finish(pending: Pending): void { clearTimeout(pending.timer); pending.server.close(); pending.server.closeAllConnections(); if (this.pending === pending) this.pending = undefined; }
   private cancel(diagnostic: string): void { this.diagnostic = diagnostic; this.abort?.abort(); if (this.pending) { const pending = this.pending; pending.abort.abort(); this.finish(pending); } }

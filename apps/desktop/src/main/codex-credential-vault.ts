@@ -1,12 +1,14 @@
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { ProviderCondition } from '../shared/codex-provider-status';
 
 export interface TokenSet {
   accessToken: string; refreshToken?: string; idToken: string; scopes: string[]; expiresAt: number;
 }
 export interface Registration {
   id: string; clientId: string; subject: string; tokens?: TokenSet;
+  providerCondition?: ProviderCondition; inferenceVerified?: boolean; reauthorizationRequired?: boolean;
 }
 export interface CredentialState {
   version: 1; hostId: string; activeId: string | null; accounts: Registration[];
@@ -32,6 +34,9 @@ export function validateCredentials(value: unknown): CredentialState {
   const ids = new Set<string>(), clients = new Set<string>();
   for (const item of state.accounts) {
     if (!text(item.id) || !text(item.clientId) || item.clientId === 'dynamic_agent_client' || !text(item.subject) || ids.has(item.id) || clients.has(item.clientId)) throw new Error('Invalid registration');
+    if (item.providerCondition !== undefined && !['not-eligible', 'limit-exhausted', 'unavailable'].includes(item.providerCondition) ||
+        item.inferenceVerified !== undefined && typeof item.inferenceVerified !== 'boolean' ||
+        item.reauthorizationRequired !== undefined && typeof item.reauthorizationRequired !== 'boolean') throw new Error('Invalid authorization status');
     ids.add(item.id); clients.add(item.clientId);
     if (item.tokens) {
       const token = item.tokens;

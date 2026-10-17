@@ -10,5 +10,15 @@
   },
   "clientId": "oaiapp_synthetic_a3",
   "subject": "synthetic-a3-account",
-  "scopes": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
+  "scopes": "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
+  "providerOutcomes": {
+    "notEligible": { "status": 403, "body": { "error": { "code": "subscription_sharing_user_not_eligible", "message": "synthetic-private-provider-detail" } } },
+    "limitExhausted": { "status": 429, "body": { "error": { "code": "subscription_sharing_usage_limit_exceeded", "message": "synthetic-private-provider-detail" } } },
+    "rateLimited": { "status": 429, "body": { "error": { "code": "rate_limit_exceeded", "message": "synthetic-private-provider-detail" } } },
+    "unavailable": { "status": 503, "body": { "error": { "code": "subscription_sharing_usage_unavailable", "message": "synthetic-private-provider-detail" } } },
+    "unavailableUser": { "status": 503, "body": { "error": { "code": "subscription_sharing_user_unavailable", "message": "synthetic-private-provider-detail" } } },
+    "credentialRejected": { "status": 401, "body": { "error": { "code": "subscription_sharing_invalid_user", "message": "synthetic-private-provider-detail" } } },
+    "scopeRejected": { "status": 403, "body": { "error": { "code": "chatpass_v2_scope_not_authorized", "message": "synthetic-private-provider-detail" } } },
+    "routeRejected": { "status": 403, "body": { "error": { "code": "subscription_sharing_route_not_supported", "message": "synthetic-private-provider-detail" } } }
+  }
 }

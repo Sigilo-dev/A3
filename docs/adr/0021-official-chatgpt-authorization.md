@@ -1,6 +1,6 @@
 # ADR 0021 · autorización oficial ChatGPT en el host
 
-Estado: implementado en E5-B1; autorización real e inferencia pendientes. Fecha: 2026-10-17. Base: E5-A1 `637f616`, especificación §§20.1–20.2/21.4 y evidencia [E0-B2](../e0/compatibility/codex-app-server.md)/[E0-C2](../e0/compatibility/windows-process-isolation.md).
+Estado: ciclo OAuth en host implementado en E5-B1/B2; autorización real e inferencia pendientes. Fecha: 2026-10-17. Base: E5-A1 `637f616`, especificación §§20.1–20.3/21.4 y evidencia [E0-B2](../e0/compatibility/codex-app-server.md)/[E0-C2](../e0/compatibility/windows-process-isolation.md).
 
 ## Decisión
 
@@ -14,7 +14,7 @@ Discovery debe declarar el issuer esperado y endpoints authorize/token exactos. 
 
 `jose` **6.2.12**, MIT, se fija en manifest/lock para validar JOSE/OIDC; no tiene dependencias de runtime. Se inspeccionaron `node_modules/jose/package.json` y `LICENSE.md` y [su fuente oficial](https://github.com/panva/jose). No se actualizan otras dependencias. El bundler lo usa en main; no se importa en preload/renderer. El inventario/avisos del instalador final siguen pendientes de E7.
 
-El permiso se determina por los scopes concedidos en la respuesta del token, nunca por el callback o la identidad sola. Se exigen `openid` y un ID token válido; para permiso del plan se exigen `resource.invoke` y `chatgpt.tokens.use.direct`, además de access token vigente. La UI muestra identidad sin permiso, expiración, concesión no probada e indisponibilidad. `inferenceVerified` permanece siempre `false`. Añadir/seleccionar otra cuenta no mezcla registros. Cada etiqueta local opaca es estable; no se envían claims o email al renderer.
+El permiso se determina por los scopes concedidos en la respuesta del token, nunca por el callback o la identidad sola. Se exigen `openid` y un ID token válido; para permiso del plan se exigen `resource.invoke` y `chatgpt.tokens.use.direct`, además de access token vigente. E5-B2 persiste condiciones host-only de cuenta para elegibilidad, cuota e indisponibilidad; la UI muestra estas condiciones, token vencido, identidad sin permiso y concesión aún no probada. Una señal `completed` del futuro proveedor puede marcar `inferenceVerified`; el adapter falso la prueba, pero no hay un app-server conectado que pueda hacerlo en uso real. Añadir/seleccionar otra cuenta no mezcla registros. Cada etiqueta local opaca es estable; no se envían claims o email al renderer.
 
 ## Persistencia y desconexión
 
@@ -30,6 +30,6 @@ Desconectar intenta revocar el refresh token mediante el endpoint descubierto y 
 
 ## Límites de la UI y aceptación
 
-El único canal nuevo es `a3.codex:authorization`: state/connect/select/cancel/refresh/disconnect, con payload estricto y guards de WebContents/frame/URL del shell. No acepta tokens, endpoints, código OAuth, scripts, rutas o claves. La respuesta contiene estados, diagnóstico fijo, IDs/etiquetas de cuentas y booleanos; los errores del proveedor se reducen a códigos permitidos, sin copiar cuerpos o URLs. La sesión web manual conserva su partición y cookies; cerrar una sesión no desconecta la otra.
+El único canal nuevo es `a3.codex:authorization`: state/connect/select/cancel/refresh/disconnect/open-usage, con payload estricto y guards de WebContents/frame/URL del shell. No acepta tokens, endpoints, código OAuth, scripts, rutas o claves. La respuesta contiene estados, diagnóstico fijo, IDs/etiquetas de cuentas y booleanos; los errores del proveedor se reducen a códigos permitidos, sin copiar cuerpos o URLs. La sesión web manual conserva su partición y cookies; cerrar una sesión no desconecta la otra. El enlace de uso abre una URL fija de ChatGPT, sin enviar datos de cuenta al sitio.
 
-La prueba Windows usa credenciales sintéticas, DPAPI real y dos procesos sucesivos. No se autorizó una cuenta, comprobó región/plan real, ejecutó app-server/turno, consumió créditos ni probó revocación en producción. A3-028 sigue parcial; A3-029 tiene pruebas sintéticas de expiración/denegación y límite OAuth, no acceso real a modelos o límites de inferencia. A3-030 y el aislamiento de procesos continúan fuera de este bloque.
+La prueba Windows de E5-B1 usa credenciales sintéticas, DPAPI real y dos procesos sucesivos. Las pruebas E5-B2 usan provider adapter falso para mapear condiciones y confirmar retención/redacción; no autorizan una cuenta, comprueban región/plan real, ejecutan app-server/turno, consumen créditos ni prueban revocación en producción. A3-028 sigue parcial; A3-029 tiene pruebas sintéticas de expiración, elegibilidad, denegación, cuota y disponibilidad, no acceso real a modelos o límites de inferencia. A3-030 y el aislamiento de procesos continúan fuera de este bloque. Véase [E5-B2](../e5/authorization-lifecycle.md).
