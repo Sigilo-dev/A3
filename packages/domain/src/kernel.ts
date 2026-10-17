@@ -5,6 +5,8 @@ import { applyC4Change } from './c4-commands.js';
 import { applyUmlChange } from './uml-commands.js';
 import { remapUmlReferences, umlData, umlKind } from './uml.js';
 import { applyErChange } from './er-commands.js';
+import { applyPlanningChange } from './planning-commands.js';
+import { planningKind } from './planning.js';
 import { erData, erTable, remapErReferences } from './er.js';
 import { MERMAID_SOURCE_TYPE } from './mermaid-source.js';
 import { PLANTUML_SOURCE_TYPE } from './plantuml-source.js';
@@ -28,6 +30,7 @@ const commands = new Set(['a3.core.create-project', 'a3.core.create-document', '
   'a3.c4.change',
   'a3.uml.change',
   'a3.er.change',
+  'a3.planning.change',
   'a3.mermaid.import',
   'a3.plantuml.import',
   'a3.structurizr.import',
@@ -834,6 +837,7 @@ function applyStructurizrImport(draft: Draft, payload: Payloads['a3.structurizr.
 function apply(draft: Draft): void {
   const request = draft.request;
   switch (request.command) {
+    case 'a3.planning.change': applyPlanningChange(draft, request.payload, request.actor, request.operationId, fail); break;
     case 'a3.er.change': applyErChange(draft, request.payload, fail); break;
     case 'a3.mermaid.import': applyDiagramImport(draft, request.payload, 'mermaid'); break;
     case 'a3.plantuml.import': applyDiagramImport(draft, request.payload, 'plantuml'); break;
@@ -1169,6 +1173,10 @@ export function prepareCommand(snapshot: DomainSnapshot, input: unknown, context
     const newErrors = diagnostics.filter((d) => d.severity === 'error' && !baselineIssues.has(canonical(d)));
     if (newErrors.length) return { ok: false, diagnostics: newErrors };
     const changes = changesBetween(snapshot, draft.snapshot);
+    if (request.command !== 'a3.planning.change' && changes.some((change) => change.after?.kind === 'entity' &&
+        (planningKind(change.after.value) || change.before?.kind === 'entity' && planningKind(change.before.value)))) {
+      fail('planning-command-required', 'Las entidades de planificación se editan con el comando auditado a3.planning.change.');
+    }
     const nodeTypeChanges: NodeTypeChange[] = [
       ...context.registry.nodeTypes.filter((d) => !draft.registry.nodeTypes.some((v) => v.name === d.name && v.version === d.version)).map((before) => ({ before: copy(before), after: null })),
       ...draft.registry.nodeTypes.filter((d) => !context.registry.nodeTypes.some((v) => v.name === d.name && v.version === d.version)).map((after) => ({ before: null, after: copy(after) }))

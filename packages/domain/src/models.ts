@@ -5,6 +5,7 @@ import type { UmlChange } from './uml.js';
 import type { ErChange } from './er.js';
 import type { ChangeIotCircuit, CreateIotCircuit } from './iot-circuit.js';
 import type { DiagramStyleProfile } from './diagram-style.js';
+import type { PlanningChange } from './planning.js';
 export type UUID = string;
 export type Namespace = string;
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -164,6 +165,7 @@ export interface StructurizrImportChange {
 }
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
 export type Payloads = {
+  'a3.planning.change': PlanningChange;
   'a3.variables.bind-field': { entityId: UUID; field: Namespace; binding: VariableBinding | null };
   'a3.diagrams.set-style': { profile: DiagramStyleProfile };
   'a3.er.change': ErChange;

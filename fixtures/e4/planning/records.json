@@ -1,0 +1,408 @@
+[
+  {
+    "kind": "resource",
+    "value": {
+      "schemaVersion": "1.0.0",
+      "id": "90000000-0000-4000-8000-00000000100e",
+      "revision": 1,
+      "kind": "project-file",
+      "path": "assets/planning-capture.svg",
+      "mediaType": "image/svg+xml",
+      "extensions": {}
+    }
+  },
+  {
+    "kind": "entity",
+    "value": {
+      "schemaVersion": "1.0.0",
+      "id": "90000000-0000-4000-8000-000000001005",
+      "revision": 1,
+      "type": "a3.planning.story",
+      "typeVersion": "1.0.0",
+      "title": "Abrir proyectos sin conexión",
+      "contentResourceId": "00000000-0000-4000-8000-000000000004",
+      "tags": [],
+      "ports": [],
+      "bindings": {},
+      "extensions": {},
+      "properties": {
+        "a3.planning": {
+          "kind": "story",
+          "actor": "Diseñadora de proyectos",
+          "need": "Reabrir mis proyectos locales",
+          "goal": "Continuar trabajando sin conexión",
+          "priority": "high",
+          "criterionIds": [
+            "90000000-0000-4000-8000-000000001006"
+          ],
+          "dependencyIds": [],
+          "references": [
+            {
+              "kind": "entity",
+              "id": "00000000-0000-4000-8000-000000000002"
+            }
+          ],
+          "futureStory": {
+            "keep": true
+          }
+        },
+        "a3.planning.history": [
+          {
+            "operationId": "90000000-0000-4000-8000-000000001067",
+            "actor": {
+              "kind": "user",
+              "id": "local-user"
+            },
+            "at": "2026-10-16T12:00:00.000Z",
+            "action": "create"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "entity",
+    "value": {
+      "schemaVersion": "1.0.0",
+      "id": "90000000-0000-4000-8000-000000001006",
+      "revision": 1,
+      "type": "a3.planning.criterion",
+      "typeVersion": "1.0.0",
+      "title": "Reabrir conserva los IDs y el Markdown",
+      "contentResourceId": "00000000-0000-4000-8000-000000000004",
+      "tags": [],
+      "ports": [],
+      "bindings": {},
+      "extensions": {},
+      "properties": {
+        "a3.planning": {
+          "kind": "criterion",
+          "storyId": "90000000-0000-4000-8000-000000001005",
+          "references": [
+            {
+              "kind": "resource",
+              "id": "00000000-0000-4000-8000-000000000004"
+            }
+          ]
+        },
+        "a3.planning.history": [
+          {
+            "operationId": "90000000-0000-4000-8000-000000001067",
+            "actor": {
+              "kind": "user",
+              "id": "local-user"
+            },
+            "at": "2026-10-16T12:00:00.000Z",
+            "action": "create"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "entity",
+    "value": {
+      "schemaVersion": "1.0.0",
+      "id": "90000000-0000-4000-8000-000000001007",
+      "revision": 1,
+      "type": "a3.planning.task",
+      "typeVersion": "1.0.0",
+      "title": "Probar cierre y reapertura",
+      "contentResourceId": "00000000-0000-4000-8000-000000000004",
+      "tags": [],
+      "ports": [],
+      "bindings": {},
+      "extensions": {},
+      "properties": {
+        "a3.planning": {
+          "kind": "task",
+          "state": "todo",
+          "priority": "high",
+          "storyId": "90000000-0000-4000-8000-000000001005",
+          "dependencyIds": [],
+          "criterionIds": [
+            "90000000-0000-4000-8000-000000001006"
+          ],
+          "evidenceIds": [],
+          "references": [
+            {
+              "kind": "entity",
+              "id": "00000000-0000-4000-8000-000000000002"
+            }
+          ]
+        },
+        "a3.planning.history": [
+          {
+            "operationId": "90000000-0000-4000-8000-000000001067",
+            "actor": {
+              "kind": "user",
+              "id": "local-user"
+            },
+            "at": "2026-10-16T12:00:00.000Z",
+            "action": "create",
+            "toState": "todo"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "entity",
+    "value": {
+      "schemaVersion": "1.0.0",
+      "id": "90000000-0000-4000-8000-000000001008",
+      "revision": 1,
+      "type": "a3.planning.task",
+      "typeVersion": "1.0.0",
+      "title": "Documentar el resultado",
+      "tags": [],
+      "ports": [],
+      "bindings": {},
+      "extensions": {},
+      "properties": {
+        "a3.planning": {
+          "kind": "task",
+          "state": "blocked",
+          "priority": "normal",
+          "storyId": "90000000-0000-4000-8000-000000001005",
+          "dependencyIds": [
+            "90000000-0000-4000-8000-000000001007"
+          ],
+          "criterionIds": [
+            "90000000-0000-4000-8000-000000001006"
+          ],
+          "evidenceIds": [],
+          "references": []
+        },
+        "a3.planning.history": [
+          {
+            "operationId": "90000000-0000-4000-8000-000000001067",
+            "actor": {
+              "kind": "user",
+              "id": "local-user"
+            },
+            "at": "2026-10-16T12:00:00.000Z",
+            "action": "create",
+            "toState": "blocked"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "entity",
+    "value": {
+      "schemaVersion": "1.0.0",
+      "id": "90000000-0000-4000-8000-000000001018",
+      "revision": 1,
+      "type": "a3.planning.evidence",
+      "typeVersion": "1.0.0",
+      "title": "Evidencia file",
+      "tags": [],
+      "ports": [],
+      "bindings": {},
+      "extensions": {},
+      "properties": {
+        "a3.planning": {
+          "kind": "evidence",
+          "target": {
+            "kind": "file",
+            "resourceId": "00000000-0000-4000-8000-000000000004"
+          },
+          "criterionIds": [
+            "90000000-0000-4000-8000-000000001006"
+          ],
+          "recordedBy": {
+            "kind": "user",
+            "id": "local-user"
+          },
+          "recordedAt": "2026-10-16T12:00:00.000Z"
+        },
+        "a3.planning.history": [
+          {
+            "operationId": "90000000-0000-4000-8000-000000001067",
+            "actor": {
+              "kind": "user",
+              "id": "local-user"
+            },
+            "at": "2026-10-16T12:00:00.000Z",
+            "action": "create"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "entity",
+    "value": {
+      "schemaVersion": "1.0.0",
+      "id": "90000000-0000-4000-8000-000000001019",
+      "revision": 1,
+      "type": "a3.planning.evidence",
+      "typeVersion": "1.0.0",
+      "title": "Evidencia result",
+      "tags": [],
+      "ports": [],
+      "bindings": {},
+      "extensions": {},
+      "properties": {
+        "a3.planning": {
+          "kind": "evidence",
+          "target": {
+            "kind": "result",
+            "entityId": "00000000-0000-4000-8000-000000000002"
+          },
+          "criterionIds": [
+            "90000000-0000-4000-8000-000000001006"
+          ],
+          "recordedBy": {
+            "kind": "user",
+            "id": "local-user"
+          },
+          "recordedAt": "2026-10-16T12:00:00.000Z"
+        },
+        "a3.planning.history": [
+          {
+            "operationId": "90000000-0000-4000-8000-000000001067",
+            "actor": {
+              "kind": "user",
+              "id": "local-user"
+            },
+            "at": "2026-10-16T12:00:00.000Z",
+            "action": "create"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "entity",
+    "value": {
+      "schemaVersion": "1.0.0",
+      "id": "90000000-0000-4000-8000-00000000101a",
+      "revision": 1,
+      "type": "a3.planning.evidence",
+      "typeVersion": "1.0.0",
+      "title": "Evidencia note",
+      "tags": [],
+      "ports": [],
+      "bindings": {},
+      "extensions": {},
+      "properties": {
+        "a3.planning": {
+          "kind": "evidence",
+          "target": {
+            "kind": "note",
+            "entityId": "00000000-0000-4000-8000-000000000002"
+          },
+          "criterionIds": [
+            "90000000-0000-4000-8000-000000001006"
+          ],
+          "recordedBy": {
+            "kind": "user",
+            "id": "local-user"
+          },
+          "recordedAt": "2026-10-16T12:00:00.000Z"
+        },
+        "a3.planning.history": [
+          {
+            "operationId": "90000000-0000-4000-8000-000000001067",
+            "actor": {
+              "kind": "user",
+              "id": "local-user"
+            },
+            "at": "2026-10-16T12:00:00.000Z",
+            "action": "create"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "entity",
+    "value": {
+      "schemaVersion": "1.0.0",
+      "id": "90000000-0000-4000-8000-00000000101b",
+      "revision": 1,
+      "type": "a3.planning.evidence",
+      "typeVersion": "1.0.0",
+      "title": "Evidencia capture",
+      "tags": [],
+      "ports": [],
+      "bindings": {},
+      "extensions": {},
+      "properties": {
+        "a3.planning": {
+          "kind": "evidence",
+          "target": {
+            "kind": "capture",
+            "resourceId": "90000000-0000-4000-8000-00000000100e"
+          },
+          "criterionIds": [
+            "90000000-0000-4000-8000-000000001006"
+          ],
+          "recordedBy": {
+            "kind": "user",
+            "id": "local-user"
+          },
+          "recordedAt": "2026-10-16T12:00:00.000Z"
+        },
+        "a3.planning.history": [
+          {
+            "operationId": "90000000-0000-4000-8000-000000001067",
+            "actor": {
+              "kind": "user",
+              "id": "local-user"
+            },
+            "at": "2026-10-16T12:00:00.000Z",
+            "action": "create"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "entity",
+    "value": {
+      "schemaVersion": "1.0.0",
+      "id": "90000000-0000-4000-8000-00000000101c",
+      "revision": 1,
+      "type": "a3.planning.evidence",
+      "typeVersion": "1.0.0",
+      "title": "Evidencia commit",
+      "tags": [],
+      "ports": [],
+      "bindings": {},
+      "extensions": {},
+      "properties": {
+        "a3.planning": {
+          "kind": "evidence",
+          "target": {
+            "kind": "commit",
+            "repositoryResourceId": "00000000-0000-4000-8000-000000000004",
+            "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "criterionIds": [
+            "90000000-0000-4000-8000-000000001006"
+          ],
+          "recordedBy": {
+            "kind": "user",
+            "id": "local-user"
+          },
+          "recordedAt": "2026-10-16T12:00:00.000Z"
+        },
+        "a3.planning.history": [
+          {
+            "operationId": "90000000-0000-4000-8000-000000001067",
+            "actor": {
+              "kind": "user",
+              "id": "local-user"
+            },
+            "at": "2026-10-16T12:00:00.000Z",
+            "action": "create"
+          }
+        ]
+      }
+    }
+  }
+]

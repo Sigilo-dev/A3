@@ -12,6 +12,7 @@ import { iotNodeDefinition, validateIotSnapshot } from './iot.js';
 import { IOT_CIRCUIT_TYPE, IOT_CIRCUIT_VERSION, validateIotCircuitSnapshot } from './iot-circuit.js';
 import { MERMAID_SOURCE_TYPE } from './mermaid-source.js';
 import { isStructurizrSource } from './structurizr-source.js';
+import { planningNodeDefinition, validatePlanningSnapshot } from './planning.js';
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, coerceTypes: false, useDefaults: false, removeAdditional: false });
 ajv.addFormat('utc-date-time', (value: string) => {
@@ -114,7 +115,7 @@ export const matchesValueType = (value: JsonValue, type: ValueType): boolean => 
 const typeKey = (value: { name: string; version: string }): string => `${value.name}@${value.version}`;
 export const findNodeType = (registry: TypeRegistry, entity: Entity): NodeType | undefined => {
   const builtin = entity.typeVersion === '1.0.0'
-    ? conceptualNodeTypeDefinition(entity.type) ?? c4NodeDefinition(entity.type) ?? umlNodeDefinition(entity.type) ?? erNodeDefinition(entity.type) ?? iotNodeDefinition(entity.type)
+    ? planningNodeDefinition(entity.type) ?? conceptualNodeTypeDefinition(entity.type) ?? c4NodeDefinition(entity.type) ?? umlNodeDefinition(entity.type) ?? erNodeDefinition(entity.type) ?? iotNodeDefinition(entity.type)
     : undefined;
   const circuit = entity.type === IOT_CIRCUIT_TYPE && entity.typeVersion === IOT_CIRCUIT_VERSION
     ? { name: IOT_CIRCUIT_TYPE, version: IOT_CIRCUIT_VERSION, packageId: 'a3.builtin.iot', fields: [], ports: [], bindingFields: [], extensions: {} }
@@ -282,7 +283,7 @@ export function validateSnapshot(snapshot: DomainSnapshot, registry: TypeRegistr
       }
     }
   }
-  return [...diagnostics, ...validateC4Snapshot(snapshot, registry), ...validateUmlSnapshot(snapshot), ...validateErSnapshot(snapshot), ...validateIotSnapshot(snapshot), ...validateIotCircuitSnapshot(snapshot)];
+  return [...diagnostics, ...validatePlanningSnapshot(snapshot), ...validateC4Snapshot(snapshot, registry), ...validateUmlSnapshot(snapshot), ...validateErSnapshot(snapshot), ...validateIotSnapshot(snapshot), ...validateIotCircuitSnapshot(snapshot)];
 }
 
 export function defaultRegistry(): TypeRegistry {

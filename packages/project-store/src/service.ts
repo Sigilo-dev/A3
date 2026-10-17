@@ -137,6 +137,11 @@ function domainCapabilities(plan: PreparedPlan): Capability[] {
   if (refs.some((ref) => !diagramRefKinds.has(ref.kind))) caps.add('document.edit');
   if (!caps.has('diagram.edit') && !caps.has('document.edit')) caps.add('document.edit');
   if (command === 'a3.core.set-collection-members') { caps.delete('document.edit'); caps.add('task.edit'); }
+  const planning = plan.changes.filter((change) => [change.before, change.after].some((record) => record?.kind === 'entity' && record.value.type.startsWith('a3.planning.')));
+  if (command === 'a3.planning.change' || planning.length) {
+    caps.add('task.edit');
+    if (!plan.contentEffects.length && plan.changes.every((change) => planning.includes(change))) caps.delete('document.edit');
+  }
   return [...caps];
 }
 function diagnosticKey(diagnostic: StoreDiagnostic): string {
