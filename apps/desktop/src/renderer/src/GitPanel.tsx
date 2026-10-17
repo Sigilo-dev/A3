@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { LocalProjectSession } from '../../shared/desktop-api';
-import type { GitApplied, GitProjectView, GitRequest, GitReviewInput, GitReviewView } from '../../shared/git-operations';
+import type { GitApplied, GitMountChoice, GitProjectView, GitRequest, GitReviewInput, GitReviewView } from '../../shared/git-operations';
 import { GithubPublishingPanel } from './GithubPublishingPanel';
 
-export function GitPanel({ active, onChanged }: { active: LocalProjectSession | null; onChanged(): void }): React.JSX.Element {
+export function GitPanel({ active, onChanged, initialMountId, onMountChange }: { active: LocalProjectSession | null; onChanged(): void; initialMountId?: string | null; onMountChange?(mountId: string | null): void }): React.JSX.Element {
   const [view, setView] = useState<GitProjectView | null>(null), [review, setReview] = useState<GitReviewView | null>(null);
+  const [mounts, setMounts] = useState<readonly GitMountChoice[]>([]), [mountId, setMountId] = useState<string | null>(initialMountId ?? null);
   const [selected, setSelected] = useState<string[]>([]), [hunks, setHunks] = useState<string[]>([]);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [message, setMessage] = useState(''), [name, setName] = useState(''), [email, setEmail] = useState(''), [branch, setBranch] = useState(''), [commit, setCommit] = useState('');
@@ -15,11 +16,18 @@ export function GitPanel({ active, onChanged }: { active: LocalProjectSession | 
     if (!result.ok) throw new Error(result.error.message);
     return result.value;
   }, []);
+  useEffect(() => { setMountId(initialMountId ?? null); }, [initialMountId]);
   const load = useCallback(async (): Promise<void> => {
     if (!active) return;
-    const result = await request({ action: 'load', sessionId: active.sessionId });
+    const catalog = await request({ action: 'mounts', sessionId: active.sessionId });
+    if (Array.isArray(catalog)) setMounts(catalog);
+    const selectedMount = Array.isArray(catalog) ? catalog.find((mount) => mount.mountId === mountId) : undefined;
+    if (mountId && !selectedMount) { setView(null); setError('El montaje ya no pertenece al proyecto activo. Actualiza el explorador.'); return; }
+    if (selectedMount && selectedMount.status !== 'available') { setView(null); setError(`La raíz del montaje no está disponible (${selectedMount.status}). Relocalízala desde Archivos.`); return; }
+    if (selectedMount && !selectedMount.capabilities.git) { setView(null); setError('Git no está concedido para este montaje. Concede la capacidad de Git para esta raíz.'); return; }
+    const result = await request({ action: 'load', sessionId: active.sessionId, ...(mountId ? { mountId } : {}) });
     if ('status' in result) { setView(result); setSelected([]); }
-  }, [active, request]);
+  }, [active, request, mountId]);
   useEffect(() => { void load().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'No se pudo leer Git.')); }, [load]);
   const act = async (operation: () => Promise<void>): Promise<void> => {
     setBusy(true); setError(''); setNotice('');
@@ -27,25 +35,37 @@ export function GitPanel({ active, onChanged }: { active: LocalProjectSession | 
     finally { setBusy(false); }
   };
   const prepare = (input: GitReviewInput): void => { if (active) void act(async () => {
-    const result = await request({ action: 'review', sessionId: active.sessionId, input });
+    const result = await request({ action: 'review', sessionId: active.sessionId, input, ...(mountId ? { mountId } : {}) });
     if ('token' in result) { setReview(result); setHunks(result.diffs.flatMap((diff) => diff.hunks.map((hunk) => hunk.id))); }
   }); };
   const apply = (): void => { if (active && review) void act(async () => {
     const partial = review.kind === 'stage' && review.diffs.length === 1 && review.diffs[0]!.hunks.length > 0;
-    const result = await request({ action: 'apply', sessionId: active.sessionId, token: review.token, ...(partial ? { hunkIds: hunks } : {}) });
+    const result = await request({ action: 'apply', sessionId: active.sessionId, token: review.token, ...(mountId ? { mountId } : {}), ...(partial ? { hunkIds: hunks } : {}) });
     if ('applied' in result) {
       setReceipt(result); setReview(null); setNotice(`Operación ${result.kind} completada${result.commit ? ' · ' + result.commit.slice(0, 12) : ''}.`);
       if (result.kind.includes('restore')) onChanged(); await load();
     }
   }); };
-  const cancel = (): void => { if (active && review) void act(async () => { await request({ action: 'cancel', sessionId: active.sessionId, token: review.token }); setReview(null); setNotice('Revisión cancelada.'); }); };
+  const cancel = (): void => { if (active && review) void act(async () => { await request({ action: 'cancel', sessionId: active.sessionId, token: review.token, ...(mountId ? { mountId } : {}) }); setReview(null); setNotice('Revisión cancelada.'); }); };
+  const selectedMount = mounts.find((mount) => mount.mountId === mountId), projectRepository = !mountId;
+  const setGitGrant = (granted: boolean): void => { if (!active || !mountId) return; void act(async () => {
+    const result = await request({ action: 'mount-capability', sessionId: active.sessionId, mountId, granted });
+    if ('changed' in result && result.changed) { setNotice(granted ? 'Git quedó concedido para esta raíz.' : 'Git quedó revocado para esta raíz.'); await load(); }
+  }); };
   const ready = view?.status.state === 'ready';
   return <section className="git-panel" aria-labelledby="git-title">
     <p className="eyebrow">Proyecto A3 · Git local</p><h1 id="git-title">Versiones locales</h1>
     {!active ? <p>Abre un proyecto para revisar su repositorio.</p> : <>
-      <p>Raíz del repositorio: <code data-git-root>{view?.root ?? active.root}</code></p>
+      <label>Raíz Git<select aria-label="Raíz Git" value={mountId ?? ''} disabled={busy || !!review} onChange={(event) => { const id = event.target.value || null; setMountId(id); onMountChange?.(id); setView(null); setSelected([]); setError(''); setNotice(''); }}>
+        <option value="">Proyecto A3 · {active.name}</option>{mounts.map((mount) => <option key={mount.mountId} value={mount.mountId}>{mount.label} · {mount.status}</option>)}
+      </select></label>
+      <p>Repositorio seleccionado: {projectRepository ? 'Proyecto A3' : selectedMount?.label ?? 'Montaje'} · raíz <code data-git-root>{view?.root ?? selectedMount?.root ?? (projectRepository ? active.root : 'sin binding local')}</code></p>
       <p>Rama: <strong>{view?.status.branch ?? 'Sin rama activa'}</strong> · Estado: <span data-git-state>{view?.status.state ?? 'consultando'}</span></p>
-      <p>Las acciones de esta pantalla afectan solo al proyecto A3. Guardar borradores es necesario antes de operar con Git.</p>
+      <p>Las acciones afectan solo a la raíz seleccionada. A3 no busca repositorios padres ni hermanos. Guardar borradores es necesario antes de operar con Git.</p>
+      {selectedMount && <div className="mount-git-permissions" aria-label="Permisos del montaje seleccionado">
+        <p>Permisos independientes de esta raíz: lectura {selectedMount.capabilities.read ? 'concedida' : 'denegada'} · indexación {selectedMount.capabilities.index ? 'concedida' : 'denegada'} · Git {selectedMount.capabilities.git ? 'concedido' : 'denegado'} · escritura externa no disponible.</p>
+        <button type="button" className="secondary" disabled={busy || !!review || !selectedMount.capabilities.git && selectedMount.status !== 'available'} onClick={() => setGitGrant(!selectedMount.capabilities.git)}>{selectedMount.capabilities.git ? 'Revocar Git en esta raíz' : 'Conceder Git en esta raíz'}</button>
+      </div>}
       <button type="button" className="secondary" disabled={busy} onClick={() => void act(load)}>Actualizar estado</button>
       {view?.status.excludedTrackedCount ? <p role="alert">Hay {view.status.excludedTrackedCount} archivos protegidos en el índice. Crear commits queda bloqueado hasta revisar sus exclusiones.</p> : null}
       {ready && <>
@@ -55,7 +75,7 @@ export function GitPanel({ active, onChanged }: { active: LocalProjectSession | 
             <button type="button" data-git-stage disabled={!selected.length} onClick={() => prepare({ kind: 'stage', paths: selected })}>Revisar stage</button>
             <button type="button" disabled={!selected.length} onClick={() => prepare({ kind: 'unstage', paths: selected })}>Revisar unstage</button>
             <label>Versión de origen<select aria-label="Versión de origen" value={commit} onChange={(event) => setCommit(event.target.value)}><option value="">HEAD actual</option>{view.log.map((entry) => <option value={entry.oid} key={entry.oid}>{entry.oid.slice(0, 8)} · {entry.subject}</option>)}</select></label>
-            <button type="button" data-git-restore disabled={!selected.length || !view.status.head} onClick={() => prepare({ kind: 'restore', paths: selected, ...(commit ? { commit } : {}) })}>Revisar restore</button>
+            {projectRepository && <button type="button" data-git-restore disabled={!selected.length || !view.status.head} onClick={() => prepare({ kind: 'restore', paths: selected, ...(commit ? { commit } : {}) })}>Revisar restore</button>}
           </div>
         </fieldset>
         <form onSubmit={(event) => { event.preventDefault(); prepare({ kind: 'commit', message, name, email }); }}><fieldset disabled={busy || !!review}><legend>Commit del índice revisado</legend>
@@ -82,6 +102,6 @@ export function GitPanel({ active, onChanged }: { active: LocalProjectSession | 
       {receipt?.snapshotId && <p role="status">Punto de retorno: <code data-git-snapshot>{receipt.snapshotId}</code> <button type="button" disabled={busy || !!review} onClick={() => prepare({ kind: 'undo-restore', undoToken: receipt.undoToken })}>Revisar retorno</button></p>}
     </>}
     {notice && <p role="status" data-git-notice>{notice}</p>}{error && <p role="alert" data-git-error>{error}</p>}
-    {active && <GithubPublishingPanel key={active.sessionId} active={active} />}
+    {active && projectRepository && <GithubPublishingPanel key={active.sessionId} active={active} />}
   </section>;
 }

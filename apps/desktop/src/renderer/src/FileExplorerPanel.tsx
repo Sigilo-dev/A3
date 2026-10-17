@@ -8,7 +8,7 @@ import { ImageConversionDialog } from './ImageConversionDialog';
 import { AvConversionDialog } from './AvConversionDialog';
 
 type Crumb = { id: string; name: string };
-export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChanged }: { active: LocalProjectSession | null | undefined; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number; onChanged?: () => void }): React.JSX.Element {
+export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChanged, onOpenGitMount }: { active: LocalProjectSession | null | undefined; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number; onChanged?: () => void; onOpenGitMount?: (mountId: string) => void }): React.JSX.Element {
   const [menu, setMenu] = useState<MenuState | null>(null), permissions = useMenuPermissions(active?.sessionId), shortcuts = useShortcuts(), [ask, promptDialog] = useTextPrompt();
   const [stack, setStack] = useState<Crumb[]>([{ id: 'project-root', name: 'Proyecto' }]);
   const [listing, setListing] = useState<LocalExplorerListing | null>(null);
@@ -162,12 +162,17 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChange
           {!listing?.mounts.length && <p className="muted">Este proyecto no tiene recursos montados.</p>}
           {listing?.mounts.map((mount) => <div className="mount-row" key={mount.id} data-mount-status={mount.status}>
             <strong>{mount.name}</strong><span>{mount.status === 'available' ? 'Disponible · solo lectura' : mount.status === 'missing' ? 'Archivo o carpeta ausente' : mount.status === 'changed' ? 'La ruta cambió o no se puede validar' : 'Requiere aprobación local'}</span>
-            <button className="quiet" disabled={busy || mount.status !== 'available'} onClick={async () => {
+            <small>Mount <code>{mount.mountId}</code> · lectura {mount.capabilities.read ? 'concedida' : 'denegada'} · indexación {mount.capabilities.index ? 'concedida' : 'denegada'} · Git {mount.capabilities.git ? 'concedido' : 'denegado'} · escritura externa no disponible</small>
+            <button className="quiet" disabled={busy || mount.status === 'available'} onClick={() => void mutate({ action: 'relink-mount', sessionId: active.sessionId, mountId: mount.mountId })}>Relocalizar montaje…</button>
+            <button className="quiet" disabled={busy || mount.status !== 'available'} onClick={() => onOpenGitMount?.(mount.mountId)}>Git de esta raíz</button>
+            <button className="quiet" disabled={busy || !mount.capabilities.read && mount.status !== 'available'} onClick={() => void mutate({ action: 'mount-capability', sessionId: active.sessionId, mountId: mount.mountId, capability: 'read', granted: !mount.capabilities.read })}>{mount.capabilities.read ? 'Revocar lectura' : 'Conceder lectura'}</button>
+            <button className="quiet" disabled={busy || !mount.capabilities.index && mount.status !== 'available'} onClick={() => void mutate({ action: 'mount-capability', sessionId: active.sessionId, mountId: mount.mountId, capability: 'index', granted: !mount.capabilities.index })}>{mount.capabilities.index ? 'Revocar indexación' : 'Conceder indexación'}</button>
+            <button className="quiet" disabled={busy || mount.status !== 'available' || !mount.capabilities.read} onClick={async () => {
               const api = window.a3; if (!api) return;
               const result = await api.files({ action: 'open-mount', sessionId: active.sessionId, resourceId: mount.id });
               if (result.ok && 'text' in result.value) setOpened(result.value); else if (!result.ok) setError(`${result.error.code}: ${result.error.message}`);
             }}>Abrir referencia</button>
-            <button className="quiet" data-edit-mounted-code disabled={busy || mount.status !== 'available'} onClick={() => onOpenCode({ sessionId: active.sessionId, title: mount.name, target: { resourceId: mount.id } })}>Ver código · solo lectura</button>
+            <button className="quiet" data-edit-mounted-code disabled={busy || mount.status !== 'available' || !mount.capabilities.read} onClick={() => onOpenCode({ sessionId: active.sessionId, title: mount.name, target: { resourceId: mount.id } })}>Ver código · solo lectura</button>
             <button className="quiet" disabled={busy || mount.status !== 'available'} onClick={() => setAvId(mount.id)}>Convertir audio/video… · inspeccionar referencia</button>
             <button className="quiet" disabled={busy || mount.status !== 'available'} onClick={() => void mutate({ action: 'copy-mount-path', sessionId: active.sessionId, resourceId: mount.id, kind: 'absolute' })}>Copiar ruta absoluta</button>
             <button className="quiet" disabled={busy || mount.status !== 'available'} onClick={() => void mutate({ action: 'copy-mount-path', sessionId: active.sessionId, resourceId: mount.id, kind: 'relative' })}>Copiar ruta relativa</button>

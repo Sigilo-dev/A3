@@ -88,6 +88,7 @@ test('mounted code requires both index and read grants and a live approved root;
   const sessionId = (await c.manager.openFolder(c.root)).active.sessionId;
   assert.equal((await c.manager.searchProject(sessionId, 'mountonlytoken')).total, 0);
   await c.host.capabilities.setGrant({ root: c.root, projectId: c.host.projectId, capability: 'mount.index', mode: 'direct' });
+  assert.equal(await c.host.capabilities.setLocalMountCapability({ root: c.root, projectId: c.host.projectId, mountId, capability: 'index', granted: true }), true);
   const allowed = await c.manager.searchProject(sessionId, 'mountonlytoken'); assert.equal(allowed.total, 1); assert.equal(allowed.results[0].resourceId, resourceId); assert.match(allowed.results[0].origin, /^@mount\//);
   await c.host.capabilities.setGrant({ root: c.root, projectId: c.host.projectId, capability: 'mount.read', mode: 'deny' });
   assert.equal((await c.manager.searchProject(sessionId, 'mountonlytoken')).total, 0);

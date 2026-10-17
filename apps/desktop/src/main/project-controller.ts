@@ -486,8 +486,12 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   const validFileRequest = (value: unknown): value is FilesRequest => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const input = value as Record<string, unknown>;
+    if (input.action === 'mount-capability') return Object.keys(input).length === 5 && Object.keys(input).every((key) => ['action', 'sessionId', 'mountId', 'capability', 'granted'].includes(key)) &&
+      typeof input.sessionId === 'string' && /^[a-f0-9-]{36}$/i.test(input.sessionId) && typeof input.mountId === 'string' && /^[a-f0-9-]{36}$/i.test(input.mountId) &&
+      ['index', 'read', 'write', 'git'].includes(String(input.capability)) && typeof input.granted === 'boolean';
     const shapes: Record<string, { required: string[]; optional?: string[] }> = {
       list: { required: ['sessionId'], optional: ['directoryId', 'cursor'] }, open: { required: ['sessionId', 'itemId'] }, 'open-mount': { required: ['sessionId', 'resourceId'] },
+      'relink-mount': { required: ['sessionId', 'mountId'] },
       'create-file': { required: ['sessionId', 'parentId', 'name'] }, 'create-folder': { required: ['sessionId', 'parentId', 'name'] },
       rename: { required: ['sessionId', 'itemId', 'name'] }, duplicate: { required: ['sessionId', 'itemId'], optional: ['name'] },
       move: { required: ['sessionId', 'itemId', 'destination'] },
@@ -898,6 +902,18 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
           case 'list': return { ok: true, value: await manager.listExplorer(value.sessionId, value.directoryId ?? 'project-root', value.cursor) };
           case 'open': return { ok: true, value: await manager.openExplorerItem(value.itemId, value.sessionId) };
           case 'open-mount': return { ok: true, value: await manager.openMountedExplorerResource(value.resourceId, value.sessionId) };
+          case 'mount-capability': {
+            const changed = await manager.setMountCapability(value.sessionId, value.mountId, value.capability, value.granted);
+            if (!changed) throw new LocalProjectError('MOUNT_CAPABILITY_DENIED', 'El host no concedió esta capacidad para el montaje. La escritura externa permanece deshabilitada.');
+            return { ok: true, value: { changed: true } };
+          }
+          case 'relink-mount': {
+            const folder = await chooseFolder('Selecciona la raíz local para este montaje');
+            if (!folder) return { ok: true, value: { cancelled: true } };
+            const changed = await manager.relinkMount(value.sessionId, value.mountId, folder);
+            if (!changed) throw new LocalProjectError('MOUNT_RELINK_DENIED', 'El host no aprobó la raíz seleccionada para este montaje.');
+            return { ok: true, value: { changed: true } };
+          }
           case 'create-file': await manager.createExplorerItem(value.parentId, value.name, 'file', value.sessionId); return { ok: true, value: { changed: true } };
           case 'create-folder': await manager.createExplorerItem(value.parentId, value.name, 'directory', value.sessionId); return { ok: true, value: { changed: true } };
           case 'rename': await manager.renameExplorerItem(value.itemId, value.name, value.sessionId); return { ok: true, value: { changed: true } };

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, readFile, open, rename, rm } from 'node:fs/promises';
-import { dirname, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { GitApplied, GitProjectView, GitReviewInput, GitReviewView, GitDiffView } from '../shared/git-operations.ts';
 import { GitStatusError, runGitVersionCommand, secretLike, validGitBranch, type GitInstallation, type GitVersionCommand, type VerifiedGitBinary } from './git-process.ts';
 import { LocalGitStatusAdapter, type HostGitRepository } from './git-status.ts';
@@ -82,12 +82,16 @@ export class LocalGitVersions {
   private async filters(path: string): Promise<void> {
     const localAttributes = await bytesAt(join(this.repository.root, '.git/info/attributes'));
     need(!localAttributes || !/\bfilter\s*=/.test(localAttributes.toString('utf8')), 'lfs-or-filter-unavailable');
+    const root = resolve(this.repository.root);
     let directory = dirname(join(this.repository.root, safePath(path)));
     while (true) {
       const bytes = await bytesAt(join(directory, '.gitattributes'));
       need(!bytes || !/\bfilter\s*=/.test(bytes.toString('utf8')), 'lfs-or-filter-unavailable');
-      if (directory === this.repository.root) break;
-      need(!relative(this.repository.root, directory).startsWith('..'), 'protected-path'); directory = dirname(directory);
+      const current = resolve(directory);
+      const fromRoot = relative(root, current);
+      need(fromRoot !== '..' && !fromRoot.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(fromRoot), 'protected-path');
+      if (current.toLowerCase() === root.toLowerCase()) break;
+      directory = dirname(directory);
     }
   }
   private async blob(path: string, commit?: string): Promise<Buffer | null> {

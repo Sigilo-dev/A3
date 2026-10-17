@@ -63,6 +63,40 @@ test('mount reads require both a local root approval and mount.read; clone reque
   assert.equal(cloneRead.diagnostics[0].missingCapability, 'mount.read');
 });
 
+test('mount index, read, Git and write grants are independent; revocation blocks the next read', windows, async (t) => {
+  const { root, tempRoot, host } = await setup(t), descriptor = await writeMountedDescriptor(root);
+  const lease = ok(await openProjectService(root, { host, pollMs: 5000 })); t.after(() => lease.close());
+  assert.equal(await host.capabilities.setGrant({ root, projectId: host.projectId, capability: 'mount.read', mode: 'direct' }), true);
+  assert.equal(await host.capabilities.setGrant({ root, projectId: host.projectId, capability: 'mount.index', mode: 'direct' }), true);
+  let binding = host.capabilities.getLocalMount({ root, projectId: host.projectId, mountId });
+  assert.deepEqual(binding.capabilities, { index: false, read: true, write: false, git: false });
+  const indexRequest = { root, projectId: host.projectId, actor: host.authenticatedActor, operation: 'write', paths: [],
+    refs: [{ kind: 'resource', id: descriptor.id }], resources: [descriptor], requiredCapabilities: ['mount.index'], stage: 'apply' };
+  assert.equal(host.capabilities.authorizeAccess(indexRequest).allowed, false, 'a project-wide index grant does not grant this mount');
+  assert.equal(await host.capabilities.setLocalMountCapability({ root, projectId: host.projectId, mountId, capability: 'index', granted: true }), true);
+  assert.equal(host.capabilities.authorizeAccess(indexRequest).allowed, true);
+  assert.equal(await host.capabilities.setLocalMountCapability({ root, projectId: host.projectId, mountId, capability: 'git', granted: true }), true);
+  binding = host.capabilities.getLocalMount({ root, projectId: host.projectId, mountId });
+  assert.deepEqual(binding.capabilities, { index: true, read: true, write: false, git: true });
+  assert.equal(await host.capabilities.setLocalMountCapability({ root, projectId: host.projectId, mountId, capability: 'write', granted: true }), false);
+  assert.equal(await host.capabilities.setLocalMountCapability({ root, projectId: host.projectId, mountId, capability: 'read', granted: false }), true);
+  const blocked = await lease.service.openResource(descriptor.id);
+  assert.equal(blocked.ok, false, 'the next read observes local mount revocation');
+  assert.equal(await host.capabilities.setLocalMountCapability({ root, projectId: host.projectId, mountId, capability: 'read', granted: true }), true);
+  assert.equal((await lease.service.openResource(descriptor.id)).ok, true);
+  assert.equal(await host.capabilities.setLocalMountCapability({ root, projectId: host.projectId, mountId, capability: 'git', granted: false }), true);
+  binding = host.capabilities.getLocalMount({ root, projectId: host.projectId, mountId });
+  assert.equal(binding.capabilities.git, false);
+  assert.equal(await host.capabilities.approveLocalMount({ root, projectId: host.projectId, mountId, selectedRoot: binding.canonicalRoot, permission: 'read-only' }), true);
+  assert.deepEqual(host.capabilities.getLocalMount({ root, projectId: host.projectId, mountId }).capabilities,
+    { index: true, read: true, write: false, git: false }, 'reopening the same binding preserves explicit grants');
+  const replacementRoot = join(tempRoot, 'replacement');
+  await mkdir(replacementRoot, { recursive: true });
+  assert.equal(await host.capabilities.approveLocalMount({ root, projectId: host.projectId, mountId, selectedRoot: replacementRoot, permission: 'read-only' }), true);
+  assert.deepEqual(host.capabilities.getLocalMount({ root, projectId: host.projectId, mountId }).capabilities,
+    { index: false, read: true, write: false, git: false }, 'a different root does not inherit index or Git grants');
+});
+
 test('copy and reference are separate writer actions; reference never edits external bytes', windows, async (t) => {
   const { root, externalRoot, host } = await setup(t);
   const lease = ok(await openProjectService(root, { host, pollMs: 5000 }));
@@ -142,8 +176,11 @@ test('a moved mount reports a recoverable state and keeps the project reference'
   const descriptor = await writeMountedDescriptor(root);
   const lease = ok(await openProjectService(root, { host, pollMs: 5000 }));
   t.after(() => lease.close());
+  assert.equal(await host.capabilities.setLocalMountCapability({ root, projectId: host.projectId, mountId, capability: 'git', granted: true }), true);
   await rename(externalRoot, join(tempRoot, 'relocated'));
   assert.equal(host.capabilities.getLocalMount({ root, projectId: host.projectId, mountId }).status, 'root-missing');
+  assert.equal(await host.capabilities.setLocalMountCapability({ root, projectId: host.projectId, mountId, capability: 'git', granted: false }), true,
+    'a missing root can still have its local Git grant revoked');
   const unavailable = await lease.service.openResource(descriptor.id);
   assert.equal(unavailable.ok, false);
   assert.equal(unavailable.diagnostics[0].detail, 'mount-root-missing');

@@ -15,12 +15,16 @@ export type Capability = typeof CAPABILITIES[number];
 export type Profile = 'consultar' | 'proponer' | 'trabajar' | 'personalizado';
 export type GrantMode = 'deny' | 'propose' | 'approval' | 'direct';
 export type MountPermission = 'read-only' | 'read-write';
+export type LocalMountCapability = 'index' | 'read' | 'write' | 'git';
+export interface LocalMountCapabilities { index: boolean; read: boolean; write: boolean; git: boolean; }
 export interface LocalMountBinding {
   mountId: string;
   projectId: string;
   /** Canonical host-local path. Never copy this field into a project document or renderer payload. */
   canonicalRoot: string;
   permission: MountPermission;
+  /** Per-mount host grants. They are intersected with the project capability broker. */
+  capabilities: LocalMountCapabilities;
   rootIdentity: string;
   status: 'available' | 'root-missing' | 'root-changed';
 }
@@ -64,6 +68,7 @@ export interface ProjectCapabilityBroker {
   revoke(input: { root: string; projectId: string; capability: Capability }): Promise<boolean>;
   approveLocalMount(input: { root: string; projectId: string; mountId: string; selectedRoot: string; permission: MountPermission }): Promise<boolean>;
   getLocalMount(input: { root: string; projectId: string; mountId: string }): LocalMountBinding | undefined;
+  setLocalMountCapability(input: { root: string; projectId: string; mountId: string; capability: LocalMountCapability; granted: boolean }): Promise<boolean>;
   revokeLocalMount(input: { root: string; projectId: string; mountId: string }): Promise<boolean>;
 }
 export interface BrokerOptions {
@@ -75,7 +80,7 @@ export interface BrokerOptions {
   confirmUserAction?: (input: { projectId: string; capability: Capability; operation: string; displayTarget?: string; review?: CapabilityApprovalReview }) => boolean | Promise<boolean>;
 }
 interface GrantFile { schemaVersion: '1.0.0'; rootKey: string; projectId: string; profile: Profile; overrides: Partial<Record<Capability, GrantMode>>; }
-interface MountFile { schemaVersion: '1.0.0'; rootKey: string; projectId: string; mounts: Record<string, { canonicalRoot: string; permission: MountPermission; rootIdentity: string }>; }
+interface MountFile { schemaVersion: '1.0.0'; rootKey: string; projectId: string; mounts: Record<string, { canonicalRoot: string; permission: MountPermission; rootIdentity: string; capabilities?: LocalMountCapabilities }>; }
 export interface SharedPolicyRequest { schemaVersion: '1.0.0'; profile?: Profile; requests: readonly { capability: Capability; mode: GrantMode }[]; }
 
 export const CAPABILITY_GROUPS = [
@@ -113,6 +118,7 @@ function safeOperation(value: string): string {
   if (/^policy\.profile:(consultar|proponer|trabajar|personalizado)$/.test(value)) return value;
   if (/^policy\.grant:(deny|propose|approval|direct)$/.test(value)) return value;
   if (/^mount\.bind:(read-only|read-write)$/.test(value)) return value;
+  if (/^mount\.capability:(index|read|write|git):(grant|revoke)$/.test(value)) return value;
   if (value === 'mount.revoke') return value;
   if (value === 'policy.revoke') return value;
   if (value === 'media.convert') return value;
@@ -130,6 +136,16 @@ function statIdentity(stat: { dev: bigint; ino: bigint; mode: bigint }): string 
   return stat.dev.toString(16) + ':' + stat.ino.toString(16) + ':' + (stat.mode & 0o170000n).toString(16);
 }
 function isMountPermission(value: unknown): value is MountPermission { return value === 'read-only' || value === 'read-write'; }
+function validMountCapabilities(value: unknown): value is LocalMountCapabilities {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return Object.keys(item).every((key) => ['index', 'read', 'write', 'git'].includes(key)) &&
+    ['index', 'read', 'write', 'git'].every((key) => typeof item[key] === 'boolean') && item.write === false;
+}
+const defaultMountCapabilities = (): LocalMountCapabilities => ({ index: false, read: true, write: false, git: false });
+function mountAuditCapability(capability: LocalMountCapability): Capability {
+  return capability === 'index' ? 'mount.index' : capability === 'read' ? 'mount.read' : capability === 'write' ? 'mount.write' : 'git.status';
+}
 function rootKey(root: string): string { return hash(canonicalRoot(root)); }
 function decision(capability: Capability, mode: GrantMode, reason: CapabilityDecision['reason'], allowed = false): CapabilityDecision {
   return { allowed, capability, ...(!allowed && reason !== 'audit-unavailable' ? { missingCapability: capability } : {}), reason, mode };
@@ -229,8 +245,10 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
         if (!validUuid(mountId) || !binding || typeof binding !== 'object' || !isMountPermission(binding.permission) ||
             typeof binding.canonicalRoot !== 'string' || !isAbsolute(binding.canonicalRoot) ||
             process.platform === 'win32' && !/^[a-z]:[\\/]/i.test(binding.canonicalRoot) ||
-            typeof binding.rootIdentity !== 'string' || !/^[0-9a-f]+:[0-9a-f]+:[0-9a-f]+$/i.test(binding.rootIdentity)) return undefined;
-        mounts[mountId.toLowerCase()] = { canonicalRoot: binding.canonicalRoot, permission: binding.permission, rootIdentity: binding.rootIdentity };
+            typeof binding.rootIdentity !== 'string' || !/^[0-9a-f]+:[0-9a-f]+:[0-9a-f]+$/i.test(binding.rootIdentity) ||
+            binding.capabilities !== undefined && !validMountCapabilities(binding.capabilities)) return undefined;
+        mounts[mountId.toLowerCase()] = { canonicalRoot: binding.canonicalRoot, permission: binding.permission, rootIdentity: binding.rootIdentity,
+          capabilities: binding.capabilities ?? defaultMountCapabilities() };
       }
       return { schemaVersion: '1.0.0', rootKey: location.key, projectId: projectId.toLowerCase(), mounts };
     } catch { return undefined; }
@@ -256,7 +274,8 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
     } catch (error) {
       status = error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT' ? 'root-missing' : 'root-changed';
     }
-    return { mountId: input.mountId.toLowerCase(), projectId: input.projectId.toLowerCase(), ...mount, status };
+    return { mountId: input.mountId.toLowerCase(), projectId: input.projectId.toLowerCase(), ...mount,
+      capabilities: mount.capabilities ?? defaultMountCapabilities(), status };
   };
   const persist = (grant: GrantFile, path: string): void => {
     mkdirSync(dirname(path), { recursive: true });
@@ -352,6 +371,20 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
       const projectId = request.projectId?.toLowerCase();
       if (!projectId) return audited(request.root, undefined, actor, request.operation, capability, 'deny', 'grant-unavailable');
       const required = request.operation === 'write' && request.requiredCapabilities?.length ? [...request.requiredCapabilities] : [capability];
+      const localMountCapability: LocalMountCapability | undefined = request.operation === 'read-resource' && request.resources.some((resource) => resource.kind === 'mounted-file')
+        ? 'read' : required.includes('mount.index') ? 'index' : required.includes('mount.write') ? 'write' : undefined;
+      if (localMountCapability && request.resources.some((resource) => resource.kind === 'mounted-file')) {
+        for (const resource of request.resources) {
+          if (resource.kind !== 'mounted-file') continue;
+          const binding = currentMount({ root: request.root, projectId, mountId: resource.mountId });
+          // Missing or moved roots are diagnosed by the host path resolver; this broker guard only enforces an explicit per-mount capability.
+          if (binding && !binding.capabilities[localMountCapability]) {
+            const deniedCapability = mountAuditCapability(localMountCapability);
+            const grant = readGrant(request.root, projectId), mode = grant ? profileMode(grant, deniedCapability) : 'deny';
+            return audited(request.root, projectId, actor, request.operation, deniedCapability, mode, 'grant-unavailable');
+          }
+        }
+      }
       let lastMode: GrantMode = 'deny';
       for (const requiredCapability of required) {
         const grant = readGrant(request.root, projectId);
@@ -473,13 +506,39 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
       const target = mountLocation(input.root, input.projectId);
       const old = readMountFile(input.root, input.projectId);
       const next: MountFile = old ?? { schemaVersion: '1.0.0', rootKey: target.key, projectId: input.projectId.toLowerCase(), mounts: {} };
+      const prior = next.mounts[input.mountId.toLowerCase()];
       if (!audit({ root: input.root, projectId: input.projectId, actor: humanActor, operation, capability, allowed: true, reason: 'granted' })) return false;
-      next.mounts[input.mountId.toLowerCase()] = { canonicalRoot: canonical, permission: input.permission, rootIdentity: identity };
+      const sameRoot = !!prior && prior.rootIdentity === identity && prior.canonicalRoot.toLowerCase() === canonical.toLowerCase();
+      next.mounts[input.mountId.toLowerCase()] = { canonicalRoot: canonical, permission: input.permission, rootIdentity: identity,
+        capabilities: sameRoot ? { ...(prior.capabilities ?? defaultMountCapabilities()), read: true, write: false } : defaultMountCapabilities() };
       persistMounts(next, target.path);
       return true;
     },
     getLocalMount(input: { root: string; projectId: string; mountId: string }): LocalMountBinding | undefined {
       try { return currentMount(input); } catch { return undefined; }
+    },
+    async setLocalMountCapability(input: { root: string; projectId: string; mountId: string; capability: LocalMountCapability; granted: boolean }): Promise<boolean> {
+      if (!validUuid(input.projectId) || !validUuid(input.mountId) || !['index', 'read', 'write', 'git'].includes(input.capability) ||
+          typeof input.granted !== 'boolean' || input.capability === 'write' && input.granted) return false;
+      const target = mountLocation(input.root, input.projectId), old = readMountFile(input.root, input.projectId);
+      const mount = old?.mounts[input.mountId.toLowerCase()]; if (!old || !mount) return false;
+      const current = currentMount({ root: input.root, projectId: input.projectId, mountId: input.mountId });
+      if (!current || input.granted && current.status !== 'available') return false;
+      const capabilities = { ...(mount.capabilities ?? defaultMountCapabilities()) };
+      if (capabilities[input.capability] === input.granted) return true;
+      const projectCapability = mountAuditCapability(input.capability), operation = safeOperation(`mount.capability:${input.capability}:${input.granted ? 'grant' : 'revoke'}`);
+      let approved = false;
+      try { approved = await options.confirmUserAction?.({ projectId: input.projectId, capability: projectCapability, operation, displayTarget: mount.canonicalRoot }) === true; }
+      catch { /* No UI response denies. */ }
+      if (!approved) return false;
+      const observed = currentMount({ root: input.root, projectId: input.projectId, mountId: input.mountId });
+      if (!observed || input.granted && observed.status !== 'available' || observed.rootIdentity !== current.rootIdentity ||
+          observed.canonicalRoot.toLowerCase() !== current.canonicalRoot.toLowerCase()) return false;
+      if (!audit({ root: input.root, projectId: input.projectId, actor: humanActor, operation, capability: projectCapability, allowed: true, reason: 'granted' })) return false;
+      capabilities[input.capability] = input.granted;
+      mount.capabilities = capabilities;
+      persistMounts(old, target.path);
+      return true;
     },
     async revokeLocalMount(input: { root: string; projectId: string; mountId: string }): Promise<boolean> {
       if (!validUuid(input.projectId) || !validUuid(input.mountId) || !options.confirmUserAction ||

@@ -497,10 +497,12 @@ export class ProjectService {
           if (record.kind !== 'resource' || record.value.kind !== 'mounted-file') continue;
           let status: ExplorerMountEntry['status'] = 'approval-required';
           const binding = this.options.host.capabilities.getLocalMount({ root: this.root, projectId: this.#projectId() ?? '', mountId: record.value.mountId });
-          const approved = this.#authorized('read-resource', [], [refOf(record)], [record.value]);
-          if (approved && binding) status = binding.status === 'root-missing' ? 'missing' : binding.status === 'root-changed' ? 'changed' : await inspectLocalMountFile(binding, record.value.path);
-          mounts.push({ resourceId: record.value.id, name: record.value.path.split('/').at(-1) ?? record.value.path,
-            relativePath: record.value.path, status, readOnly: true });
+          if (binding?.status === 'root-missing') status = 'missing';
+          else if (binding?.status === 'root-changed') status = 'changed';
+          else if (binding) status = await inspectLocalMountFile(binding, record.value.path);
+          mounts.push({ resourceId: record.value.id, mountId: record.value.mountId, name: record.value.path.split('/').at(-1) ?? record.value.path,
+            relativePath: record.value.path, status, readOnly: true,
+            capabilities: binding?.capabilities ?? { index: false, read: false, write: false, git: false } });
         }
         return { ok: true, value: { path: directoryPath, entries: page, nextOffset: offset + page.length < visible.length ? offset + page.length : null, mounts }, diagnostics: [] };
       } catch (error) { return failure([this.#operationError(directoryPath || 'project', error)]); }

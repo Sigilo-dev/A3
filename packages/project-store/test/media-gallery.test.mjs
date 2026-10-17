@@ -64,6 +64,7 @@ test('mounted media requires explicit mount.index and mount.read plus the local 
   const canvas = await manager.loadCanvasWorkspace(active.sessionId, active.workspaces[0].id);
   await manager.createCanvasContentNode(active.sessionId, canvas.workspaceId, canvas.revision, { kind: 'image', title: 'Mount image', position: { x: 100, y: 100 },
     resourceId, mediaType: 'image/png', dropMode: 'reference', dropMountId: mountId, dropPath: 'photo.png' });
+  assert.equal(await manager.setMountCapability(active.sessionId, mountId, 'index', true), true);
   let catalog = await manager.loadMediaGallery(active.sessionId);
   assert.equal(catalog.items.find((item) => item.resourceId === resourceId).availability, 'available');
   assert.equal(await host.capabilities.setProfile({ root, projectId: host.projectId, profile: 'consultar' }), true);

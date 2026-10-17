@@ -24,7 +24,8 @@ export function HistoryPanel({ active, onChanged, onOpenGit }: { active: LocalPr
     const result = await window.a3?.git(request);
     if (!result) throw new Error('El puente local de Git no está disponible.');
     if (!result.ok) throw new Error(result.error.message);
-    return result.value;
+    if (Array.isArray(result.value) || 'changed' in result.value) throw new Error('La operación de historial devolvió un tipo de respuesta inesperado.');
+    return result.value as GitProjectView | GitReviewView | GitApplied | { cancelled: true };
   }, []);
   const load = useCallback(async (): Promise<void> => {
     if (!active) return;

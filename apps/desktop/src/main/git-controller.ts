@@ -6,46 +6,64 @@ import { inspectGitInstallation, GitStatusError } from './git-process.ts';
 import { LocalGitVersions } from './git-versions.ts';
 
 export class GitProjectController {
-  private active?: { sessionId: string; service: Promise<LocalGitVersions> };
+  private boundSessionId?: string;
+  private readonly services = new Map<string, { root: string; identity: string; service: Promise<LocalGitVersions> }>();
   constructor(private readonly manager: LocalProjectManager, private readonly broker: ProjectCapabilityBroker, private readonly actor: Actor, private readonly getWindow: () => BrowserWindow | null) {}
   async publishingSource(sessionId: string): Promise<{ snapshot(): ReturnType<LocalGitVersions['publishingSnapshot']>; pack(head: string): Promise<Buffer> }> {
     const loaded = await this.handle({ action: 'load', sessionId }); if (!loaded.ok) throw new GitStatusError(loaded.error.code);
-    const active = this.active; if (!active || active.sessionId !== sessionId) throw new GitStatusError('stale-session');
-    const service = await active.service;
+    const service = await this.serviceFor(sessionId);
     return { snapshot: () => service.publishingSnapshot(), pack: (head) => service.publishingPack(head) };
+  }
+  private async current(sessionId: string) {
+    const active = (await this.manager.getState()).active;
+    if (!active || active.sessionId !== sessionId) throw new GitStatusError('stale-session');
+    return active;
+  }
+  private async serviceFor(sessionId: string, mountId?: string): Promise<LocalGitVersions> {
+    const project = await this.current(sessionId);
+    if (this.boundSessionId !== sessionId) { this.services.clear(); this.boundSessionId = sessionId; }
+    const binding = mountId ? await this.manager.resolveGitMountBinding(sessionId, mountId) : undefined;
+    if (mountId && (!binding || binding.status !== 'available' || !binding.capabilities.git)) throw new GitStatusError(binding?.status === 'root-missing' ? 'mount-root-missing' : binding?.status === 'root-changed' ? 'mount-root-changed' : 'permission-denied');
+    const root = binding?.canonicalRoot ?? project.root, identity = binding?.rootIdentity ?? project.projectId;
+    const key = mountId ? `mount:${mountId.toLowerCase()}` : 'project';
+    const existing = this.services.get(key);
+    if (existing && existing.root === root && existing.identity === identity) return existing.service;
+    const repositoryId = mountId ? `mount-${mountId.toLowerCase()}` : 'project';
+    const create = async () => LocalGitVersions.open(await inspectGitInstallation(), { repositoryId, projectId: project.projectId,
+      kind: mountId ? 'referenced' : 'a3-project', root }, {
+      authorize: async (capability, stage) => {
+        const now = await this.current(sessionId);
+        if (now.root !== project.root || now.projectId !== project.projectId ||
+            !['git.status', 'git.diff'].includes(capability) && (now.mode !== 'writer' || now.pendingName || now.pendingViewport || now.externalConflict)) return false;
+        if (mountId) {
+          const latest = await this.manager.resolveGitMountBinding(sessionId, mountId);
+          if (latest.status !== 'available' || !latest.capabilities.git || latest.rootIdentity !== identity || latest.canonicalRoot !== root || capability === 'git.restore') return false;
+        }
+        const decision = await this.broker.authorizeCapabilities(project.root, this.actor, project.projectId, ['project.read', capability], capability, stage);
+        return decision.allowed;
+      },
+      hasDirtyBuffers: async () => {
+        const window = this.getWindow(); if (!window || window.isDestroyed()) return true;
+        return !await window.webContents.executeJavaScript("window.dispatchEvent(new Event('beforeunload', { cancelable: true }))");
+      },
+      prepareRestore: async (operationId, files) => {
+        if (mountId) throw new GitStatusError('external-restore-denied');
+        const plan = await this.manager.prepareGitRestore(sessionId, { operationId, files });
+        return { paths: plan.changes.map((change) => change.path), images: plan.changes.map((change) => ({ path: change.path, bytes: plan.proposedBytes(change.path) })), snapshotId: plan.operationId, apply: () => this.manager.commitGitRestore(sessionId, plan) };
+      }
+    });
+    const service = create(); this.services.set(key, { root, identity, service }); return service;
   }
   async handle(input: unknown): Promise<GitResult> {
     if (!validGitRequest(input)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud Git inválida.' } };
     try {
-      const current = async () => {
-        const active = (await this.manager.getState()).active;
-        if (!active || active.sessionId !== input.sessionId) throw new GitStatusError('stale-session');
-        return active;
-      };
-      const project = await current();
-      if (this.active?.sessionId !== input.sessionId) {
-        const create = async () => LocalGitVersions.open(await inspectGitInstallation(), { repositoryId: 'project', projectId: project.projectId, kind: 'a3-project', root: project.root }, {
-          authorize: async (capability, stage) => {
-            const now = await current();
-            if (now.root !== project.root || now.projectId !== project.projectId || !['git.status', 'git.diff'].includes(capability) && (now.mode !== 'writer' || now.pendingName || now.pendingViewport || now.externalConflict)) return false;
-            const decision = await this.broker.authorizeCapabilities(project.root, this.actor, project.projectId, ['project.read', capability], capability, stage);
-            return decision.allowed;
-          },
-          hasDirtyBuffers: async () => {
-            const window = this.getWindow(); if (!window || window.isDestroyed()) return true;
-            // Only the trusted local shell is queried. A false event result means an editor has a draft.
-            return !await window.webContents.executeJavaScript("window.dispatchEvent(new Event('beforeunload', { cancelable: true }))");
-          },
-          prepareRestore: async (operationId, files) => {
-            const plan = await this.manager.prepareGitRestore(input.sessionId, { operationId, files });
-            return { paths: plan.changes.map((change) => change.path), images: plan.changes.map((change) => ({ path: change.path, bytes: plan.proposedBytes(change.path) })), snapshotId: plan.operationId, apply: () => this.manager.commitGitRestore(input.sessionId, plan) };
-          }
-        });
-        this.active = { sessionId: input.sessionId, service: create() };
+      await this.current(input.sessionId);
+      if (input.action === 'mounts') return { ok: true, value: await this.manager.listGitMounts(input.sessionId) };
+      if (input.action === 'mount-capability') {
+        if (!await this.manager.setMountCapability(input.sessionId, input.mountId, 'git', input.granted)) throw new GitStatusError('permission-denied');
+        return { ok: true, value: { changed: true } };
       }
-      const pending = this.active;
-      let service: LocalGitVersions;
-      try { service = await pending.service; } catch (error) { if (this.active === pending) this.active = undefined; throw error; }
+      const service = await this.serviceFor(input.sessionId, input.mountId);
       if (input.action === 'cancel') { service.cancel(input.token); return { ok: true, value: { cancelled: true } }; }
       return { ok: true, value: input.action === 'load' ? await service.load() : input.action === 'review' ? await service.review(input.input) : await service.apply(input.token, input.hunkIds) };
     } catch (error) {

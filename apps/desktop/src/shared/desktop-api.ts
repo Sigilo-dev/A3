@@ -12,7 +12,7 @@ export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, Canv
 export type { MediaGalleryCatalog, MediaGalleryItem, MediaGalleryKind, MediaGalleryWorkspace, MediaGalleryGroup, MediaGalleryCollection, MediaGalleryRepresentation, MediaGalleryPreview } from '@a3/project-store';
 export type { LocalHistoryDiff, LocalHistoryRestorePreview } from '@a3/project-store';
 export type { SnapshotSummary } from '@a3/project-store';
-export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
+export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen, LocalGitMount } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
 export const PROJECTS_CHANNEL = 'a3.projects:command';
@@ -138,6 +138,8 @@ export type FilesRequest =
   | { action: 'list'; sessionId: string; directoryId?: string; cursor?: string }
   | { action: 'open'; sessionId: string; itemId: string }
   | { action: 'open-mount'; sessionId: string; resourceId: string }
+  | { action: 'mount-capability'; sessionId: string; mountId: string; capability: 'index' | 'read' | 'write' | 'git'; granted: boolean }
+  | { action: 'relink-mount'; sessionId: string; mountId: string }
   | { action: 'create-file' | 'create-folder'; sessionId: string; parentId: string; name: string }
   | { action: 'rename'; sessionId: string; itemId: string; name: string }
   | { action: 'move'; sessionId: string; itemId: string; destination: string }

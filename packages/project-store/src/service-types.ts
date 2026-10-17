@@ -1,5 +1,5 @@
 import type { Actor, DocumentRef, Resource, ReversibleCanvasCommand, TypeRegistry } from '@a3/domain';
-import type { Capability, ProjectCapabilityBroker } from './capabilities.js';
+import type { Capability, LocalMountCapabilities, ProjectCapabilityBroker } from './capabilities.js';
 import type { ProjectReadResult, ResourceBytes, StoreDiagnostic } from './types.js';
 import type { MigrationStep } from './migrations.js';
 import type { SnapshotSummary } from './snapshots.js';
@@ -124,10 +124,12 @@ export interface ExplorerFileEntry {
 }
 export interface ExplorerMountEntry {
   resourceId: string;
+  mountId: string;
   name: string;
   relativePath: string;
   status: 'available' | 'missing' | 'changed' | 'approval-required';
   readOnly: true;
+  capabilities: LocalMountCapabilities;
 }
 export interface ExplorerDirectoryPage {
   path: string;

@@ -25,7 +25,7 @@ import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, concep
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
 import { initialPageView, insertFocusTab, readWorkspaceSession, writeWorkspaceSession, validCanvasView, validPageView, type WorkspaceSession, type WorkspaceSessionAction, type PageReference } from './workspace-session.js';
-import { isProjectCapabilityBroker, type Capability, type GrantMode, type Profile, type ProjectCapabilityState } from './capabilities.js';
+import { isProjectCapabilityBroker, type Capability, type GrantMode, type LocalMountBinding, type LocalMountCapability, type LocalMountCapabilities, type Profile, type ProjectCapabilityState } from './capabilities.js';
 import { bindProjectAgentTools, type A3ToolSelection, type A3ToolScope, type ProjectAgentTools } from './agent-tools.js';
 import { defaultShortcuts, validateShortcuts, type ShortcutBindings } from '@a3/domain';
 import { resolvePageLink, type NavigationIndex, type PageLink } from './navigation.js';
@@ -181,6 +181,7 @@ export interface LocalCanvasWorkspace {
 export interface LocalExplorerEntry extends Omit<ExplorerDirectoryPage['entries'][number], 'path' | 'identity'> { id: string; path: string; }
 export interface LocalExplorerMount extends Omit<ExplorerMountEntry, 'resourceId'> { id: string; }
 export interface LocalExplorerListing { sessionId: string; directoryId: string; entries: readonly LocalExplorerEntry[]; nextCursor: string | null; mounts: readonly LocalExplorerMount[]; }
+export interface LocalGitMount { mountId: string; label: string; root: string | null; status: 'available' | 'root-missing' | 'root-changed' | 'unbound'; capabilities: LocalMountCapabilities; relativePaths: readonly string[]; }
 export interface LocalExplorerOpen extends Omit<ExplorerOpenResult, 'path'> { relativePath: string; }
 export interface LocalExplorerDeletePreview extends Omit<ExplorerDeletePreview, 'path'> { token: string; name: string; }
 interface ExplorerItemBinding { sessionId: string; path: string; identity: string; kind: 'file' | 'directory' | 'blocked-link'; resourceId?: string; }
@@ -1642,14 +1643,14 @@ export class LocalProjectManager {
         const key = item.resourceId.toLowerCase(), record = resourceById.get(key);
         if (record?.kind !== 'resource' || record.value.kind !== 'mounted-file') { availability[key] = 'missing'; continue; }
         const resource = record.value;
-        if (!indexDecision?.allowed) { availability[key] = 'permission-denied'; continue; }
-        const read = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
-          projectId: active.projectId, operation: 'read-resource', paths: [], refs: [refOf(record)], resources: [resource] });
-        if (!read.allowed) { availability[key] = 'permission-denied'; continue; }
         const binding = this.options.host.capabilities.getLocalMount({ root: active.lease.service.root, projectId: active.projectId, mountId: resource.mountId });
         if (!binding) { availability[key] = 'approval-required'; continue; }
         if (binding.status === 'root-missing') { availability[key] = 'missing'; continue; }
         if (binding.status === 'root-changed') { availability[key] = 'changed'; continue; }
+        if (!indexDecision?.allowed || !binding.capabilities.index) { availability[key] = 'permission-denied'; continue; }
+        const read = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+          projectId: active.projectId, operation: 'read-resource', paths: [], refs: [refOf(record)], resources: [resource] });
+        if (!read.allowed) { availability[key] = 'permission-denied'; continue; }
         const state = await inspectLocalMountFile(binding, resource.path);
         availability[key] = state === 'available' ? 'available' : state === 'missing' ? 'missing' : 'changed';
       }
@@ -2685,6 +2686,45 @@ export class LocalProjectManager {
         capability: 'mount.read', mode: 'direct' });
     });
   }
+  #gitMountSummary(active: ActiveProjectBinding, mountId: string): LocalGitMount | undefined {
+    const resources = active.lease.service.state.project.snapshot.records.filter((record): record is Extract<DomainRecord, { kind: 'resource' }> =>
+      record.kind === 'resource' && record.value.kind === 'mounted-file' && record.value.mountId.toLowerCase() === mountId.toLowerCase());
+    if (!resources.length) return undefined;
+    const binding = this.options.host.capabilities.getLocalMount({ root: active.lease.service.root, projectId: active.projectId, mountId });
+    const paths = [...new Set(resources.map((record) => record.value.kind === 'mounted-file' ? record.value.path : ''))].sort();
+    const base = binding?.canonicalRoot.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || paths[0]?.split('/').filter(Boolean)[0] || 'Montaje';
+    return { mountId: mountId.toLowerCase(), label: `${base} · ${mountId.slice(0, 8)}`, root: binding?.canonicalRoot ?? null,
+      status: !binding ? 'unbound' : binding.status, capabilities: binding?.capabilities ?? { index: false, read: false, write: false, git: false }, relativePaths: paths.slice(0, 5) };
+  }
+  listGitMounts(sessionId: string): Promise<readonly LocalGitMount[]> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId), ids = new Set(active.lease.service.state.project.snapshot.records
+      .filter((record): record is Extract<DomainRecord, { kind: 'resource' }> => record.kind === 'resource' && record.value.kind === 'mounted-file')
+      .map((record) => record.value.kind === 'mounted-file' ? record.value.mountId.toLowerCase() : ''));
+    return [...ids].map((mountId) => this.#gitMountSummary(active, mountId)).filter((item): item is LocalGitMount => !!item);
+  }); }
+  getGitMount(sessionId: string, mountId: string): Promise<LocalGitMount> { return this.#queue(async () => {
+    demand(uuid.test(mountId), 'MOUNT_MISSING', 'El ID de montaje no es válido.');
+    const active = this.#explorerContext(sessionId), mount = this.#gitMountSummary(active, mountId);
+    demand(mount, 'MOUNT_MISSING', 'El montaje no aparece en los recursos del proyecto activo.');
+    return mount;
+  }); }
+  resolveGitMountBinding(sessionId: string, mountId: string): Promise<LocalMountBinding> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    demand(this.#gitMountSummary(active, mountId), 'MOUNT_MISSING', 'El montaje no aparece en el proyecto activo.');
+    const binding = this.options.host.capabilities.getLocalMount({ root: active.lease.service.root, projectId: active.projectId, mountId });
+    demand(binding, 'MOUNT_UNBOUND', 'El montaje no tiene una raíz local vinculada.');
+    return binding;
+  }); }
+  setMountCapability(sessionId: string, mountId: string, capability: LocalMountCapability, granted: boolean): Promise<boolean> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    demand(this.#gitMountSummary(active, mountId), 'MOUNT_MISSING', 'El montaje no aparece en el proyecto activo.');
+    return this.options.host.capabilities.setLocalMountCapability({ root: active.lease.service.root, projectId: active.projectId, mountId, capability, granted });
+  }); }
+  relinkMount(sessionId: string, mountId: string, selectedRoot: string): Promise<boolean> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    demand(this.#gitMountSummary(active, mountId), 'MOUNT_MISSING', 'El montaje no aparece en el proyecto activo.');
+    return this.options.host.capabilities.approveLocalMount({ root: active.lease.service.root, projectId: active.projectId, mountId, selectedRoot, permission: 'read-only' });
+  }); }
   #canvasHistoryEntityIds(active: ActiveProjectBinding, event: ReversibleCanvasCommand): string[] {
     const records = [...active.lease.service.state.project.snapshot.records, ...event.changes.flatMap((change) => [change.before, change.after].filter((record): record is DomainRecord => !!record))];
     const placements = new Map(records.filter((r): r is Extract<DomainRecord, { kind: 'placement' }> => r.kind === 'placement').map((r) => [r.value.id.toLowerCase(), r]));
