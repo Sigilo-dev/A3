@@ -4,6 +4,7 @@ import type { ExtensionHostSnapshot, ExtensionReview, ExtensionsRequest } from '
 
 export function ExtensionHostPanel({ project }: { project: LocalProjectSession }): React.JSX.Element {
   const [state, setState] = useState<ExtensionHostSnapshot | null>(null), [review, setReview] = useState<ExtensionReview | null>(null);
+  const [licenseAcknowledged, setLicenseAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const session = useRef(project.sessionId); session.current = project.sessionId;
   async function send(request: ExtensionsRequest): Promise<void> {
@@ -12,9 +13,9 @@ export function ExtensionHostPanel({ project }: { project: LocalProjectSession }
       const result = await window.a3?.extensions(request);
       if (session.current !== request.sessionId) return;
       if (!result) throw new Error('El host de extensiones no está disponible.');
-      if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
-      if ('token' in result.value) setReview(result.value);
-      else { setState(result.value); setReview(null); }
+      if (!result.ok) { if (request.action === 'apply') setReview(null); throw new Error(`${result.error.code}: ${result.error.message}`); }
+      if ('token' in result.value) { setReview(result.value); setLicenseAcknowledged(false); }
+      else { setState(result.value); setReview(null); setLicenseAcknowledged(false); }
     } catch (reason) { if (session.current === request.sessionId) setError(reason instanceof Error ? reason.message : 'No se completó la operación.'); }
     finally { if (session.current === request.sessionId) setBusy(false); }
   }
@@ -34,14 +35,18 @@ export function ExtensionHostPanel({ project }: { project: LocalProjectSession }
       <h3>{review.manifest.name} · {review.manifest.version}</h3>
       <p>ID: {review.manifest.id} · Licencia declarada: {review.manifest.license}</p>
       <p>SHA-256 del manifiesto: <code>{review.integrity}</code></p>
+      <p>Compatibilidad A3: {review.compatible ? 'compatible con API 1.0.0' : 'no compatible'} · Licencia declarada: {review.license}</p>
       <p>Entrypoint declarado: {review.manifest.entrypoints.main.path}. Su código no se abre ni se verifica como ejecutable.</p>
-      {review.previousVersion && <p>Actualiza {review.previousVersion}; elimina las concesiones anteriores y conserva los datos del proyecto.</p>}
+      {review.previousVersion && <p>Actualización {review.previousVersion} → {review.manifest.version}. Se valida en staging, conserva la versión previa para rollback y revoca todas las concesiones anteriores. Los datos del proyecto permanecen intactos.</p>}
       <pre>{JSON.stringify(review.changes, null, 2)}</pre>
-      <button type="button" className="secondary" disabled={busy} onClick={() => { void send({ action: 'apply', sessionId: project.sessionId, token: review.token }); }}>Revisar y guardar manifiesto inerte</button>
+      <label><input type="checkbox" checked={licenseAcknowledged} disabled={busy} onChange={(event) => setLicenseAcknowledged(event.currentTarget.checked)} /> He revisado la licencia declarada y los cambios de permisos y scopes.</label>
+      <button type="button" className="secondary" disabled={busy || !licenseAcknowledged || !review.compatible} onClick={() => { void send({ action: 'apply', sessionId: project.sessionId, token: review.token, licenseAcknowledged }); }}>Instalar en staging y activar desactivada</button>
       <button type="button" className="quiet" disabled={busy} onClick={() => setReview(null)}>Cancelar revisión</button>
     </section>}
     {state?.extensions.map((entry) => <article className="node-package-card" key={entry.manifest.id}>
       <h3>{entry.manifest.name} · {entry.manifest.version}</h3><p>{entry.manifest.id} · Desactivada · Runtime no disponible</p>
+      <p>El modo fallback conserva entidades, fuentes, propiedades y conexiones. La extensión no puede leer ni modificar datos del proyecto mientras no haya sandbox y concesión efectivas.</p>
+      {entry.rollbackVersion && <button type="button" className="secondary" disabled={busy} onClick={() => { void send({ action: 'rollback', sessionId: project.sessionId, id: entry.manifest.id, integrity: entry.integrity }); }}>Volver a {entry.rollbackVersion}</button>}
       {entry.permissions.map((permission) => <div key={permission.capability}>
         <p><strong>{permission.capability}</strong> · {permission.approved ? 'Aprobación local registrada' : 'Sin concesión local'} · Efectiva: no</p>
         <pre>{JSON.stringify(permission.requested, null, 2)}</pre>

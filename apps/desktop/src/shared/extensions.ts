@@ -11,6 +11,7 @@ export interface ProgrammedExtensionManifest {
 }
 export interface ExtensionView {
   manifest: ProgrammedExtensionManifest; integrity: string; disabled: boolean;
+  rollbackVersion?: string;
   permissions: { capability: ExtensionCapability; requested: ExtensionScope; approved?: ExtensionScope; effective: false; reason: 'sandbox-unavailable' }[];
 }
 export interface ExtensionHostSnapshot {
@@ -20,13 +21,14 @@ export interface ExtensionHostSnapshot {
 export interface ExtensionReview {
   token: string; manifest: ProgrammedExtensionManifest; integrity: string; sourceIntegrity: string;
   previousVersion?: string; changes: { capability: ExtensionCapability; before?: ExtensionScope; after?: ExtensionScope }[];
-  clearsApprovals: boolean; runtimeAvailable: false;
+  license: string; licenseAcknowledgementRequired: true; compatible: true; clearsApprovals: boolean; runtimeAvailable: false;
 }
 export type ExtensionsRequest = { action: 'status'; sessionId: string }
   | { action: 'review'; sessionId: string; bytes: Uint8Array }
-  | { action: 'apply'; sessionId: string; token: string }
+  | { action: 'apply'; sessionId: string; token: string; licenseAcknowledged: boolean }
   | { action: 'grant'; sessionId: string; id: string; integrity: string; capability: ExtensionCapability; scope: ExtensionScope }
   | { action: 'revoke'; sessionId: string; id: string; integrity: string; capability: ExtensionCapability }
+  | { action: 'rollback'; sessionId: string; id: string; integrity: string }
   | { action: 'disable' | 'remove' | 'start'; sessionId: string; id: string; integrity: string };
 export type ExtensionsResult = { ok: true; value: ExtensionHostSnapshot | ExtensionReview } |
   { ok: false; error: { code: string; message: string; recovery: string } };
@@ -76,9 +78,9 @@ export function validExtensionsRequest(value: unknown): value is ExtensionsReque
   const keys = (allowed: string[]): boolean => Object.keys(value).length === allowed.length + 2 && Object.keys(value).every((key) => ['action', 'sessionId', ...allowed].includes(key));
   if (value.action === 'status') return keys([]);
   if (value.action === 'review') return keys(['bytes']) && value.bytes instanceof Uint8Array && value.bytes.byteLength <= 256 * 1024;
-  if (value.action === 'apply') return keys(['token']) && extensionUuid(value.token);
+  if (value.action === 'apply') return keys(['token', 'licenseAcknowledged']) && extensionUuid(value.token) && typeof value.licenseAcknowledged === 'boolean';
   if (typeof value.id !== 'string' || !namespace.test(value.id) || !extensionDigest(value.integrity)) return false;
-  if (['disable', 'remove', 'start'].includes(String(value.action))) return keys(['id', 'integrity']);
+  if (['disable', 'remove', 'start', 'rollback'].includes(String(value.action))) return keys(['id', 'integrity']);
   if (!EXTENSION_CAPABILITIES.includes(value.capability as ExtensionCapability)) return false;
   if (value.action === 'revoke') return keys(['id', 'integrity', 'capability']);
   return value.action === 'grant' && keys(['id', 'integrity', 'capability', 'scope']) && !!scopeValues(value.capability as ExtensionCapability, value.scope);

@@ -21,3 +21,9 @@ Desactivar/revocar/actualizar invalida primero las sesiones del registro host. R
 La interfaz permite revisar manifiestos, comparar scopes, registrar aprobaciones locales aún inefectivas, revocar, desactivar y quitar el registro. Guardar este metadato no instala un paquete ejecutable. Datos del proyecto y lock de nodos declarativos no cambian. Registros locales corruptos se diagnostican y no se sobrescriben; decisiones se auditan sin contenido, credenciales, scopes ni rutas absolutas. El almacenamiento local no es una defensa frente a otro proceso del mismo usuario del SO ni promete durabilidad ante corte eléctrico.
 
 A3-043 no queda aceptado para ejecución positiva, contención real de archivos/red, actualización de código ni terminación de procesos hostiles. Esas capacidades requieren evidencia Windows nueva antes de habilitarse.
+
+## E6-E2 — ciclo de vida sin ejecución
+
+Las actualizaciones del manifiesto usan preview, revisión de licencia/scopes, staging local con hash verificado y activación por reemplazo atómico del registro local. Se conserva una versión previa para rollback; tanto la versión actualizada como la restaurada quedan desactivadas y sin concesiones. Un fallo antes de activar conserva el registro anterior. Desactivar y revocar invalidan leases primero; los callbacks de terminación son una interfaz de host probada con fixtures, no evidencia de un proceso real. El detalle reproducible está en [E6-E2](../e6/extension-lifecycle.md).
+
+Este ciclo no instala ni valida el hash del archivo ejecutable: el contrato de entrada disponible es el manifiesto JSON. La cadena de licencia se valida como dato requerido y la persona confirma su revisión, pero A3 no acredita derechos legales. A3-043 sigue parcial hasta verificar un sandbox Windows y el artefacto de extensión completo.

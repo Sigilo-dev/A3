@@ -46,3 +46,5 @@ Resultado observado el 2026-10-17: build/typecheck correctos; 16/16 pruebas del 
 E0-C2 se repitió el 2026-10-17 en Windows 10 Pro 10.0.19045 / Node 24.13.1: 6 casos, 0 fallos. El hijo ordinario volvió a leer/escribir fuera de la raíz sintética por traversal/junction incluso tras revocación. Se usaron solo carpetas temporales. Por tanto el resultado vuelve a justificar deshabilitar ejecución; no acredita una sandbox ni una política de red.
 
 A3-043 queda **parcial**: controles preventivos, actualización/desactivación y revocación lógica cubiertos; ejecución aislada real, revocación del árbol de procesos, red y recursos del SO sin aceptación. El registro de aprobaciones inefectivas, sus pruebas y el smoke de Electron no cambian esa conclusión. No se añadieron dependencias ni binarios.
+
+El flujo de preview, staging del manifiesto, rollback de una versión y preservación de datos de E6-E2 se documenta en [extension-lifecycle.md](extension-lifecycle.md). La ejecución y el hash del archivo de código continúan deshabilitados/no verificados.

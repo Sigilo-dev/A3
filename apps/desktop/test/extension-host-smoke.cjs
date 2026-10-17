@@ -23,7 +23,7 @@ async function run() {
   const call = (request) => js(`window.a3.extensions(${JSON.stringify({ sessionId: active.sessionId, ...request })})`);
   const review = await js(`window.a3.extensions({action:'review',sessionId:${JSON.stringify(active.sessionId)},bytes:new Uint8Array(${JSON.stringify([...Buffer.from(JSON.stringify(manifest))])})})`);
   assert.equal(review.ok, true); assert.equal((await call({ action: 'status' })).value.extensions.length, 0);
-  const installed = await call({ action: 'apply', token: review.value.token }); assert.equal(installed.ok, true);
+  const installed = await call({ action: 'apply', token: review.value.token, licenseAcknowledged: true }); assert.equal(installed.ok, true);
   const extension = installed.value.extensions[0]; assert.equal(installed.value.runtimeAvailable, false);
   const approved = await call({ action: 'grant', id: manifest.id, integrity: extension.integrity, capability: 'project.read', scope: manifest.scopes['project.read'] });
   assert.equal(approved.ok, true); assert.ok(approved.value.extensions[0].permissions[0].approved);
