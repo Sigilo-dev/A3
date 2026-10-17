@@ -1185,7 +1185,7 @@ export class LocalProjectManager {
           ...(captured.query.referenceScope ? { referenceScope: captured.query.referenceScope } : {}), requiredNames: captured.mode === 'manual' ? captured.requiredNames : [],
           executionVariableNames: (captured.query.executionVariables ?? []).map((variable) => variable.name).sort() },
         variables: compiled.variables.map((variable) => ({ name: variable.name, scope: { kind: variable.scope.kind, ...(variable.scope.kind === 'execution' ? {} : { ownerId: variable.scope.ownerId }) },
-          valueHash: sha256(Buffer.from(JSON.stringify(variable.value), 'utf8')) })), selection: captured.selection,
+          resolvedValue: variable.value, valueHash: sha256(Buffer.from(JSON.stringify(variable.value), 'utf8')) })), selection: captured.selection,
         included: compiled.included, omitted: compiled.omitted, parts: compiled.parts.map((part, index) => ({ index: part.index, bytes: part.bytes, sha256: partHashes[index]!, sourceKeys: part.sourceKeys })),
         provider: null, model: null };
       const tracePath = `.a3/local/prompt-runs/${executionId}.json`;

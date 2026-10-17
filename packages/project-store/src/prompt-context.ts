@@ -1,4 +1,4 @@
-import type { PromptContextCategory, PromptContextCompilationResult } from '@a3/domain';
+import type { JsonValue, PromptContextCategory, PromptContextCompilationResult } from '@a3/domain';
 import type { VariablesQuery } from './variables.js';
 
 export type PromptContextEntityRole = 'selection' | 'requirement' | 'acceptance-criterion';
@@ -32,6 +32,8 @@ export interface PromptContextCompileInput {
 export interface PromptContextVariableTrace {
   name: string;
   scope: { kind: string; ownerId?: string };
+  /** The effective typed value used by this local compilation. It is stored only in .a3/local. */
+  resolvedValue: JsonValue;
   valueHash: string;
 }
 export interface PromptContextExecutionTrace {

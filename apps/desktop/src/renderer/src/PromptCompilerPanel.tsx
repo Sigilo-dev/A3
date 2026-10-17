@@ -167,6 +167,7 @@ export function PromptCompilerPanel({ project, onOpenChat }: { project: LocalPro
         {result.parts.length > 0 ? <>
           {result.parts.length > 1 && <label>Parte<select aria-label="Parte de contexto" value={partIndex} onChange={(event) => setPartIndex(Number(event.currentTarget.value))}>{result.parts.map((part, index) => <option key={part.index} value={index}>Parte {part.index} · {part.bytes.toLocaleString()} bytes · {part.sourceKeys.length} fragmentos</option>)}</select></label>}
           <label>Vista previa Markdown<textarea aria-label="Vista previa exportable" rows={14} readOnly value={result.parts[partIndex]?.markdown ?? ''} /></label>
+          <p role="note">Copiar o exportar crea un prompt manual. Abrir ChatGPT no lo pega ni lo envía y no inicia un turno de Codex.</p>
           <div className="prompt-actions"><button className="secondary" onClick={() => void copyOutput()}>Copiar parte</button><button className="secondary" onClick={onOpenChat}>Abrir ChatGPT manual</button><button className="secondary" onClick={downloadOutput}>Exportar parte Markdown</button></div>
         </> : <p role="alert">La plantilla excede el presupuesto por parte. Aumenta el límite o reduce la plantilla; no se ha recortado.</p>}
       </section>}

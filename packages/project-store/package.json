@@ -21,7 +21,8 @@
   "scripts": {
     "typecheck": "npm run build --workspace @a3/domain && tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build --workspace @a3/domain && npm run build && node --test test/*.test.mjs"
+    "test": "npm run build --workspace @a3/domain && npm run build && node --test test/*.test.mjs",
+    "export:skill-schemas": "npm run build && node scripts/export-a3-skill-schemas.mjs"
   },
   "dependencies": {
     "@a3/domain": "0.1.0-dev.0",

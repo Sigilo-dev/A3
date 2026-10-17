@@ -132,7 +132,7 @@ test('A3-048: a corrupt or unknown-version variable set is diagnosed, never trea
   }
 });
 
-test('A3-019/A3-022: project context is explicit, reads semantic relations only, and stores hash-only local provenance', windows, async (t) => {
+test('A3-019/A3-022: project context is explicit, reads semantic relations only, and stores local provenance with resolved values', windows, async (t) => {
   const c = await project(t), resourceId = '00000000-0000-4000-8000-000000000004', relationId = '00000000-0000-4000-8000-000000000005';
   const sourcePath = join(c.root, 'pages/readme.md'), original = await readFile(sourcePath);
   await put(c, { kind: 'project', ownerId: c.projectId }, scenario.project);
@@ -151,10 +151,32 @@ test('A3-019/A3-022: project context is explicit, reads semantic relations only,
   const trace = JSON.parse(await readFile(join(c.root, result.tracePath), 'utf8'));
   assert.equal(trace.id, result.executionId); assert.equal(trace.projectId, c.projectId); assert.equal(trace.provider, null); assert.equal(trace.model, null);
   assert.deepEqual(trace.variableContext.requiredNames, ['demo.name']); assert.ok(trace.variables.some((variable) => variable.name === 'demo.name' && variable.valueHash));
+  assert.deepEqual(trace.variables.find((variable) => variable.name === 'demo.name').resolvedValue, 'project label');
+  assert.equal(trace.variables.find((variable) => variable.name === 'demo.name').valueHash, sha256(Buffer.from(JSON.stringify('project label'))));
   assert.equal(trace.included.find((entry) => entry.kind === 'resource').sourceHash, resource.sourceHash);
   assert.equal(JSON.stringify(trace).includes('Visión del fixture'), false, 'local trace must not copy source content');
   await assert.rejects(c.manager.compileProjectPromptContext(c.sessionId, { ...input, selection: { ...input.selection, relationIds: ['00000000-0000-4000-8000-000000000011'] } }),
     { code: 'PROMPT_CONTEXT_RELATION_MISSING' });
+});
+
+test('A3-019: an explicitly selected IoT component is compiled by ID and can be excluded without expanding its diagram', windows, async (t) => {
+  const c = await project(t), before = await c.manager.loadCanvasWorkspace(c.sessionId, W1);
+  const canvas = await c.manager.createCanvasIotComponent(c.sessionId, W1, before.revision, 'espressif.esp32-devkitc-v4-32e', 'ESP32 de laboratorio', { x: 40, y: 80 });
+  const component = canvas.entities.find((entry) => entry.type === 'a3.iot.component' && entry.title === 'ESP32 de laboratorio');
+  assert.ok(component);
+  const request = { mode: 'manual', source: 'Propón una revisión para {{iot.board}}.', inputs: {}, requiredNames: [], query: {},
+    selection: { entities: [{ entityId: component.id, role: 'selection' }], resourceIds: [], relationIds: [], excludedSourceKeys: [] }, maxBytes: 64 * 1024, split: false };
+  const selected = await c.manager.compileProjectPromptContext(c.sessionId, request);
+  assert.deepEqual(selected.included.map((source) => source.id), [component.id]);
+  assert.equal(selected.included[0].category, 'selection');
+  assert.equal(selected.visualEdgesIncluded, 0);
+  assert.match(selected.parts[0].markdown, /ESP32 de laboratorio/);
+  assert.match(selected.parts[0].markdown, /espressif\.esp32-devkitc-v4-32e/);
+  const excluded = await c.manager.compileProjectPromptContext(c.sessionId, { ...request,
+    selection: { ...request.selection, excludedSourceKeys: [`entity:${component.id}`] } });
+  assert.equal(excluded.included.length, 0);
+  assert.deepEqual(excluded.omitted.map((source) => ({ id: source.id, reason: source.reason })), [{ id: component.id, reason: 'user-excluded' }]);
+  assert.doesNotMatch(excluded.parts[0].markdown, /ESP32 de laboratorio/);
 });
 
 test('A3-019: explicit exclusion is recorded and project B cannot inherit project A prompt sources', windows, async (t) => {

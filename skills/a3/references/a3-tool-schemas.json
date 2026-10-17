@@ -1,0 +1,240 @@
+{
+  "get_project_context": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "query_entities": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "query"
+    ],
+    "properties": {
+      "query": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20
+      }
+    }
+  },
+  "query_memory": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "query"
+    ],
+    "properties": {
+      "query": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20
+      }
+    }
+  },
+  "read_resource": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "resourceId",
+      "expectedRevision"
+    ],
+    "properties": {
+      "resourceId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expectedRevision": {
+        "type": "integer",
+        "minimum": 1
+      }
+    }
+  },
+  "validate_changes": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operationId"
+    ],
+    "oneOf": [
+      {
+        "required": [
+          "entityId",
+          "expectedRevision",
+          "patch"
+        ],
+        "not": {
+          "required": [
+            "changes"
+          ]
+        }
+      },
+      {
+        "required": [
+          "changes"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "entityId"
+              ]
+            },
+            {
+              "required": [
+                "expectedRevision"
+              ]
+            },
+            {
+              "required": [
+                "patch"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "properties": {
+      "operationId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "entityId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "expectedRevision": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "patch": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        }
+      },
+      "changes": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 32,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entityId",
+            "expectedRevision",
+            "patch"
+          ],
+          "properties": {
+            "entityId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "patch": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": false,
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "tags": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "apply_changes": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operationId"
+    ],
+    "properties": {
+      "operationId": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "cancel_changes": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operationId"
+    ],
+    "properties": {
+      "operationId": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "undo_changes": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operationId",
+      "undoOperationId"
+    ],
+    "properties": {
+      "operationId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "undoOperationId": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  }
+}

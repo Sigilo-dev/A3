@@ -57,6 +57,7 @@ async function run() {
   await waitFor("Boolean(document.querySelector('[aria-label=\"Vista previa exportable\"]'))");
   const compiled = await js("document.querySelector('[aria-label=\"Vista previa exportable\"]').value");
   assert.match(compiled, /workspace label/); assert.match(compiled, /A3: variable sin resolver demo\.absent/);
+  assert.match(await js("document.body.innerText"), /Abrir ChatGPT no lo pega ni lo envía y no inicia un turno de Codex/);
   assert.equal(await js("document.querySelector('[data-auto-send-allowed]').dataset.autoSendAllowed"), 'false');
   await click('[data-section="canvas"]'); await waitFor("Boolean([...document.querySelectorAll('.canvas-entity-header strong')].find((e)=>e.textContent.includes('workspace label')))");
   await click('[data-section="variables"]'); await waitFor("document.querySelector('[data-variable-effective]')?.textContent.includes('project label')");

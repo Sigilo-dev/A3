@@ -28,6 +28,7 @@ try {
   const trace = savedTraces.find((item) => item.included.some((source) => source.sourceHash)); assert.ok(trace);
   assert.equal(trace.kind, 'prompt-context-compilation'); assert.equal(trace.provider, null); assert.equal(trace.model, null);
   assert.ok(trace.promptHash && trace.included.some((source) => source.sourceHash));
+  assert.ok(savedTraces.some((item) => item.variables.some((variable) => variable.name === 'demo.name' && variable.resolvedValue === 'workspace label' && variable.valueHash)));
   assert.equal(JSON.stringify(trace).includes('Visión del fixture'), false);
 } finally {
   if (dirname(resolve(temp)) !== resolve(tmpdir()) || !basename(temp).startsWith('a3-variables-smoke-')) throw new Error('Unexpected cleanup target');
