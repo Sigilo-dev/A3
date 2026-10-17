@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { cp, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { CAPABILITIES, createProjectCapabilityBroker, parseSharedPolicyRequest } from '../dist/index.js';
+import { CAPABILITIES, CAPABILITY_GROUPS, createProjectCapabilityBroker, parseSharedPolicyRequest } from '../dist/index.js';
 import { openProjectService } from '../dist/index.js';
 import { fixtureHost, id, scratch } from './fixture.mjs';
 
@@ -73,6 +73,45 @@ test('shared policies remain inert and a cloned project cannot inherit or expand
   assert.equal(audit.includes(join(root, '.a3', 'policies.json')), false);
 });
 
+test('portable profile requests cannot change the host-approved effective profile; denials and revocations are observable', async (t) => {
+  const { root, tempRoot } = await scratch(t);
+  const { broker, projectId, actor } = await brokerFor(root);
+  await broker.setProfile({ root, projectId, profile: 'proponer' });
+  const path = join(root, '.a3', 'policies.json');
+  await writeFile(path, JSON.stringify({ schemaVersion: '1.0.0', profile: 'trabajar', requests: [
+    { capability: 'document.edit', mode: 'direct' }, { capability: 'process.run', mode: 'direct' },
+    { capability: 'network.access', mode: 'direct' }, { capability: 'git.push', mode: 'direct' }, { capability: 'apps.connect', mode: 'direct' }
+  ], accessToken: 'never-log-this' }));
+  const state = broker.getPolicyState({ root, projectId });
+  assert.equal(state.requestedProfile, 'trabajar');
+  assert.equal(state.effectiveProfile, 'proponer');
+  assert.equal(state.sharedRequestState, 'valid');
+  assert.equal(state.capabilities.find((item) => item.capability === 'document.edit')?.requestedMode, 'direct');
+  assert.equal(state.capabilities.find((item) => item.capability === 'document.edit')?.effectiveMode, 'approval');
+  assert.equal(state.capabilities.find((item) => item.capability === 'process.run')?.available, false);
+  assert.equal(state.capabilities.find((item) => item.capability === 'apps.connect')?.available, false);
+  assert.equal((await broker.authorizeCapabilities(root, actor, projectId, ['document.edit'], 'agent-policy-escalation', 'apply')).reason, 'approval-rejected');
+  assert.equal((await broker.authorizeCapabilities(root, actor, projectId, ['process.run'], 'agent-policy-escalation', 'apply')).reason, 'capability-unavailable');
+
+  const clone = join(tempRoot, 'untrusted-profile-clone');
+  await cp(root, clone, { recursive: true });
+  const cloned = JSON.parse(await readFile(join(clone, '.a3', 'policies.json'), 'utf8'));
+  cloned.profile = 'trabajar'; cloned.requests = [{ capability: 'document.edit', mode: 'direct' }];
+  await writeFile(join(clone, '.a3', 'policies.json'), JSON.stringify(cloned));
+  const cloneState = broker.getPolicyState({ root: clone, projectId });
+  assert.equal(cloneState.effectiveProfile, 'personalizado');
+  assert.equal((await broker.authorizeCapabilities(clone, actor, projectId, ['document.edit'], 'cloned-policy', 'apply')).allowed, false);
+
+  const revocations = [];
+  const unsubscribe = broker.subscribeRevocations((event) => revocations.push(event));
+  await broker.setProfile({ root, projectId, profile: 'consultar' });
+  unsubscribe();
+  assert.ok(revocations.some((event) => event.projectId === projectId && event.capability === 'document.edit'));
+  assert.equal((await broker.authorizeCapabilities(root, actor, projectId, ['document.edit'], 'after-profile-revoke', 'apply')).allowed, false);
+  const audit = await readFile(join(tempRoot, 'a3-host-data', 'capability-audit.ndjson'), 'utf8');
+  assert.equal(audit.includes('never-log-this'), false);
+});
+
 test('capability categories stay independent in Trabajar and Personalizado', async (t) => {
   const { root } = await scratch(t);
   const { broker, projectId, actor } = await brokerFor(root);
@@ -81,7 +120,7 @@ test('capability categories stay independent in Trabajar and Personalizado', asy
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['diagram.edit'], 'a3.core.move-placement', 'apply'), true);
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['task.edit'], 'a3.core.set-collection-members', 'apply'), true);
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['export'], 'canvas.export', 'apply'), true);
-  for (const cap of ['delete', 'mount.read', 'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push', 'git.branch', 'git.restore']) {
+  for (const cap of ['delete', 'mount.read', 'network.access', 'apps.connect', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push', 'git.branch', 'git.restore']) {
     const result = await broker.authorizeCapabilities(root, actor, projectId, [cap], `probe.${cap}`, 'apply');
     assert.equal(result.allowed, false, `${cap} must stay independent`);
     assert.equal(result.missingCapability, cap);
@@ -92,6 +131,9 @@ test('capability categories stay independent in Trabajar and Personalizado', asy
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['diagram.edit'], 'custom.diagram', 'apply'), true);
   const unrelated = await broker.authorizeCapabilities(root, actor, projectId, ['document.edit'], 'custom.document', 'apply');
   assert.equal(unrelated.allowed, false); assert.equal(unrelated.missingCapability, 'document.edit');
+  const flattened = CAPABILITY_GROUPS.flatMap((group) => group.capabilities);
+  assert.equal(new Set(flattened).size, flattened.length);
+  assert.deepEqual(new Set(flattened), new Set(CAPABILITIES));
 });
 
 test('export is gated by project profile and explicit approval in Proponer', async (t) => {

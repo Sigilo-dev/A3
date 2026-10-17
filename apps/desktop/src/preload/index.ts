@@ -4,6 +4,7 @@ import { PLANNING_CHANNEL, type PlanningRequest } from '../shared/planning';
 import { MANUAL_CHAT_CHANNEL, type ManualChatRequest } from '../shared/manual-chat';
 import { CODEX_AUTH_CHANNEL, type CodexAuthRequest } from '../shared/codex-auth';
 import { VARIABLES_CHANNEL } from '../shared/desktop-api';
+import { AGENT_PROFILES_CHANNEL, type AgentProfilesRequest } from '../shared/agent-profiles';
 import type { VariablesRequest } from '../shared/variables';
 import { AV_CONVERSION_CHANNEL, IMAGE_CONVERSION_CHANNEL, type AvRequest, type ImageConversionRequest } from '../shared/desktop-api';
 import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL, type NavigationRequest, type WorkspaceSessionRequest } from '../shared/desktop-api';
@@ -30,6 +31,7 @@ window.addEventListener('drop', (event) => {
 }, true);
 
 const api: DesktopAPI = Object.freeze({
+  agentProfiles: (request: AgentProfilesRequest) => ipcRenderer.invoke(AGENT_PROFILES_CHANNEL, request),
   codexAuthorization: (request: CodexAuthRequest) => ipcRenderer.invoke(CODEX_AUTH_CHANNEL, request),
   manualChat: (request: ManualChatRequest) => ipcRenderer.invoke(MANUAL_CHAT_CHANNEL, request),
   onManualChatFocus: (listener: () => void) => { const handler = (): void => listener(); ipcRenderer.on('a3.manual-chat:focus-url', handler); return () => { ipcRenderer.removeListener('a3.manual-chat:focus-url', handler); }; },

@@ -122,8 +122,8 @@ function validateIntent(value: unknown, folderName: string, folder: string, root
       !uuid.test(folderName) || typeof intent.projectId !== 'string' || !uuid.test(intent.projectId) || !validHash(intent.requestHash) ||
       !Array.isArray(intent.readSet) || !Array.isArray(intent.entries) || intent.entries.length === 0 ||
       !jsonObject(intent.extensions) || !intent.extensions || intent.readSet.length > 10000 || intent.entries.length > 10000) return undefined;
-  const validCapabilities = new Set(['project.read', 'mount.read', 'mount.write', 'document.edit', 'diagram.edit', 'task.edit', 'delete', 'project.recover', 'process.run',
-    'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push', 'git.branch', 'git.restore', 'export']);
+  const validCapabilities = new Set(['project.read', 'mount.read', 'mount.index', 'mount.write', 'document.edit', 'diagram.edit', 'task.edit', 'delete', 'project.recover', 'process.run',
+    'network.access', 'apps.connect', 'package.install', 'media.convert', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push', 'git.branch', 'git.restore', 'export']);
   if (intent.requiredCapabilities !== undefined && (!Array.isArray(intent.requiredCapabilities) || intent.requiredCapabilities.length === 0 ||
       intent.requiredCapabilities.some((value) => typeof value !== 'string' || !validCapabilities.has(value)) ||
       new Set(intent.requiredCapabilities).size !== intent.requiredCapabilities.length)) return undefined;

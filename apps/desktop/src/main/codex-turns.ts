@@ -301,4 +301,11 @@ export class CodexTurnHost {
     });
     this.queue = task.catch(() => undefined); return task;
   }
+  /** Revocation closes the project-bound coordinator and asks its local provider process to stop. */
+  revokeProject(projectId: string): Promise<void> {
+    const task = this.queue.then(async () => {
+      if (this.active?.coordinator.snapshot().projectId === projectId.toLowerCase()) await this.release();
+    });
+    this.queue = task.catch(() => undefined); return task;
+  }
 }

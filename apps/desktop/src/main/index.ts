@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, safeStorage, session, shell } from 'electron';
 import { access } from 'node:fs/promises';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, GALLERY_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
@@ -14,6 +14,7 @@ import { PLANNING_CHANNEL } from '../shared/planning';
 import { MANUAL_CHAT_CHANNEL } from '../shared/manual-chat';
 import { ManualChatController } from './manual-chat';
 import { CODEX_AUTH_CHANNEL } from '../shared/codex-auth';
+import { AGENT_PROFILES_CHANNEL } from '../shared/agent-profiles';
 import { CodexAuthorization } from './codex-authorization';
 import { SystemCredentialVault } from './codex-credential-vault';
 import { CodexAppServerProvider } from './codex-app-server';
@@ -33,6 +34,7 @@ let closing = false;
 let manualChat: ManualChatController | undefined;
 let codexAuthorization: CodexAuthorization | undefined;
 let codexTurns: CodexTurnHost | undefined;
+let unsubscribeCapabilityRevocations: (() => void) | undefined;
 
 async function finishQuit(): Promise<void> {
   if (closing || quitting) return;
@@ -53,6 +55,7 @@ async function finishQuit(): Promise<void> {
     await projects?.imageConversions.cancelAll();
     await projects?.avConversions.cancelAll();
     await codexTurns?.shutdown();
+    unsubscribeCapabilityRevocations?.(); unsubscribeCapabilityRevocations = undefined;
     await projects?.manager.shutdown();
     await codexAuthorization?.shutdown();
     manualChat?.dispose();
@@ -127,6 +130,14 @@ async function startDesktop(): Promise<void> {
   codexTurns = new CodexTurnHost(app.getPath('userData'), (binding) => new CodexAppServerProvider({
     userDataDirectory: join(app.getPath('userData'), 'codex-profiles', turnBindingHash(binding)), clientVersion: app.getVersion()
   }));
+  unsubscribeCapabilityRevocations = projects.capabilities.subscribeRevocations(({ root, projectId }) => {
+    // Stop only the matching project-bound Codex app-server on a capability downgrade.
+    void projects?.manager.getState().then((state) => {
+      const active = state.active;
+      const sameRoot = active && resolve(active.root).replaceAll('\\', '/').toLowerCase() === root;
+      if (sameRoot && active?.projectId === projectId) return codexTurns?.revokeProject(projectId);
+    }).catch(() => undefined);
+  });
 
   const shellSession = session.fromPartition('persist:a3-shell');
   shellSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -161,6 +172,13 @@ async function startDesktop(): Promise<void> {
       return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Autorización disponible solo en la interfaz local.' } };
     }
     return codexAuthorization.handle(args[0]);
+  });
+  ipcMain.handle(AGENT_PROFILES_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) {
+      return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Los perfiles solo se gestionan en Preferencias de la ventana local.', recovery: 'Reabre Preferencias del proyecto.' } };
+    }
+    return projects.handleAgentProfiles(args[0]);
   });
   ipcMain.handle(MANUAL_CHAT_CHANNEL, (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||

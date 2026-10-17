@@ -195,7 +195,7 @@ test('denied and cross-project operations never dispatch or create a receipt', a
   assert.equal(bridge.executions, 0); assert.equal(ctx.coordinator.snapshot().operations.length, 0);
 });
 
-test('host switches root bindings without mixing transcripts or starting processes', async (t) => {
+test('host switches root bindings and revocation stops the project-bound provider without mixing transcripts', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'a3-turn-isolation-')), transports = [];
   const host = new CodexTurnHost(root, () => { const port = new FakeTransport(); transports.push(port); return port; });
   t.after(async () => { await host.shutdown(); await rm(root, { recursive: true, force: true }); });
@@ -208,6 +208,12 @@ test('host switches root bindings without mixing transcripts or starting process
   const restored = await host.openProject(binding);
   assert.equal(restored.snapshot().transcript[0].text, 'Listo.');
   assert.ok(transports.every((transport) => transport.starts === 0));
+  const activeTransport = transports.at(-1);
+  await host.revokeProject(binding.projectId);
+  assert.equal(activeTransport.stops, 1);
+  const resumed = await host.openProject(binding);
+  assert.equal(resumed.snapshot().transcript[0].text, 'Listo.');
+  assert.equal(transports.length, 4);
 });
 
 test('concurrent identical tool requests coalesce into one effect', async (t) => {

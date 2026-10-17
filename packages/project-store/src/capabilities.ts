@@ -8,7 +8,7 @@ import type { AccessRequest } from './service-types.js';
 /** Capability names are stable policy identifiers; none are inferred from agent prompts. */
 export const CAPABILITIES = [
   'project.read', 'mount.read', 'mount.index', 'mount.write', 'document.edit', 'diagram.edit', 'task.edit', 'delete', 'project.recover', 'process.run',
-  'network.access', 'package.install', 'media.convert', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push',
+  'network.access', 'package.install', 'apps.connect', 'media.convert', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push',
   'git.branch', 'git.restore', 'export'
 ] as const;
 export type Capability = typeof CAPABILITIES[number];
@@ -31,6 +31,22 @@ export interface CapabilityDecision {
   reason: 'granted' | 'profile-denied' | 'approval-required' | 'approval-rejected' | 'actor-mismatch' | 'capability-unavailable' | 'grant-unavailable' | 'audit-unavailable';
   mode: GrantMode;
 }
+export interface EffectiveCapabilityState {
+  capability: Capability;
+  effectiveMode: GrantMode;
+  requestedMode?: GrantMode;
+  available: boolean;
+  reason: 'granted' | 'profile-denied' | 'approval-required' | 'capability-unavailable' | 'grant-unavailable';
+}
+export interface ProjectCapabilityState {
+  /** An untrusted, portable request read from .a3/policies.json. */
+  requestedProfile?: Profile;
+  sharedRequestState: 'absent' | 'valid' | 'invalid';
+  /** The profile approved and kept in host-local state for this project. */
+  effectiveProfile: Profile;
+  capabilities: readonly EffectiveCapabilityState[];
+}
+export interface CapabilityRevocation { root: string; projectId: string; capability: Capability; }
 export interface CapabilityApprovalReview {
   tool: 'apply_changes' | 'undo_changes';
   affected: readonly { kind: 'entity'; id: string; expectedRevision: number; resultingRevision: number }[];
@@ -41,6 +57,8 @@ export interface ProjectCapabilityBroker {
   authorizeDomain(root: string, actor: Actor, request: AuthorizationRequest): CapabilityDecision;
   authorizeApply(root: string, actor: Actor, request: AuthorizationRequest, review?: CapabilityApprovalReview): Promise<CapabilityDecision>;
   authorizeCapabilities(root: string, actor: Actor, projectId: string, capabilities: readonly Capability[], operation: string, stage?: 'prepare' | 'apply'): Promise<CapabilityDecision>;
+  getPolicyState(input: { root: string; projectId: string }): ProjectCapabilityState;
+  subscribeRevocations(listener: (event: CapabilityRevocation) => void): () => void;
   setProfile(input: { root: string; projectId: string; profile?: Profile }): Promise<boolean>;
   setGrant(input: { root: string; projectId: string; capability: Capability; mode: GrantMode }): Promise<boolean>;
   revoke(input: { root: string; projectId: string; capability: Capability }): Promise<boolean>;
@@ -58,18 +76,27 @@ export interface BrokerOptions {
 }
 interface GrantFile { schemaVersion: '1.0.0'; rootKey: string; projectId: string; profile: Profile; overrides: Partial<Record<Capability, GrantMode>>; }
 interface MountFile { schemaVersion: '1.0.0'; rootKey: string; projectId: string; mounts: Record<string, { canonicalRoot: string; permission: MountPermission; rootIdentity: string }>; }
-export interface SharedPolicyRequest { schemaVersion: '1.0.0'; requests: readonly { capability: Capability; mode: GrantMode }[]; }
+export interface SharedPolicyRequest { schemaVersion: '1.0.0'; profile?: Profile; requests: readonly { capability: Capability; mode: GrantMode }[]; }
+
+export const CAPABILITY_GROUPS = [
+  { id: 'read', label: 'Lectura', capabilities: ['project.read', 'mount.read', 'mount.index'] },
+  { id: 'write', label: 'Escritura', capabilities: ['document.edit', 'diagram.edit', 'task.edit', 'delete', 'project.recover', 'mount.write'] },
+  { id: 'shell', label: 'Procesos y shell', capabilities: ['process.run'] },
+  { id: 'network', label: 'Red', capabilities: ['network.access'] },
+  { id: 'git', label: 'Git', capabilities: ['git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push', 'git.branch', 'git.restore'] },
+  { id: 'apps', label: 'Aplicaciones', capabilities: ['apps.connect', 'package.install', 'media.convert', 'export'] }
+] as const satisfies readonly { id: string; label: string; capabilities: readonly Capability[] }[];
 
 const profileModes: Record<Profile, Partial<Record<Capability, GrantMode>>> = {
   consultar: { 'project.read': 'direct' },
-  proponer: { 'project.read': 'direct', 'mount.index': 'approval', 'media.convert': 'approval', 'document.edit': 'approval', 'diagram.edit': 'approval', 'task.edit': 'approval', 'project.recover': 'approval', export: 'approval' },
-  trabajar: { 'project.read': 'direct', 'mount.index': 'direct', 'media.convert': 'direct', 'document.edit': 'direct', 'diagram.edit': 'direct', 'task.edit': 'direct', 'project.recover': 'approval', export: 'direct' },
+  proponer: { 'project.read': 'direct', 'mount.index': 'approval', 'media.convert': 'approval', 'document.edit': 'approval', 'diagram.edit': 'approval', 'task.edit': 'approval', 'project.recover': 'approval', 'process.run': 'approval', 'network.access': 'approval', 'git.status': 'approval', 'git.diff': 'approval', 'git.stage': 'approval', 'git.commit': 'approval', 'git.push': 'approval', 'git.branch': 'approval', 'git.restore': 'approval', 'apps.connect': 'approval', 'package.install': 'approval', export: 'approval' },
+  trabajar: { 'project.read': 'direct', 'mount.index': 'direct', 'media.convert': 'direct', 'document.edit': 'direct', 'diagram.edit': 'direct', 'task.edit': 'direct', 'project.recover': 'approval', 'process.run': 'direct', 'network.access': 'direct', 'git.status': 'direct', 'git.diff': 'direct', 'git.stage': 'approval', 'git.commit': 'approval', 'git.push': 'approval', 'git.branch': 'approval', 'git.restore': 'approval', 'apps.connect': 'approval', 'package.install': 'approval', export: 'direct' },
   personalizado: { 'project.read': 'deny' }
 };
 // E0-C2 did not verify OS process isolation, network confinement, package execution,
 // or Git. Export is now enforced by the host's local save dialog and export adapter.
 const unavailable = new Set<Capability>([
-  'mount.write', 'process.run', 'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit',
+  'mount.write', 'process.run', 'network.access', 'apps.connect', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit',
   'git.push', 'git.branch', 'git.restore'
 ]);
 const known = new Set<string>(CAPABILITIES);
@@ -106,6 +133,7 @@ function decision(capability: Capability, mode: GrantMode, reason: CapabilityDec
   return { allowed, capability, ...(!allowed && reason !== 'audit-unavailable' ? { missingCapability: capability } : {}), reason, mode };
 }
 function profileMode(grant: GrantFile, capability: Capability): GrantMode { return grant.overrides[capability] ?? profileModes[grant.profile][capability] ?? 'deny'; }
+const modeRank: Record<GrantMode, number> = { deny: 0, propose: 1, approval: 2, direct: 3 };
 function validateGrant(value: unknown, expectedRoot: string, projectId: string): GrantFile | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const v = value as Partial<GrantFile>;
@@ -123,8 +151,9 @@ export function parseSharedPolicyRequest(input: string | unknown): SharedPolicyR
   let value: unknown = input;
   if (typeof input === 'string') { try { value = JSON.parse(input); } catch { return undefined; } }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const object = value as { schemaVersion?: unknown; requests?: unknown };
+  const object = value as { schemaVersion?: unknown; profile?: unknown; requests?: unknown };
   if (object.schemaVersion !== '1.0.0' || !Array.isArray(object.requests)) return undefined;
+  if (object.profile !== undefined && !isProfile(object.profile)) return undefined;
   const requests: { capability: Capability; mode: GrantMode }[] = [];
   for (const item of object.requests) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return undefined;
@@ -132,7 +161,7 @@ export function parseSharedPolicyRequest(input: string | unknown): SharedPolicyR
     if (typeof candidate.capability !== 'string' || !known.has(candidate.capability) || !isMode(candidate.mode)) return undefined;
     requests.push({ capability: candidate.capability as Capability, mode: candidate.mode });
   }
-  return { schemaVersion: '1.0.0', requests };
+  return { schemaVersion: '1.0.0', ...(object.profile ? { profile: object.profile } : {}), requests };
 }
 
 export function isProjectCapabilityBroker(value: unknown): value is ProjectCapabilityBroker {
@@ -166,6 +195,20 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
       const location = localFor(root, projectId);
       return validateGrant(JSON.parse(readFileSync(location.path, 'utf8')), location.key, projectId.toLowerCase());
     } catch { return undefined; }
+  };
+  const readSharedRequest = (root: string, projectId: string): { state: ProjectCapabilityState['sharedRequestState']; policy?: SharedPolicyRequest } => {
+    try {
+      if (!validUuid(projectId)) return { state: 'invalid' };
+      const canonical = realpathSync.native(resolve(root));
+      const path = join(canonical, '.a3', 'policies.json');
+      const stat = lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || realpathSync.native(path).toLowerCase() !== path.toLowerCase() || stat.size > 64 * 1024) return { state: 'invalid' };
+      const parsed = parseSharedPolicyRequest(readFileSync(path, 'utf8'));
+      return parsed ? { state: 'valid', policy: parsed } : { state: 'invalid' };
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+      return code === 'ENOENT' ? { state: 'absent' } : { state: 'invalid' };
+    }
   };
   const mountLocation = (root: string, projectId: string): { key: string; path: string } => {
     const canonical = assertStateOutside(root);
@@ -237,6 +280,11 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
   const actorMatches = (actor: Actor): boolean => !!actor && actor.kind === hostActor.kind && actor.id === hostActor.id;
   const hostActor: Actor = Object.freeze({ ...options.authenticatedActor });
   const humanActor: Actor = Object.freeze({ kind: 'user', id: 'local-user' });
+  const revocationListeners = new Set<(event: CapabilityRevocation) => void>();
+  const emitRevocation = (root: string, projectId: string, capability: Capability): void => {
+    const event = Object.freeze({ root: canonicalRoot(root), projectId: projectId.toLowerCase(), capability });
+    for (const listener of revocationListeners) { try { listener(event); } catch { /* Cancellation hooks cannot corrupt a grant update. */ } }
+  };
   const authorizeOne = async (root: string, actor: Actor, projectId: string, capability: Capability, operation: string, stage: 'prepare' | 'apply', review?: CapabilityApprovalReview): Promise<CapabilityDecision> => {
     if (!actorMatches(actor)) return audited(root, projectId, actor, operation, capability, 'deny', 'actor-mismatch');
     const grant = readGrant(root, projectId);
@@ -341,20 +389,51 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
       }
       return { allowed: true, capability: capabilities[0] ?? 'document.edit', reason: 'granted', mode: lastMode };
     },
+    getPolicyState(input: { root: string; projectId: string }): ProjectCapabilityState {
+      const grant = readGrant(input.root, input.projectId);
+      const shared = readSharedRequest(input.root, input.projectId);
+      const requestedMode = (capability: Capability): GrantMode | undefined => {
+        if (!shared.policy) return undefined;
+        return shared.policy.requests.find((request) => request.capability === capability)?.mode ??
+          (shared.policy.profile ? profileModes[shared.policy.profile][capability] : undefined);
+      };
+      return {
+        ...(shared.policy?.profile ? { requestedProfile: shared.policy.profile } : {}),
+        sharedRequestState: shared.state,
+        effectiveProfile: grant?.profile ?? 'personalizado',
+        capabilities: CAPABILITIES.map((capability) => {
+          const effectiveMode = grant ? profileMode(grant, capability) : 'deny';
+          const available = !unavailable.has(capability);
+          const requested = requestedMode(capability);
+          return { capability, effectiveMode, ...(requested ? { requestedMode: requested } : {}), available,
+            reason: !grant ? 'grant-unavailable' : !available ? 'capability-unavailable' : effectiveMode === 'deny' || effectiveMode === 'propose' ? 'profile-denied' :
+              effectiveMode === 'approval' ? 'approval-required' : 'granted' };
+        })
+      };
+    },
+    subscribeRevocations(listener: (event: CapabilityRevocation) => void): () => void {
+      revocationListeners.add(listener); return () => { revocationListeners.delete(listener); };
+    },
     async setProfile(input: { root: string; projectId: string; profile?: Profile }): Promise<boolean> {
       const profile = input.profile ?? 'proponer';
       if (!isProfile(profile) || !options.confirmUserAction || !(await options.confirmUserAction({ projectId: input.projectId, capability: 'project.read', operation: safeOperation(`policy.profile:${profile}`), displayTarget: canonicalRoot(input.root) }))) return false;
-      const target = localFor(input.root, input.projectId);
+      const target = localFor(input.root, input.projectId), old = readGrant(input.root, input.projectId);
       if (!audit({ root: input.root, projectId: input.projectId, actor: humanActor, operation: `policy.profile:${profile}`, capability: 'project.read', allowed: true, reason: 'granted' })) return false;
       persist({ schemaVersion: '1.0.0', rootKey: target.key, projectId: input.projectId.toLowerCase(), profile, overrides: {} }, target.path);
+      for (const capability of CAPABILITIES) {
+        const before = old ? profileMode(old, capability) : 'deny', after = profileModes[profile][capability] ?? 'deny';
+        if (modeRank[after] < modeRank[before]) emitRevocation(input.root, input.projectId, capability);
+      }
       return true;
     },
     async setGrant(input: { root: string; projectId: string; capability: Capability; mode: GrantMode }): Promise<boolean> {
       if (!known.has(input.capability) || !isMode(input.mode) || !options.confirmUserAction || !(await options.confirmUserAction({ projectId: input.projectId, capability: input.capability, operation: safeOperation(`policy.grant:${input.mode}`) }))) return false;
       const target = localFor(input.root, input.projectId); const old = readGrant(input.root, input.projectId);
       const next: GrantFile = old ?? { schemaVersion: '1.0.0', rootKey: target.key, projectId: input.projectId.toLowerCase(), profile: 'personalizado', overrides: {} };
+      const previousMode = old ? profileMode(old, input.capability) : 'deny';
       if (!audit({ root: input.root, projectId: input.projectId, actor: humanActor, operation: `policy.grant:${input.mode}`, capability: input.capability, allowed: true, reason: 'granted' })) return false;
       next.overrides[input.capability] = input.mode; persist(next, target.path);
+      if (modeRank[input.mode] < modeRank[previousMode]) emitRevocation(input.root, input.projectId, input.capability);
       return true;
     },
     async revoke(input: { root: string; projectId: string; capability: Capability }): Promise<boolean> {
@@ -363,6 +442,7 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
       if (!old || !known.has(input.capability)) return false;
       if (!audit({ root: input.root, projectId: input.projectId, actor: humanActor, operation: 'policy.revoke', capability: input.capability, allowed: true, reason: 'granted' })) return false;
       old.overrides[input.capability] = 'deny'; persist(old, target.path);
+      emitRevocation(input.root, input.projectId, input.capability);
       return true;
     },
     async approveLocalMount(input: { root: string; projectId: string; mountId: string; selectedRoot: string; permission: MountPermission }): Promise<boolean> {

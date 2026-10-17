@@ -25,7 +25,7 @@ import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, concep
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
 import { initialPageView, insertFocusTab, readWorkspaceSession, writeWorkspaceSession, validCanvasView, validPageView, type WorkspaceSession, type WorkspaceSessionAction, type PageReference } from './workspace-session.js';
-import { isProjectCapabilityBroker } from './capabilities.js';
+import { isProjectCapabilityBroker, type Capability, type GrantMode, type Profile, type ProjectCapabilityState } from './capabilities.js';
 import { bindProjectAgentTools, type A3ToolSelection, type A3ToolScope, type ProjectAgentTools } from './agent-tools.js';
 import { defaultShortcuts, validateShortcuts, type ShortcutBindings } from '@a3/domain';
 import { resolvePageLink, type NavigationIndex, type PageLink } from './navigation.js';
@@ -656,6 +656,18 @@ export class LocalProjectManager {
       const state = active.lease.service.state, allowed = decision.allowed && (name === 'read' || state.mode === 'writer' && !state.externalConflict);
       return [name, { allowed, reason: allowed ? '' : `${capability}: ${decision.allowed ? state.externalConflict ? 'Cambios externos pendientes de resolver' : 'Proyecto en solo lectura' : decision.reason}` }];
     })) as MenuPermissions;
+  }); }
+  agentPolicyState(sessionId: string): Promise<ProjectCapabilityState> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    return this.options.host.capabilities.getPolicyState({ root: active.lease.service.root, projectId: active.projectId });
+  }); }
+  setAgentProfile(sessionId: string, profile: Profile): Promise<boolean> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    return this.options.host.capabilities.setProfile({ root: active.lease.service.root, projectId: active.projectId, profile });
+  }); }
+  setAgentCapability(sessionId: string, capability: Capability, mode: GrantMode): Promise<boolean> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    return this.options.host.capabilities.setGrant({ root: active.lease.service.root, projectId: active.projectId, capability, mode });
   }); }
   renamePage(sessionId: string, entityId: string, expectedRevision: number, title: string): Promise<void> { return this.#queue(async () => {
     const active = this.#explorerContext(sessionId), prepared = await active.lease.service.preparePageRename({ operationId: randomUUID(), entityId, expectedRevision, title });

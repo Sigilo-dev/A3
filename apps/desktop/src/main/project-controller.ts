@@ -16,6 +16,7 @@ import { validPlanningRequest, type PlanningResult } from '../shared/planning';
 import { validMemorySearchRequest, type MemorySearchResult } from '../shared/memory-search';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import { validAgentProfilesRequest, type AgentProfilesResult } from '../shared/agent-profiles';
 import { validViewport } from '../shared/world-viewport';
 import { validCanvasView, validPageView } from '@a3/project-store';
 import type { WorkspaceSessionRequest, WorkspaceSessionResult } from '../shared/desktop-api';
@@ -587,6 +588,20 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
+    capabilities,
+    async handleAgentProfiles(value: unknown): Promise<AgentProfilesResult> {
+      if (!validAgentProfilesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'La solicitud de perfil de agente no es válida.', recovery: 'Vuelve a cargar Preferencias del proyecto.' } };
+      try {
+        let updated: boolean | undefined;
+        if (value.action === 'set-profile') updated = await manager.setAgentProfile(value.sessionId, value.profile);
+        else if (value.action === 'set-capability') updated = await manager.setAgentCapability(value.sessionId, value.capability, value.mode);
+        const state = await manager.agentPolicyState(value.sessionId);
+        return { ok: true, value: { state, ...(updated !== undefined ? { updated } : {}) } };
+      } catch (error) {
+        return { ok: false, error: { code: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'PROFILE_FAILED',
+          message: error instanceof Error ? error.message : 'No se pudo leer o actualizar el perfil.', recovery: 'La concesión local anterior se conserva; comprueba que el proyecto siga abierto.' } };
+      }
+    },
     async handleMemorySearch(value: unknown): Promise<MemorySearchResult> {
       if (!validMemorySearchRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de memoria/búsqueda inválida.', recovery: 'Revisa los campos.' } };
       try { return { ok: true, value: value.action === 'memory' ? await manager.loadMemory(value.sessionId) : value.action === 'initialize' ? await manager.initializeMemory(value.sessionId) : value.action === 'summary' ? await manager.createMemorySummary(value.sessionId, value.input) : await manager.searchProject(value.sessionId, value.query, value.rebuild, value.exclusions) }; }
