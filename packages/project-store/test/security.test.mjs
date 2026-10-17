@@ -120,7 +120,8 @@ test('capability categories stay independent in Trabajar and Personalizado', asy
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['diagram.edit'], 'a3.core.move-placement', 'apply'), true);
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['task.edit'], 'a3.core.set-collection-members', 'apply'), true);
   capability(await broker.authorizeCapabilities(root, actor, projectId, ['export'], 'canvas.export', 'apply'), true);
-  for (const cap of ['delete', 'mount.read', 'network.access', 'apps.connect', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push', 'git.branch', 'git.restore']) {
+  capability(await broker.authorizeCapabilities(root, actor, projectId, ['git.status', 'git.diff'], 'git.status', 'apply'), true);
+  for (const cap of ['delete', 'mount.read', 'network.access', 'apps.connect', 'package.install', 'git.stage', 'git.commit', 'git.push', 'git.branch', 'git.restore']) {
     const result = await broker.authorizeCapabilities(root, actor, projectId, [cap], `probe.${cap}`, 'apply');
     assert.equal(result.allowed, false, `${cap} must stay independent`);
     assert.equal(result.missingCapability, cap);

@@ -661,6 +661,17 @@ export class LocalProjectManager {
     const active = this.#explorerContext(sessionId);
     return this.options.host.capabilities.getPolicyState({ root: active.lease.service.root, projectId: active.projectId });
   }); }
+  prepareGitRestore(sessionId: string, input: { operationId: string; files: readonly { path: string; bytes: Uint8Array | null; expectedHash: string | null }[] }): Promise<PreparedWrite> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    demand(!this.#viewportDrafts.size && this.#nameDraft === undefined, 'UNSAVED_CHANGES', 'Guarda los cambios pendientes del proyecto.');
+    const result = await active.lease.service.prepareVersionRestore(input);
+    demand(result.ok, 'RESTORE_REJECTED', result.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+    return result.value;
+  }); }
+  commitGitRestore(sessionId: string, plan: PreparedWrite): Promise<void> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId), result = await active.lease.service.commit(plan);
+    demand(result.ok, 'RESTORE_CONFLICT', result.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+  }); }
   setAgentProfile(sessionId: string, profile: Profile): Promise<boolean> { return this.#queue(async () => {
     const active = this.#explorerContext(sessionId);
     return this.options.host.capabilities.setProfile({ root: active.lease.service.root, projectId: active.projectId, profile });

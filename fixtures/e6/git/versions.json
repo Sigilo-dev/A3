@@ -1,0 +1,7 @@
+{
+  "message": "feat(notes): record selected change",
+  "author": { "name": "A3 Fixture", "email": "fixture@example.invalid" },
+  "branch": "feature/revisión-local",
+  "resourceId": "00000000-0000-4000-8000-000000000004",
+  "sourcePath": "pages/readme.md"
+}

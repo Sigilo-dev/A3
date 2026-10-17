@@ -1428,6 +1428,59 @@ export class ProjectService {
     if (!this.#authorized('read-resource', [])) return Promise.resolve(failure([this.#denied('snapshot')]));
     return listSnapshots(this.root, this.#projectId());
   }
+  /** Host-only Git/history images. The normal writer validates, snapshots and journals every file. */
+  prepareVersionRestore(input: { operationId: string; files: readonly { path: string; bytes: Uint8Array | null; expectedHash: string | null }[] }): Promise<StoreResult<PreparedWrite>> {
+    const request = { ...input, files: input.files.map((file) => ({ ...file, bytes: file.bytes === null ? null : Uint8Array.from(file.bytes) })) };
+    return this.#queue(async () => {
+      try {
+        const current = await this.#currentForMaintenance(); if (!current.ok) return current;
+        if (!request.files.length || request.files.length > 128) throw new PathError('restore-limit', 'Selecciona entre 1 y 128 archivos.');
+        let scan = await this.#withExtraPaths(current.value, request.files.map((file) => file.path));
+        const records = new Map(scan.project.snapshot.records.map((record) => [refKey(refOf(record)), record]));
+        const documents = new Map(scan.project.documents.map((document) => [document.location.path, document]));
+        const images: Image[] = [];
+        for (const file of request.files) {
+          resolvePortablePath(this.root, file.path);
+          if (/(?:^|\/)(?:\.git|\.env(?:\.[^/]*)?|credentials?(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|node_modules|\.?cache)(?:\/|$)/i.test(file.path) || /(?:^|\/)\.a3\/local(?:\/|$)/i.test(file.path) || /\.(?:key|pem|p12|pfx)$/i.test(file.path) || (scan.files.get(file.path)?.hash ?? null) !== file.expectedHash) throw new PathError('external-conflict', file.path);
+          const document = documents.get(file.path), location = document?.location ?? locationForPath(file.path, this.#catalog, this.#projectId()!);
+          if (location && file.bytes !== null) {
+            const decoded = decodeDocument(location, file.bytes);
+            if (decoded.status !== 'valid' || !decoded.record || !decoded.value || !object(decoded.value) || typeof decoded.value.revision !== 'number') return failure(decoded.diagnostics);
+            if (document?.record && refKey(refOf(document.record)) !== refKey(refOf(decoded.record)) || decoded.record.kind === 'project' && decoded.record.value.projectId !== this.#projectId()) throw new PathError('restore-identity', 'La versión pertenece a otra identidad.');
+            const revision = Math.max(document?.record?.value.revision ?? 0, decoded.value.revision) + 1;
+            const restored = decodeDocument(location, jsonBytes({ ...decoded.value, revision }));
+            if (restored.status !== 'valid' || !restored.record) return failure(restored.diagnostics);
+            records.set(refKey(refOf(restored.record)), restored.record);
+            images.push({ path: file.path, bytes: jsonBytes({ ...decoded.value, revision }), ref: refOf(restored.record) });
+          } else {
+            if (file.bytes === null && document?.record) records.delete(refKey(refOf(document.record)));
+            images.push({ path: file.path, bytes: file.bytes, ...(document?.record ? { ref: refOf(document.record) } : {}) });
+          }
+        }
+        // A source restoration revises its existing Resource, preserving its ID and opaque data.
+        for (const record of [...records.values()]) if (record.kind === 'resource' && record.value.kind === 'project-file') {
+          const source = images.find((image) => image.path === record.value.path);
+          if (!source) continue;
+          if (source.bytes === null) throw new PathError('restore-reference', 'No se borra un archivo que sigue referenciado.');
+          const descriptor = [...documents.values()].find((document) => document.record?.kind === 'resource' && document.record.value.id === record.value.id);
+          if (descriptor && !images.some((image) => image.path === descriptor.location.path)) {
+            const encoded = encodeDocument(descriptor, [{ op: 'set', pointer: '/revision', value: record.value.revision + 1 }]);
+            if (!encoded.ok) return encoded;
+            records.set(refKey(refOf(record)), encoded.record!);
+            images.push({ path: descriptor.location.path, bytes: Uint8Array.from(encoded.bytes), ref: refOf(record) });
+          }
+        }
+        const next = [...records.values()], invalid = validateSnapshot({ records: next }, this.#registry).filter((issue) => issue.severity === 'error');
+        if (invalid.length) return failure(domainIssues(invalid));
+        scan = await this.#withExtraPaths(scan, images.map((image) => image.path));
+        const requiredCapabilities: Capability[] = ['git.restore', 'document.edit'];
+        if (images.some((image) => image.ref && !['resource', 'project'].includes(image.ref.kind))) requiredCapabilities.push('diagram.edit');
+        if (next.some((record) => record.kind === 'entity' && record.value.type.startsWith('a3.planning.') && images.some((image) => image.ref?.id === record.value.id))) requiredCapabilities.push('task.edit');
+        return this.#makePlan(scan, request.operationId, images, next, next.flatMap((record) => record.kind === 'resource' ? [record.value] : []), sha256(jsonBytes({ operationId: request.operationId, files: images.map((image) => ({ path: image.path, hash: image.bytes === null ? null : sha256(image.bytes) })) })),
+          { maintenance: true, snapshotReason: 'restore', requiredCapabilities, externalPaths: images.map((image) => image.path) });
+      } catch (error) { return failure([this.#operationError('restore', error)]); }
+    });
+  }
   createSnapshot(operationId: string, reason: SnapshotReason, paths?: readonly string[]): Promise<StoreResult<SnapshotReceipt>> {
     return this.#queue(async () => {
       const current = await this.#currentForMaintenance(reason === 'migration');

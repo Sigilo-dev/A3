@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { GIT_OPERATIONS_CHANNEL, type GitRequest } from '../shared/git-operations';
 import { MEMORY_SEARCH_CHANNEL, type MemorySearchRequest } from '../shared/memory-search';
 import { PLANNING_CHANNEL, type PlanningRequest } from '../shared/planning';
 import { MANUAL_CHAT_CHANNEL, type ManualChatRequest } from '../shared/manual-chat';
@@ -31,6 +32,7 @@ window.addEventListener('drop', (event) => {
 }, true);
 
 const api: DesktopAPI = Object.freeze({
+  git: (request: GitRequest) => ipcRenderer.invoke(GIT_OPERATIONS_CHANNEL, request),
   agentProfiles: (request: AgentProfilesRequest) => ipcRenderer.invoke(AGENT_PROFILES_CHANNEL, request),
   codexAuthorization: (request: CodexAuthRequest) => ipcRenderer.invoke(CODEX_AUTH_CHANNEL, request),
   manualChat: (request: ManualChatRequest) => ipcRenderer.invoke(MANUAL_CHAT_CHANNEL, request),

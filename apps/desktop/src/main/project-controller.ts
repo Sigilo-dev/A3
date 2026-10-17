@@ -15,6 +15,7 @@ import { validVariablesRequest, type VariablesResult } from '../shared/variables
 import { validPlanningRequest, type PlanningResult } from '../shared/planning';
 import { validMemorySearchRequest, type MemorySearchResult } from '../shared/memory-search';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
+import { GitProjectController } from './git-controller';
 import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validAgentProfilesRequest, type AgentProfilesResult } from '../shared/agent-profiles';
 import { validViewport } from '../shared/world-viewport';
@@ -589,6 +590,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   return {
     manager,
     capabilities,
+    git: new GitProjectController(manager, capabilities, authenticatedActor, getWindow),
     async handleAgentProfiles(value: unknown): Promise<AgentProfilesResult> {
       if (!validAgentProfilesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'La solicitud de perfil de agente no es válida.', recovery: 'Vuelve a cargar Preferencias del proyecto.' } };
       try {

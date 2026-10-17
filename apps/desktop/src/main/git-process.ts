@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { GIT_STATUS_EXCLUSIONS } from './git-status-policy.ts';
+import { protectedGitPath, validGitRelativePath } from './git-status-policy.ts';
 
 /** Verified system installation only; A3 neither downloads nor redistributes Git in E6-A1. */
 export const GIT_STATUS_ENGINE = Object.freeze({
@@ -35,10 +36,12 @@ export function gitEnvironment(cwd: string): NodeJS.ProcessEnv {
 }
 
 /** Private fixed-command runner, never an IPC method or a generic command API. */
-async function run(executable: string, args: readonly string[], cwd: string, signal?: AbortSignal): Promise<Buffer> {
+async function run(executable: string, args: readonly string[], cwd: string, signal?: AbortSignal, options: { indexFile?: string; input?: Uint8Array } = {}): Promise<Buffer> {
   if (signal?.aborted) throw new GitStatusError('cancelled');
   return new Promise((accept, reject) => {
-    const child = spawn(executable, [...args], { cwd, shell: false, windowsHide: true, env: gitEnvironment(cwd), stdio: ['ignore', 'pipe', 'pipe'] });
+    const env = gitEnvironment(cwd); if (options.indexFile) env.GIT_INDEX_FILE = options.indexFile;
+    const child = spawn(executable, [...args], { cwd, shell: false, windowsHide: true, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stdin.on('error', () => undefined); child.stdin.end(options.input);
     let total = 0, failure: GitStatusError | undefined;
     const chunks: Buffer[] = [];
     const stop = (code: string): void => { failure ??= new GitStatusError(code); child.kill(); };
@@ -55,6 +58,60 @@ async function run(executable: string, args: readonly string[], cwd: string, sig
       if (failure) reject(failure); else if (code !== 0) reject(new GitStatusError('failed')); else accept(Buffer.concat(chunks));
     });
   });
+}
+
+export type GitVersionCommand =
+  | { kind: 'diff'; cached: boolean; path: string }
+  | { kind: 'stage' | 'unstage'; paths: readonly string[]; indexFile: string; unborn?: boolean }
+  | { kind: 'patch'; patch: string; indexFile: string }
+  | { kind: 'tree'; indexFile: string }
+  | { kind: 'blob'; oid: string }
+  | { kind: 'entry'; commit: string; path: string }
+  | { kind: 'index-entry'; path: string }
+  | { kind: 'commit-object'; tree: string; parent: string | null; message: string; name: string; email: string; indexFile: string }
+  | { kind: 'publish'; branch: string; previous: string | null; next: string }
+  | { kind: 'branch'; branch: string; current: string; head: string }
+  | { kind: 'branches' | 'log' };
+export function validGitBranch(branch: string): boolean {
+  return typeof branch === 'string' && /^(?![-/])(?!.*(?:\.\.|\/\/|@\{|\.lock(?:\/|$)))[\p{L}\p{N}_./-]{1,120}$/u.test(branch) && branch.split('/').every((part) => !part.startsWith('.') && !part.endsWith('.'));
+}
+export function secretLike(text: string): boolean {
+  return /(?:-----BEGIN (?:[\w ]+ )?PRIVATE KEY-----|\b(?:sk-[\w-]{16,}|gh[pousr]_[\w]{20,}|github_pat_[\w]{20,})\b|(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|authorization)\s*[:=]\s*["']?[^\s"']{4,})/i.test(text);
+}
+/** Closed host protocol; no shell, arbitrary argv, author environment, or remote commands. */
+export async function runGitVersionCommand(binary: VerifiedGitBinary, cwd: string, command: GitVersionCommand): Promise<Buffer> {
+  await validateGitBinary(binary);
+  const safe = ['--no-pager', '--no-optional-locks', '--literal-pathspecs', `--git-dir=${join(cwd, '.git')}`, `--work-tree=${cwd}`,
+    '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', 'core.hooksPath=/dev/null', '-c', 'diff.external=',
+    '-c', 'commit.gpgsign=false', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', '-c', 'user.name=A3 local operation', '-c', 'user.email=a3-local@localhost'];
+  const path = (value: string): string => { if (!validGitRelativePath(value) || protectedGitPath(value)) throw new GitStatusError('protected-path'); return value; };
+  const oid = (value: string): string => { if (!/^[a-f0-9]{40}$/.test(value)) throw new GitStatusError('invalid-object'); return value; };
+  const ref = (value: string): string => { if (!validGitBranch(value)) throw new GitStatusError('invalid-branch'); return `refs/heads/${value}`; };
+  const options: { indexFile?: string; input?: Uint8Array } = {};
+  if ('indexFile' in command) {
+    if (!isAbsolute(command.indexFile) || dirname(command.indexFile) !== join(cwd, '.git') || !/^a3-index-[a-f0-9-]{36}$/.test(command.indexFile.split(/[\\/]/).at(-1)!)) throw new GitStatusError('invalid-index');
+    options.indexFile = command.indexFile;
+  }
+  let args: string[];
+  switch (command.kind) {
+    case 'diff': args = ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--full-index', ...(command.cached ? ['--cached'] : []), '--', path(command.path)]; break;
+    case 'stage': args = ['add', '--all', '--', ...command.paths.map(path)]; break;
+    case 'unstage': args = command.unborn ? ['update-index', '--force-remove', '--', ...command.paths.map(path)] : ['restore', '--staged', '--source=HEAD', '--', ...command.paths.map(path)]; break;
+    case 'patch': args = ['apply', '--cached', '--whitespace=nowarn']; options.input = Buffer.from(command.patch); break;
+    case 'tree': args = ['write-tree']; break;
+    case 'blob': args = ['cat-file', 'blob', oid(command.oid)]; break;
+    case 'entry': args = ['ls-tree', '-z', '--full-tree', oid(command.commit), '--', path(command.path)]; break;
+    case 'index-entry': args = ['ls-files', '--stage', '-z', '--', path(command.path)]; break;
+    case 'commit-object':
+      if (!command.name.trim() || /[\x00-\x1f<>]/.test(command.name) || !/^[^\s<>@]+@[^\s<>@]+$/.test(command.email) || !command.message.trim() || command.message.length > 4096 || secretLike(command.message)) throw new GitStatusError('invalid-commit');
+      safe.push('-c', `user.name=${command.name}`, '-c', `user.email=${command.email}`);
+      args = ['commit-tree', oid(command.tree), ...(command.parent ? ['-p', oid(command.parent)] : []), '-m', command.message]; break;
+    case 'publish': args = ['update-ref', '--no-deref', '--stdin']; options.input = Buffer.from(`start\nupdate ${ref(command.branch)} ${oid(command.next)} ${command.previous ? oid(command.previous) : '0'.repeat(40)}\nprepare\ncommit\n`); break;
+    case 'branch': args = ['update-ref', '--no-deref', '--stdin']; options.input = Buffer.from(`start\nverify ${ref(command.current)} ${oid(command.head)}\ncreate ${ref(command.branch)} ${oid(command.head)}\nprepare\ncommit\n`); break;
+    case 'branches': args = ['for-each-ref', '--format=%(refname:short)%00%(objectname)', 'refs/heads/']; break;
+    case 'log': args = ['log', '-30', '--format=%H%x00%s', '--no-decorate']; break;
+  }
+  return run(binary.path, [...safe, ...args], cwd, undefined, options);
 }
 
 export async function validateGitBinary(binary: VerifiedGitBinary): Promise<void> {
