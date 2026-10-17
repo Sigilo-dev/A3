@@ -1,4 +1,19 @@
 :root { font-family: "Segoe UI", sans-serif; color: #e8edf0; background: #10151b; font-synthesis: none; color-scheme: dark; }
+.content:has(.manual-chat-panel) { display: flex; flex-direction: column; padding: 16px; overflow: hidden; }
+.content:has(.manual-chat-panel) .breadcrumb { margin-bottom: 8px; }
+.manual-chat-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.manual-chat-heading, .manual-chat-address, .manual-chat-origin, .manual-chat-tabs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.manual-chat-heading { justify-content: space-between; }
+.manual-chat-heading h1 { font-size: 24px; margin: 0; }
+.manual-chat-panel button { margin: 0; padding: 6px 9px; font-size: 11px; }
+.manual-chat-tabs > div { display: flex; }
+.manual-chat-tabs [aria-selected="true"] { outline: 1px solid #c3ed82; }
+.manual-chat-tabs [role="tab"] { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.manual-chat-help, .manual-chat-panel [role="alert"], .manual-chat-panel [role="status"], .manual-chat-origin { margin: 0; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.manual-chat-address label { flex: 1; min-width: 170px; font-size: 11px; }
+.manual-chat-address input { width: 100%; padding: 6px; }
+.manual-chat-viewport { flex: 1; min-height: 80px; border: 1px solid #41515e; background: #fff; color: #17201e; }
+.manual-chat-viewport > p { padding: 16px; }
 * { box-sizing: border-box; }
 body { margin: 0; }
 .variables-panel { max-width: 100%; font-size: 13px; }

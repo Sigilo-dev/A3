@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { MEMORY_SEARCH_CHANNEL, type MemorySearchRequest } from '../shared/memory-search';
 import { PLANNING_CHANNEL, type PlanningRequest } from '../shared/planning';
+import { MANUAL_CHAT_CHANNEL, type ManualChatRequest } from '../shared/manual-chat';
 import { VARIABLES_CHANNEL } from '../shared/desktop-api';
 import type { VariablesRequest } from '../shared/variables';
 import { AV_CONVERSION_CHANNEL, IMAGE_CONVERSION_CHANNEL, type AvRequest, type ImageConversionRequest } from '../shared/desktop-api';
@@ -28,6 +29,8 @@ window.addEventListener('drop', (event) => {
 }, true);
 
 const api: DesktopAPI = Object.freeze({
+  manualChat: (request: ManualChatRequest) => ipcRenderer.invoke(MANUAL_CHAT_CHANNEL, request),
+  onManualChatFocus: (listener: () => void) => { const handler = (): void => listener(); ipcRenderer.on('a3.manual-chat:focus-url', handler); return () => { ipcRenderer.removeListener('a3.manual-chat:focus-url', handler); }; },
   memorySearch: (request: MemorySearchRequest) => ipcRenderer.invoke(MEMORY_SEARCH_CHANNEL, request),
   planning: (request: PlanningRequest) => ipcRenderer.invoke(PLANNING_CHANNEL, request),
   variables: (request: VariablesRequest) => ipcRenderer.invoke(VARIABLES_CHANNEL, request),

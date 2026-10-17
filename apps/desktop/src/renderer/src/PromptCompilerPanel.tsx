@@ -14,7 +14,7 @@ function defaultInputs(template: PromptTemplate): Record<string, JsonValue> {
 }
 function inputText(value: JsonValue | undefined): string { return Array.isArray(value) ? value.map((entry) => String(entry)).join('\n') : value === undefined ? '' : String(value); }
 
-export function PromptCompilerPanel({ project }: { project: LocalProjectSession | null }): React.JSX.Element {
+export function PromptCompilerPanel({ project, onOpenChat }: { project: LocalProjectSession | null; onOpenChat: () => void }): React.JSX.Element {
   const [catalog, setCatalog] = useState<ProjectVariablesState | null>(null), [contextCatalog, setContextCatalog] = useState<PromptContextCatalog | null>(null), [workspaceId, setWorkspaceId] = useState(''), [entityId, setEntityId] = useState('');
   const [templateId, setTemplateId] = useState(BUILTIN_PROMPT_TEMPLATES[0]!.id), [body, setBody] = useState(BUILTIN_PROMPT_TEMPLATES[0]!.markdown);
   const [inputs, setInputs] = useState<Record<string, JsonValue>>(() => defaultInputs(BUILTIN_PROMPT_TEMPLATES[0]!)), [manualSource, setManualSource] = useState(manualTemplate), [required, setRequired] = useState('proyecto.nombre');
@@ -70,7 +70,12 @@ export function PromptCompilerPanel({ project }: { project: LocalProjectSession 
   }
   async function copyOutput(): Promise<void> {
     if (!result || !result.parts[partIndex]) return;
-    try { await navigator.clipboard.writeText(result.parts[partIndex]!.markdown); setStatus(`Parte ${partIndex + 1} copiada como Markdown.`); }
+    try {
+      if (!project || !window.a3) throw new Error();
+      const copied = await window.a3.manualChat({ action: 'copy-text', sessionId: project.sessionId, text: result.parts[partIndex]!.markdown });
+      if (!copied.ok) throw new Error(copied.error.message);
+      setStatus(`Parte ${partIndex + 1} copiada como Markdown. Pégala y envíala manualmente en Chat web; no inicia un agente.`);
+    }
     catch { setError('El portapapeles no está disponible; selecciona el resultado para copiarlo.'); }
   }
   function downloadOutput(): void {
@@ -162,7 +167,7 @@ export function PromptCompilerPanel({ project }: { project: LocalProjectSession 
         {result.parts.length > 0 ? <>
           {result.parts.length > 1 && <label>Parte<select aria-label="Parte de contexto" value={partIndex} onChange={(event) => setPartIndex(Number(event.currentTarget.value))}>{result.parts.map((part, index) => <option key={part.index} value={index}>Parte {part.index} · {part.bytes.toLocaleString()} bytes · {part.sourceKeys.length} fragmentos</option>)}</select></label>}
           <label>Vista previa Markdown<textarea aria-label="Vista previa exportable" rows={14} readOnly value={result.parts[partIndex]?.markdown ?? ''} /></label>
-          <div className="prompt-actions"><button className="secondary" onClick={() => void copyOutput()}>Copiar parte</button><button className="secondary" onClick={downloadOutput}>Exportar parte Markdown</button></div>
+          <div className="prompt-actions"><button className="secondary" onClick={() => void copyOutput()}>Copiar parte</button><button className="secondary" onClick={onOpenChat}>Abrir ChatGPT manual</button><button className="secondary" onClick={downloadOutput}>Exportar parte Markdown</button></div>
         </> : <p role="alert">La plantilla excede el presupuesto por parte. Aumenta el límite o reduce la plantilla; no se ha recortado.</p>}
       </section>}
     </>}

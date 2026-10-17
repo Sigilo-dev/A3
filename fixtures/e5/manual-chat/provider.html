@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="es"><meta charset="utf-8"><title>Proveedor manual de prueba</title>
+<style>body{font:16px sans-serif;padding:16px;color:#182321;background:#fff}textarea{display:block;width:90%;min-height:90px}button,a{margin:8px}</style>
+<h1>Proveedor controlado de pruebas A3</h1>
+<label>Prompt manual<textarea id="prompt" aria-label="Prompt del proveedor"></textarea></label>
+<button id="send" type="button">Enviar manualmente (fixture sin IA)</button><output id="response"></output>
+<a id="next" href="/second">Otra página</a><a id="popup" href="https://auth.example/login" target="_blank">Login en otra pestaña</a>
+<a id="download" href="/download">Descargar fixture</a>
+<script>
+document.querySelector('#send').onclick = () => { document.querySelector('#response').textContent = 'Respuesta sintética a: ' + document.querySelector('#prompt').value; };
+// Tests call this only on the controlled fixture, never on a provider's real pages.
+window.a3IsolationProbe = async (projectFileURL) => {
+  const read = async (url) => { try { const response = await fetch(url); return response.ok; } catch { return false; } };
+  let bridge = false; try { await window.a3.files({action:'list',sessionId:'00000000-0000-4000-8000-000000000001'}); bridge = true; } catch {}
+  return { require: typeof require, process: typeof process, a3: typeof window.a3, ipcRenderer: typeof window.ipcRenderer, bridge,
+    fileReadable: await read(projectFileURL), shellReadable: await read('a3://desktop/index.html') };
+};
+</script></html>

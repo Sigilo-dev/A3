@@ -1,0 +1,4 @@
+{
+  "allowed": ["https://chatgpt.com/", "https://auth.openai.com/authorize?response_type=code", "https://provider.example/chat#manual"],
+  "blocked": ["file:///C:/project/a3.project.json", "a3://desktop/index.html", "javascript:alert(1)", "data:text/html,unsafe", "http://chatgpt.com/", "https://user:password@chatgpt.com/", "https://localhost/", "https://127.0.0.1/", "https://2130706433/", "https://[::1]/", "https://host.local/", "https://host.internal/", "https://chatgpt.com./", "https://chatgpt.com/\n", "ms-settings:privacy"]
+}

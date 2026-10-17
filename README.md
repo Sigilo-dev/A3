@@ -17,6 +17,8 @@ E4-A2 resuelve `{{namespace.nombre}}` en vistas y previews de compilación sin r
 
 E4-E1 añade intercambio de checklists Markdown con IDs/referencias, preview y decisiones explícitas ante conflictos, y panel de trazabilidad de historias/tareas/nodos/recursos/evidencia. Consulta [formato, interfaz y límites](docs/e4/checklist-exchange-and-traceability.md) y la [evidencia consolidada E4](docs/e4/evidence.md).
 
+E5-A1 incorpora Chat web manual en WebContentsView aislado, navegación/pestañas, permisos por origen, logout local y alternativa externa. El compilador permite copiar la parte elegida y abrir ChatGPT sin pegar ni enviar automáticamente. Consulta [uso, pruebas y límites A3-026/027](docs/e5/manual-chat.md) y la [ADR de aislamiento](docs/adr/0020-isolated-manual-chat.md).
+
 La especificación y los prompts de planificación se mantienen localmente y no se publican. E0-A aporta contratos, JSON Schemas y fixtures comprobables, sin UI ni servicios de producción.
 
 Contratos: [dominio e invariantes](docs/e0/contracts/domain.md), [comandos y migración](docs/e0/contracts/commands-and-migrations.md), [extensiones](docs/e0/contracts/extensions.md). El trabajo realizado y los errores corregidos están en [AUDIR.md](AUDIR.md).

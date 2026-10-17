@@ -11,6 +11,8 @@ import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL } from '../shared/desktop
 import { VARIABLES_CHANNEL } from '../shared/desktop-api';
 import { MEMORY_SEARCH_CHANNEL } from '../shared/memory-search';
 import { PLANNING_CHANNEL } from '../shared/planning';
+import { MANUAL_CHAT_CHANNEL } from '../shared/manual-chat';
+import { ManualChatController } from './manual-chat';
 
 const APP_URL = 'a3://desktop/index.html';
 const editorStyleNonce = randomBytes(24).toString('base64');
@@ -22,6 +24,7 @@ let quitting = false;
 let bootTimer: ReturnType<typeof setTimeout> | undefined;
 let projects: ReturnType<typeof createProjectController> | undefined;
 let closing = false;
+let manualChat: ManualChatController | undefined;
 
 async function finishQuit(): Promise<void> {
   if (closing || quitting) return;
@@ -38,9 +41,11 @@ async function finishQuit(): Promise<void> {
         if (choice.response !== 1) return;
       }
     }
+    if (manualChat && !await manualChat.confirmQuit()) return;
     await projects?.imageConversions.cancelAll();
     await projects?.avConversions.cancelAll();
     await projects?.manager.shutdown();
+    manualChat?.dispose();
     quitting = true; clearTimeout(bootTimer); app.quit();
   } catch {
     dialog.showErrorBox('A3 · Proyecto abierto', 'No se cerró el proyecto. Revisa el estado de guardado o la recuperación pendiente antes de salir.');
@@ -105,6 +110,7 @@ async function startDesktop(): Promise<void> {
     ? join(process.resourcesPath, 'plantuml', PLANTUML_ARTIFACT_FILE)
     : join(app.getAppPath(), 'resources', 'plantuml', PLANTUML_ARTIFACT_FILE);
   projects = createProjectController(app.getPath('userData'), () => mainWindow, plantumlArtifactPath);
+  manualChat = new ManualChatController(() => mainWindow, async () => (await projects?.manager.getState())?.active?.sessionId ?? null);
 
   const shellSession = session.fromPartition('persist:a3-shell');
   shellSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -133,6 +139,13 @@ async function startDesktop(): Promise<void> {
     } catch { return new Response('Recurso de interfaz no disponible', { status: 404 }); }
   });
 
+  ipcMain.handle(MANUAL_CHAT_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !manualChat || closing || quitting) {
+      return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'El chat remoto no puede invocar el puente A3.' } };
+    }
+    return manualChat.handle(args[0]);
+  });
   ipcMain.handle(APP_INFO_CHANNEL, (event, ...args: unknown[]): ShellResult<AppInfo> => {
     if (!mainWindow || event.sender !== mainWindow.webContents ||
         event.senderFrame !== mainWindow.webContents.mainFrame ||
@@ -159,10 +172,14 @@ async function startDesktop(): Promise<void> {
     }
     return projects.handleWorkspaceSession(args[0]);
   });
-  ipcMain.handle(PROJECTS_CHANNEL, (event, ...args: unknown[]) => {
+  ipcMain.handle(PROJECTS_CHANNEL, async (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
         !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) {
       return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Solicitud no autorizada.', recovery: 'Reabre A3.' } };
+    }
+    const action = args[0] && typeof args[0] === 'object' && 'action' in args[0] ? (args[0] as { action: unknown }).action : null;
+    if (['open', 'create', 'recent', 'relocate', 'confirm', 'close'].includes(String(action)) && manualChat && !await manualChat.confirmProjectSwitch()) {
+      return { ok: false, error: { code: 'CANCELLED', message: 'Se conservan las pestañas web y el proyecto actual.', recovery: 'Guarda o copia el texto web antes de cambiar de proyecto.' } };
     }
     return projects.handle(args[0]);
   });
@@ -257,6 +274,8 @@ async function startDesktop(): Promise<void> {
       if (!isShellDocument(target, url)) event.preventDefault();
     });
     win.webContents.on('will-attach-webview', (event) => event.preventDefault());
+    win.webContents.on('did-start-loading', () => manualChat?.hide());
+    win.on('resize', () => manualChat?.resize());
     win.webContents.on('preload-error', fatalStartup);
     win.webContents.on('will-prevent-unload', (event) => { if (quitting) event.preventDefault(); });
     win.webContents.on('render-process-gone', fatalStartup);
@@ -284,7 +303,7 @@ async function startDesktop(): Promise<void> {
 
 app.on('before-quit', (event) => { if (!quitting) { event.preventDefault(); void finishQuit(); } });
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => { ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(GALLERY_CHANNEL); ipcMain.removeHandler(IMAGE_CONVERSION_CHANNEL); ipcMain.removeHandler(AV_CONVERSION_CHANNEL); ipcMain.removeHandler(VARIABLES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); ipcMain.removeHandler(NAVIGATION_CHANNEL); });
+app.on('will-quit', () => { manualChat?.dispose(); ipcMain.removeHandler(MANUAL_CHAT_CHANNEL); ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(GALLERY_CHANNEL); ipcMain.removeHandler(IMAGE_CONVERSION_CHANNEL); ipcMain.removeHandler(AV_CONVERSION_CHANNEL); ipcMain.removeHandler(VARIABLES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); ipcMain.removeHandler(NAVIGATION_CHANNEL); });
 process.on('uncaughtException', fatalStartup);
 process.on('unhandledRejection', fatalStartup);
 void app.whenReady().then(() => { if (primaryInstance) return startDesktop(); }).catch(fatalStartup);
