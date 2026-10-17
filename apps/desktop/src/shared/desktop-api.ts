@@ -161,6 +161,7 @@ export type ShellResult<T> =
   | { ok: false; error: { code: 'PERMISSION_DENIED' | 'IO_FAILED'; message: string; recovery: string } };
 
 export interface DesktopAPI {
+  planning(request: import('./planning').PlanningRequest): Promise<import('./planning').PlanningResult>;
   variables(request: import('./variables').VariablesRequest): Promise<import('./variables').VariablesResult>;
   getAppInfo(): Promise<ShellResult<AppInfo>>;
   projects(request: ProjectsRequest): Promise<ProjectsResult>;

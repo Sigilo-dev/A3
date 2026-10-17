@@ -138,9 +138,9 @@ function domainCapabilities(plan: PreparedPlan): Capability[] {
   if (!caps.has('diagram.edit') && !caps.has('document.edit')) caps.add('document.edit');
   if (command === 'a3.core.set-collection-members') { caps.delete('document.edit'); caps.add('task.edit'); }
   const planning = plan.changes.filter((change) => [change.before, change.after].some((record) => record?.kind === 'entity' && record.value.type.startsWith('a3.planning.')));
-  if (command === 'a3.planning.change' || planning.length) {
+  if (command.startsWith('a3.planning.') || planning.length) {
     caps.add('task.edit');
-    if (!plan.contentEffects.length && plan.changes.every((change) => planning.includes(change))) caps.delete('document.edit');
+    if (!plan.contentEffects.length && (command === 'a3.planning.set-policy' || plan.changes.every((change) => planning.includes(change)))) caps.delete('document.edit');
   }
   return [...caps];
 }

@@ -1,4 +1,5 @@
 export type * from './types.js';
+export type * from './planning.js';
 export { decodeDocument, encodeDocument, serializeRecord, supportedVersion, sha256 } from './codec.js';
 export { decodeCodeText, encodeCodeText, codeLineEnding } from './code-text.js';
 export type { CodeDocument, CodeOpenTarget, CodeEncoding, CodeLineEnding, DecodedCodeText } from './code-text.js';

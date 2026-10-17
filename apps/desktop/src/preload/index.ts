@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { PLANNING_CHANNEL, type PlanningRequest } from '../shared/planning';
 import { VARIABLES_CHANNEL } from '../shared/desktop-api';
 import type { VariablesRequest } from '../shared/variables';
 import { AV_CONVERSION_CHANNEL, IMAGE_CONVERSION_CHANNEL, type AvRequest, type ImageConversionRequest } from '../shared/desktop-api';
@@ -26,6 +27,7 @@ window.addEventListener('drop', (event) => {
 }, true);
 
 const api: DesktopAPI = Object.freeze({
+  planning: (request: PlanningRequest) => ipcRenderer.invoke(PLANNING_CHANNEL, request),
   variables: (request: VariablesRequest) => ipcRenderer.invoke(VARIABLES_CHANNEL, request),
   getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL),
   projects: (request: ProjectsRequest) => ipcRenderer.invoke(PROJECTS_CHANNEL, request),

@@ -33,6 +33,7 @@ export interface EvidenceInput extends OpenData { kind: 'evidence'; target: Evid
 export type PlanningInput = StoryData | TaskData | CriterionData | EvidenceInput;
 export interface PlanningActivity extends OpenData {
   operationId: string; actor: PlanningActor; at: string; action: 'create' | 'update'; fromState?: TaskState; toState?: TaskState;
+  evidenceIds?: string[];
 }
 export type PlanningOperation =
   { action: 'create'; entityId: string; title: string; data: PlanningInput; contentResourceId?: string } |
@@ -79,7 +80,7 @@ export function planningHistory(entity: Pick<Entity, 'properties'>): PlanningAct
   const value = entity.properties[PLANNING_HISTORY_KEY];
   return Array.isArray(value) && value.length > 0 && value.every((event) => isObject(event) && uuid(event.operationId) && validPlanningActor(event.actor) && validPlanningDate(event.at) &&
     ['create', 'update'].includes(String(event.action)) && (event.fromState === undefined || TASK_STATES.includes(event.fromState as TaskState)) &&
-    (event.toState === undefined || TASK_STATES.includes(event.toState as TaskState))) ? value as unknown as PlanningActivity[] : undefined;
+    (event.toState === undefined || TASK_STATES.includes(event.toState as TaskState)) && (event.evidenceIds === undefined || ids(event.evidenceIds))) ? value as unknown as PlanningActivity[] : undefined;
 }
 
 /** Cross-document planning semantics. Visual edges and presentation never enter this graph. */

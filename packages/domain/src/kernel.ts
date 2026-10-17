@@ -6,7 +6,8 @@ import { applyUmlChange } from './uml-commands.js';
 import { remapUmlReferences, umlData, umlKind } from './uml.js';
 import { applyErChange } from './er-commands.js';
 import { applyPlanningChange } from './planning-commands.js';
-import { planningKind } from './planning.js';
+import { planningKind, planningData } from './planning.js';
+import { PLANNING_POLICY_KEY, planningPolicy } from './planning-views.js';
 import { erData, erTable, remapErReferences } from './er.js';
 import { MERMAID_SOURCE_TYPE } from './mermaid-source.js';
 import { PLANTUML_SOURCE_TYPE } from './plantuml-source.js';
@@ -31,6 +32,7 @@ const commands = new Set(['a3.core.create-project', 'a3.core.create-document', '
   'a3.uml.change',
   'a3.er.change',
   'a3.planning.change',
+  'a3.planning.set-policy',
   'a3.mermaid.import',
   'a3.plantuml.import',
   'a3.structurizr.import',
@@ -837,6 +839,14 @@ function applyStructurizrImport(draft: Draft, payload: Payloads['a3.structurizr.
 function apply(draft: Draft): void {
   const request = draft.request;
   switch (request.command) {
+    case 'a3.planning.set-policy': {
+      if (request.actor.kind !== 'user') fail('planning-policy-human-required', 'La política de finalización la configura una persona autenticada.', undefined, 'PERMISSION_DENIED');
+      if (Object.keys(request.payload).length !== 1 || typeof request.payload.requireEvidenceForDone !== 'boolean') fail('planning-policy-invalid', 'La política requiere una opción booleana.');
+      draft.edit({ kind: 'project', id: request.projectId }, 'project', (project) => {
+        const old = project.extensions[PLANNING_POLICY_KEY];
+        project.extensions[PLANNING_POLICY_KEY] = { ...(isObject(old) ? copy(old) : {}), ...request.payload };
+      }); break;
+    }
     case 'a3.planning.change': applyPlanningChange(draft, request.payload, request.actor, request.operationId, fail); break;
     case 'a3.er.change': applyErChange(draft, request.payload, fail); break;
     case 'a3.mermaid.import': applyDiagramImport(draft, request.payload, 'mermaid'); break;
@@ -1173,6 +1183,22 @@ export function prepareCommand(snapshot: DomainSnapshot, input: unknown, context
     const newErrors = diagnostics.filter((d) => d.severity === 'error' && !baselineIssues.has(canonical(d)));
     if (newErrors.length) return { ok: false, diagnostics: newErrors };
     const changes = changesBetween(snapshot, draft.snapshot);
+    if (request.command !== 'a3.planning.set-policy' && changes.some((change) => change.before?.kind === 'project' && change.after?.kind === 'project' &&
+        canonical(change.before.value.extensions[PLANNING_POLICY_KEY] ?? null) !== canonical(change.after.value.extensions[PLANNING_POLICY_KEY] ?? null))) {
+      fail('planning-policy-command-required', 'La política de evidencia requiere su comando y una persona autenticada.', undefined, 'PERMISSION_DENIED');
+    }
+    const planningProject = draft.snapshot.records.find((record) => record.kind === 'project');
+    const policy = planningProject?.kind === 'project' ? planningPolicy(planningProject.value) : undefined;
+    for (const change of changes) {
+      if (change.after?.kind !== 'entity') continue;
+      const task = planningData(change.after.value);
+      if (task?.kind !== 'task' || task.state !== 'done') continue;
+      if (!policy) fail('planning-policy-invalid', 'La política de evidencia no se puede interpretar; repárala antes de completar tareas.', change.ref);
+      if (policy.requireEvidenceForDone && !task.evidenceIds.some((id) => {
+        const evidence = draft.snapshot.records.find((r) => r.kind === 'entity' && sameId(r.value.id, id));
+        return evidence?.kind === 'entity' && planningData(evidence.value)?.kind === 'evidence' && !diagnostics.some((d) => d.ref && sameId(d.ref.id, id) && d.severity === 'error');
+      })) fail('planning-evidence-required', 'La política exige al menos una evidencia válida vinculada antes de aceptar done.', change.ref);
+    }
     if (request.command !== 'a3.planning.change' && changes.some((change) => change.after?.kind === 'entity' &&
         (planningKind(change.after.value) || change.before?.kind === 'entity' && planningKind(change.before.value)))) {
       fail('planning-command-required', 'Las entidades de planificación se editan con el comando auditado a3.planning.change.');

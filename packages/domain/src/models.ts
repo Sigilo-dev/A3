@@ -166,6 +166,7 @@ export interface StructurizrImportChange {
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
 export type Payloads = {
   'a3.planning.change': PlanningChange;
+  'a3.planning.set-policy': { requireEvidenceForDone: boolean };
   'a3.variables.bind-field': { entityId: UUID; field: Namespace; binding: VariableBinding | null };
   'a3.diagrams.set-style': { profile: DiagramStyleProfile };
   'a3.er.change': ErChange;

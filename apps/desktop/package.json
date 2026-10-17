@@ -21,6 +21,7 @@
     "test:av": "node --experimental-strip-types --experimental-transform-types --test test/av-conversion.test.mjs",
     "test:av:smoke": "node test/run-av-conversion.mjs",
     "test:variables": "node test/run-variables.mjs",
+    "test:planning": "node test/run-planning.mjs",
     "test:images:smoke": "node test/run-image-conversion.mjs",
     "test:images:packaged": "node scripts/verify-image-engine.mjs --packaged && node test/run-image-conversion.mjs --packaged",
     "pack:win": "npm run build && electron-builder --win --x64 --dir --publish never",

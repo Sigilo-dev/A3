@@ -265,9 +265,9 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
       if (!caps.size || request.changes.some((change) => change.ref && !domainRefCapabilities.has(change.ref.kind)) || request.contentEffects.length) caps.add('document.edit');
     }
     const planning = request.changes.filter((change) => [change.before, change.after].some((record) => record?.kind === 'entity' && record.value.type.startsWith('a3.planning.')));
-    if (request.command === 'a3.planning.change' || planning.length) {
+    if (request.command.startsWith('a3.planning.') || planning.length) {
       caps.add('task.edit');
-      if (!request.contentEffects.length && request.changes.every((change) => planning.includes(change))) caps.delete('document.edit');
+      if (!request.contentEffects.length && (request.command === 'a3.planning.set-policy' || request.changes.every((change) => planning.includes(change)))) caps.delete('document.edit');
     }
     return [...caps];
   };

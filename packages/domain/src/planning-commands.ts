@@ -45,7 +45,7 @@ export function applyPlanningChange(draft: PlanningDraft, payload: PlanningChang
       next.recordedAt = before?.kind === 'evidence' ? before.recordedAt : payload.occurredAt;
     }
     const event: PlanningActivity = { operationId, actor: copy(actor), at: payload.occurredAt, action: op.action,
-      ...(before?.kind === 'task' ? { fromState: before.state } : {}), ...(next.kind === 'task' ? { toState: next.state } : {}) };
+      ...(before?.kind === 'task' ? { fromState: before.state } : {}), ...(next.kind === 'task' ? { toState: next.state, evidenceIds: [...next.evidenceIds] } : {}) };
     const data = next as unknown as JsonValue, events = [...copy(history ?? []), event] as unknown as JsonValue;
     if (op.action === 'create') draft.add({ kind: 'entity', value: {
       schemaVersion: '1.0.0', id: op.entityId, revision: 1, type: 'a3.planning.' + next.kind, typeVersion: PLANNING_VERSION, title: op.title.trim(),

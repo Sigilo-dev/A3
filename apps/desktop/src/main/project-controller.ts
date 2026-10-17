@@ -12,6 +12,7 @@ import { AvConversionJobs } from './av-conversion';
 import { AvEngine } from './av-engine';
 import { validAvRequest, type AvResult } from '../shared/av-conversion';
 import { validVariablesRequest, type VariablesResult } from '../shared/variables';
+import { validPlanningRequest, type PlanningResult } from '../shared/planning';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
@@ -574,6 +575,18 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
+    async handlePlanning(value: unknown): Promise<PlanningResult> {
+      if (!validPlanningRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Petición de planificación inválida.', recovery: 'Revisa los campos y los IDs.' } };
+      try {
+        const result = value.action === 'load' ? await manager.loadPlanning(value.sessionId) : value.action === 'update-task' ? await manager.updatePlanningTask(value.sessionId, value.input) :
+          value.action === 'create-task' ? await manager.createPlanningTask(value.sessionId, value.title, value.storyId) : value.action === 'create-story' ? await manager.createPlanningStory(value.sessionId, value.input) :
+          value.action === 'add-evidence' ? await manager.addPlanningEvidence(value.sessionId, value.input) : value.action === 'set-policy' ? await manager.setPlanningPolicy(value.sessionId, value.expectedRevision, value.requireEvidenceForDone) :
+          value.action === 'preview-proposal' ? await manager.previewPlanningProposal(value.sessionId, value.source) : value.action === 'apply-proposal' ? await manager.applyPlanningProposal(value.sessionId, value.token, value.selectedKeys) :
+          await manager.showPlanningTask(value.sessionId, value.entityId, value.workspaceId);
+        return { ok: true, value: result };
+      } catch (error) { return { ok: false, error: { code: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'PLANNING_FAILED', message: error instanceof Error ? error.message : 'No se guardó la planificación.',
+        recovery: 'Conserva el borrador. Recarga y compara estado, revisión y evidencias antes de volver a guardar.' } }; }
+    },
     async handleVariables(value: unknown): Promise<VariablesResult> {
       if (!validVariablesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de variables inválida.', recovery: 'Revisa los campos y el ámbito; ejecución nunca se guarda.' } };
       try {

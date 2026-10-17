@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1.0.0",
+  "projectId": "00000000-0000-4000-8000-000000000001",
+  "sourceRefs": [{ "kind": "entity", "id": "90000000-0000-4000-8000-000000001005" }],
+  "items": [
+    {
+      "key": "revisar-apertura",
+      "title": "Revisar apertura sin conexión",
+      "storyId": "90000000-0000-4000-8000-000000001005",
+      "requirementIds": ["90000000-0000-4000-8000-000000001005"],
+      "criterionIds": ["90000000-0000-4000-8000-000000001006"],
+      "dependencyKeys": []
+    },
+    {
+      "key": "documentar-apertura",
+      "title": "Documentar revisión de apertura",
+      "storyId": "90000000-0000-4000-8000-000000001005",
+      "requirementIds": ["90000000-0000-4000-8000-000000001005"],
+      "criterionIds": ["90000000-0000-4000-8000-000000001006"],
+      "dependencyKeys": ["revisar-apertura"]
+    }
+  ]
+}

@@ -1,4 +1,6 @@
 import { access, lstat, mkdir, open, readdir, realpath, rename, rmdir, unlink } from 'node:fs/promises';
+import { projectPlanning, planningPolicy, planningData, planningKind, validatePlanningSnapshot, inspectTaskProposal, type PlanningOperation, type TaskProposal } from '@a3/domain';
+import type { ProjectPlanningState, PlanningTaskUpdate, PlanningEvidenceInput, PlanningProposalPreview } from './planning.js';
 import { constants } from 'node:fs';
 import { c4Category, isC4Diagram, validC4Operation, type C4Category, type C4Change, type C4Operation } from '@a3/domain';
 import { isIotCircuit, validIotCircuitOperation, type IotCircuitData } from '@a3/domain/iot-circuit';
@@ -356,6 +358,7 @@ function comparableHistoryRecord(value: DomainRecord | null): string {
 
 /** Main-process lifecycle; renderer receives summaries and opaque preview/session IDs only. */
 export class LocalProjectManager {
+  #planningProposals = new Map<string, { sessionId: string; sourceHash: string; fingerprint: string; proposal: TaskProposal; ids: Record<string, string> }>();
   #tail: Promise<unknown> = Promise.resolve();
   #catalog: Catalog = { version: 1, recents: [], pending: [] };
   #loaded = false;
@@ -491,6 +494,7 @@ export class LocalProjectManager {
       await this.#persist();
       await previous?.lease.close();
       this.#active = { lease: candidate.value, sessionId: randomUUID(), projectId, name, rootIdentity: await projectIdentity(root) };
+      this.#planningProposals.clear();
       this.#mediaPlans.clear();
       this.#focusSession = undefined; this.#restoreNotice = undefined;
       this.#viewportDrafts.clear();
@@ -603,7 +607,7 @@ export class LocalProjectManager {
     const resumeId = this.#catalog.resumeId; delete this.#catalog.resumeId;
     try { await this.#persist(); } catch (error) { if (resumeId) this.#catalog.resumeId = resumeId; throw error; }
     this.#focusSession = undefined;
-    await this.#active.lease.close(); this.#active = undefined; this.#mediaPlans.clear(); this.#preview = undefined; this.#nameDraft = undefined; this.#resetExplorerBindings(); return this.#state();
+    await this.#active.lease.close(); this.#active = undefined; this.#planningProposals.clear(); this.#mediaPlans.clear(); this.#preview = undefined; this.#nameDraft = undefined; this.#resetExplorerBindings(); return this.#state();
   }); }
   async #loadFocusSession(active: ActiveProjectBinding): Promise<WorkspaceSession> {
     if (this.#focusSession) return this.#focusSession;
@@ -901,7 +905,7 @@ export class LocalProjectManager {
         title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
           ...(resources.get(value.contentResourceId.toLowerCase()) ? { contentResource: resourceDescriptor(resources.get(value.contentResourceId.toLowerCase())!) } : {}) } : {}),
         ...(c4Category(value, registry) ? { c4Category: c4Category(value, registry)! } : {}),
-        typeAvailable: isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined || erTable(value) && erData(value) !== undefined || isIotComponent(value) || isIotCircuit(value) };
+        typeAvailable: planningKind(value) !== undefined && planningData(value) !== undefined || isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined || erTable(value) && erData(value) !== undefined || isIotComponent(value) || isIotCircuit(value) };
       });
     const entityChoices = choices.filter(({ value }) => !isC4Diagram(value)).map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
     const resourceChoices = resourceRecords.map((record) => resourceDescriptor(record));
@@ -1149,6 +1153,97 @@ export class LocalProjectManager {
     });
   }
   loadProjectVariables(sessionId: string, query: VariablesQuery = {}): Promise<ProjectVariablesState> { return this.#queue(async () => this.#variablesState(sessionId, query)); }
+  #planningState(sessionId: string): ProjectPlanningState {
+    const active = this.#variablesContext(sessionId), service = active.lease.service, snapshot = service.state.project.snapshot;
+    const project = snapshot.records.find((r) => r.kind === 'project'); demand(project?.kind === 'project', 'PROJECT_MANIFEST_MISSING', 'Falta el manifiesto.');
+    const permission = (capability: 'task.edit' | 'diagram.edit') => this.options.host.capabilities.authorizeAccess({ root: service.root, projectId: active.projectId,
+      actor: this.options.host.authenticatedActor, operation: 'write', paths: [], refs: [], resources: [], requiredCapabilities: [capability], stage: 'prepare' });
+    const edit = permission('task.edit'), place = permission('diagram.edit'), writable = service.state.mode === 'writer' && !service.state.externalConflict;
+    return { ...projectPlanning(snapshot), sessionId, projectId: active.projectId, projectRevision: project.value.revision, policy: planningPolicy(project.value) ?? null,
+      canEdit: writable && edit.allowed, canPlace: writable && place.allowed, canSetPolicy: writable && edit.allowed && this.options.host.authenticatedActor.kind === 'user',
+      readOnlyReason: !writable ? 'Proyecto en solo lectura o con cambios externos pendientes.' : !edit.allowed ? 'task.edit: ' + edit.reason : '',
+      diagnostics: validatePlanningSnapshot(snapshot).map((d) => d.detail + ': ' + d.message),
+      resources: snapshot.records.flatMap((r) => r.kind === 'resource' ? [{ id: r.value.id, label: r.value.kind === 'remote-url' ? r.value.url : r.value.path }] : []),
+      entities: snapshot.records.flatMap((r) => r.kind === 'entity' ? [{ id: r.value.id, title: r.value.title }] : []) };
+  }
+  loadPlanning(sessionId: string): Promise<ProjectPlanningState> { return this.#queue(async () => this.#planningState(sessionId)); }
+  async #planningCommit(active: ActiveProjectBinding, operations: PlanningOperation[]): Promise<void> {
+    await this.#commitCanvasCommand(active, { command: 'a3.planning.change', payload: { occurredAt: new Date().toISOString(), operations } }, operations.map((op) => op.entityId),
+      operations.filter((op) => op.action === 'create').map((op) => ({ kind: 'entity' as const, id: op.entityId })));
+  }
+  updatePlanningTask(sessionId: string, input: PlanningTaskUpdate): Promise<ProjectPlanningState> {
+    const captured = structuredClone(input); return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId), record = active.lease.service.state.project.snapshot.records.find((r) => r.kind === 'entity' && r.value.id === captured.entityId);
+      demand(record?.kind === 'entity' && record.value.revision === captured.expectedRevision, 'REVISION_CONFLICT', 'La tarea cambió. Conserva el borrador y compara la revisión actual antes de guardar.');
+      const data = planningData(record.value); demand(data?.kind === 'task', 'PLANNING_TASK_MISSING', 'Tarea ausente o de versión no admitida.');
+      await this.#planningCommit(active, [{ action: 'update', entityId: record.value.id, expectedRevision: captured.expectedRevision, title: record.value.title,
+        data: { ...data, state: captured.state, evidenceIds: captured.evidenceIds } }]); return this.#planningState(sessionId);
+    });
+  }
+  createPlanningTask(sessionId: string, title: string, storyId?: string): Promise<ProjectPlanningState> { return this.#queue(async () => {
+    const active = this.#variablesContext(sessionId), story = storyId ? active.lease.service.state.project.snapshot.records.find((r) => r.kind === 'entity' && r.value.id === storyId) : undefined;
+    const data = story?.kind === 'entity' ? planningData(story.value) : undefined; demand(!storyId || data?.kind === 'story', 'PLANNING_STORY_MISSING', 'La historia ya no existe.');
+    await this.#planningCommit(active, [{ action: 'create', entityId: randomUUID(), title, data: { kind: 'task', state: 'todo', priority: 'normal',
+      ...(storyId ? { storyId } : {}), dependencyIds: [], criterionIds: data?.kind === 'story' ? [...data.criterionIds] : [], evidenceIds: [], references: storyId ? [{ kind: 'entity', id: storyId }] : [] } }]);
+    return this.#planningState(sessionId);
+  }); }
+  createPlanningStory(sessionId: string, input: { title: string; actor: string; need: string; goal: string; criteria: string[] }): Promise<ProjectPlanningState> {
+    const captured = structuredClone(input); return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId), storyId = randomUUID(), criterionIds = captured.criteria.map(() => randomUUID());
+      await this.#planningCommit(active, [{ action: 'create', entityId: storyId, title: captured.title, data: { kind: 'story', actor: captured.actor, need: captured.need, goal: captured.goal, priority: 'normal', criterionIds, dependencyIds: [], references: [] } },
+        ...captured.criteria.map((title, index): PlanningOperation => ({ action: 'create', entityId: criterionIds[index]!, title, data: { kind: 'criterion', storyId, references: [] } }))]);
+      return this.#planningState(sessionId);
+    });
+  }
+  addPlanningEvidence(sessionId: string, input: PlanningEvidenceInput): Promise<ProjectPlanningState> {
+    const captured = structuredClone(input); return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId), record = active.lease.service.state.project.snapshot.records.find((r) => r.kind === 'entity' && r.value.id === captured.taskId);
+      demand(record?.kind === 'entity' && record.value.revision === captured.expectedRevision, 'REVISION_CONFLICT', 'La tarea cambió antes de registrar evidencia.');
+      const data = planningData(record.value); demand(data?.kind === 'task', 'PLANNING_TASK_MISSING', 'Tarea no disponible.'); const evidenceId = randomUUID();
+      await this.#planningCommit(active, [{ action: 'create', entityId: evidenceId, title: captured.title, data: { kind: 'evidence', target: captured.target, criterionIds: captured.criterionIds } },
+        { action: 'update', entityId: record.value.id, expectedRevision: captured.expectedRevision, title: record.value.title, data: { ...data, evidenceIds: [...data.evidenceIds, evidenceId] } }]);
+      return this.#planningState(sessionId);
+    });
+  }
+  setPlanningPolicy(sessionId: string, expectedRevision: number, requireEvidenceForDone: boolean): Promise<ProjectPlanningState> { return this.#queue(async () => {
+    const active = this.#variablesContext(sessionId), project = active.lease.service.state.project.snapshot.records.find((r) => r.kind === 'project');
+    demand(project?.value.revision === expectedRevision, 'REVISION_CONFLICT', 'La política del proyecto cambió; recarga para compararla.');
+    await this.#commitCanvasCommand(active, { command: 'a3.planning.set-policy', payload: { requireEvidenceForDone } }, []); return this.#planningState(sessionId);
+  }); }
+  previewPlanningProposal(sessionId: string, source: string): Promise<PlanningProposalPreview> { return this.#queue(async () => {
+    const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot, inspection = inspectTaskProposal(snapshot, source), sourceHash = sha256(Buffer.from(source));
+    // Bounded, session-bound previews are proposals; no task or grant is written here.
+    this.#planningProposals.clear(); let token: string | null = null;
+    if (inspection.proposal && !inspection.issues.length) { token = randomUUID(); this.#planningProposals.set(token, { sessionId, sourceHash, fingerprint: sha256(Buffer.from(JSON.stringify(snapshot))),
+      proposal: structuredClone(inspection.proposal), ids: Object.fromEntries(inspection.proposal.items.map((item) => [item.key, randomUUID()])) }); }
+    return { token, sourceHash, ...inspection, coverageClaim: false };
+  }); }
+  applyPlanningProposal(sessionId: string, token: string, selectedKeys: string[]): Promise<ProjectPlanningState> {
+    const keys = [...selectedKeys]; return this.#queue(async () => {
+      const active = this.#variablesContext(sessionId), preview = this.#planningProposals.get(token);
+      demand(preview?.sessionId === sessionId, 'PLANNING_PROPOSAL_MISSING', 'Previsualiza otra vez la propuesta en este proyecto.');
+      demand(preview.fingerprint === sha256(Buffer.from(JSON.stringify(active.lease.service.state.project.snapshot))), 'REVISION_CONFLICT', 'El proyecto cambió desde la vista previa. Revisa una nueva comparación antes de aceptar.');
+      demand(keys.length > 0 && new Set(keys).size === keys.length && keys.every((key) => preview.proposal.items.some((item) => item.key === key)), 'PLANNING_SELECTION_INVALID', 'Selecciona tareas presentes en la propuesta.');
+      const selected = preview.proposal.items.filter((item) => keys.includes(item.key));
+      demand(selected.every((item) => item.dependencyKeys.every((key) => keys.includes(key))), 'PLANNING_DEPENDENCY_EXCLUDED', 'La selección excluye una dependencia; inclúyela o edita el borrador y vuelve a previsualizar.');
+      await this.#planningCommit(active, selected.map((item): PlanningOperation => ({ action: 'create', entityId: preview.ids[item.key]!, title: item.title, data: {
+        kind: 'task', state: 'todo', priority: 'normal', ...(item.storyId ? { storyId: item.storyId } : {}), criterionIds: item.criterionIds, evidenceIds: [],
+        dependencyIds: item.dependencyKeys.map((key) => preview.ids[key]!), references: [...preview.proposal.sourceRefs, ...item.requirementIds.map((id) => ({ kind: 'entity' as const, id }))],
+        proposal: { sourceHash: preview.sourceHash, key: item.key, kind: 'reviewed-draft', coverageClaim: false }
+      } })));
+      this.#planningProposals.delete(token); return this.#planningState(sessionId);
+    });
+  }
+  showPlanningTask(sessionId: string, entityId: string, workspaceId: string): Promise<{ workspaceId: string; placementId: string }> { return this.#queue(async () => {
+    const { active } = this.#canvasContext(sessionId, workspaceId), snapshot = active.lease.service.state.project.snapshot;
+    const entity = snapshot.records.find((r) => r.kind === 'entity' && r.value.id === entityId); demand(entity?.kind === 'entity' && planningData(entity.value)?.kind === 'task', 'PLANNING_TASK_MISSING', 'Tarea no disponible.');
+    const existing = snapshot.records.find((r) => r.kind === 'placement' && r.workspaceId === workspaceId && r.value.entityId === entityId);
+    if (existing?.kind === 'placement') return { workspaceId, placementId: existing.value.id };
+    const placementId = randomUUID();
+    await this.#commitCanvasCommand(active, { command: 'a3.core.create-document', payload: { record: { kind: 'placement', workspaceId, value: { schemaVersion: '1.0.0', id: placementId, revision: 1, entityId,
+      position: { x: 120, y: 120 }, size: { width: 420, height: 360 }, style: {}, extensions: {} } } } }, [entityId], { kind: 'placement', id: placementId, workspaceId });
+    return { workspaceId, placementId };
+  }); }
   resolveProjectVariableText(sessionId: string, source: string, query: VariablesQuery = {}, requiredNames: string[] = []): Promise<VariableTextResolution> {
     return this.#queue(async () => {
       const active = this.#variablesContext(sessionId), snapshot = active.lease.service.state.project.snapshot;
@@ -2904,12 +2999,12 @@ export class LocalProjectManager {
   /** Interactive app shutdown must flush the draft; unlike getState it can exit with a damaged local catalog. */
   shutdown(): Promise<void> {
     const result = this.#tail.then(async () => {
-      await this.#allowSwitch(); await this.#active?.lease.close(); this.#active = undefined;
+      await this.#allowSwitch(); await this.#active?.lease.close(); this.#active = undefined; this.#planningProposals.clear();
       this.#disposed = true; await this.#catalogOwnership?.close();
     });
     this.#tail = result.catch(() => undefined); return result;
   }
-  async dispose(): Promise<void> { await this.#tail; this.#disposed = true; await this.#active?.lease.close(); this.#active = undefined; await this.#catalogOwnership?.close(); }
+  async dispose(): Promise<void> { await this.#tail; this.#disposed = true; await this.#active?.lease.close(); this.#active = undefined; this.#planningProposals.clear(); await this.#catalogOwnership?.close(); }
 }
 
 async function initialize(root: string, identity: string, initial: Initialization, options: LocalProjectsOptions): Promise<void> {

@@ -7,6 +7,8 @@
   "type": "module",
   "files": ["dist"],
   "exports": {
+    "./planning": { "types": "./dist/src/planning.d.ts", "import": "./dist/src/planning.js" },
+    "./planning-views": { "types": "./dist/src/planning-views.d.ts", "import": "./dist/src/planning-views.js" },
     "./diagram-style": { "types": "./dist/src/diagram-style.d.ts", "import": "./dist/src/diagram-style.js" },
     "./uml": { "types": "./dist/src/uml.d.ts", "import": "./dist/src/uml.js" },
     "./er": { "types": "./dist/src/er.d.ts", "import": "./dist/src/er.js" },

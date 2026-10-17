@@ -1,0 +1,70 @@
+const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
+const { app, BrowserWindow, dialog } = require('electron');
+const [entry, profile, root] = process.argv.slice(2);
+app.setPath('userData', profile); BrowserWindow.prototype.show = function () {};
+dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [root] });
+dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+dialog.showErrorBox = (title, message) => { console.error(title, message); app.exit(3); };
+const created = new Promise((accept) => app.once('browser-window-created', (_event, win) => accept(win)));
+async function run() {
+  const win = await created; win.webContents.setBackgroundThrottling(false); await new Promise((accept) => win.webContents.once('did-finish-load', accept));
+  const js = (source) => win.webContents.executeJavaScript(source), click = (selector) => js(`document.querySelector(${JSON.stringify(selector)}).click(); undefined`);
+  async function waitFor(expression) { for (let i = 0; i < 600; i++) { if (await js(expression)) return; await new Promise((accept) => setTimeout(accept, 50)); } throw new Error('Timed out: ' + expression + '\n' + await js('document.body.innerText.slice(-4000)')); }
+  async function set(selector, value) { await js(`(() => { const input = document.querySelector(${JSON.stringify(selector)}); const prototype = input instanceof HTMLSelectElement ? HTMLSelectElement.prototype : input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype,'value').set.call(input,${JSON.stringify(value)}); input.dispatchEvent(new Event(input instanceof HTMLSelectElement ? 'change' : 'input',{bubbles:true})); })()`); }
+  await waitFor("Boolean(document.querySelector('[data-open-project]'))"); await click('[data-open-project]'); await waitFor("Boolean(document.querySelector('[data-active-project]'))");
+  const active = (await js("window.a3.projects({action:'list'})")).value.active;
+  const scenario = JSON.parse(readFileSync(resolve(__dirname, '../../../fixtures/e4/planning/scenario.json'), 'utf8')), taskId = scenario.taskId;
+  const request = (payload) => js(`window.a3.planning(${JSON.stringify({ ...payload, sessionId: active.sessionId })})`);
+  const row = '[data-task-row="' + taskId + '"]', node = '[data-task-node="' + taskId + '"]';
+  assert.equal(await js('typeof require'), 'undefined');
+  await click('[data-section="tasks"]'); await waitFor(`Boolean(document.querySelector(${JSON.stringify(row)}))`);
+  await click('[data-evidence-policy]'); await waitFor("document.querySelector('[data-evidence-policy]').checked");
+  await waitFor(`!document.querySelector(${JSON.stringify(row + ' fieldset')}).disabled`);
+  // Evidence is enforced in the host even if a checkbox requests done.
+  await click(row + ' [data-task-check]'); await waitFor(`document.querySelector(${JSON.stringify(row + ' [data-task-error]')})?.textContent.includes('planning-evidence-required')`);
+  assert.equal((await request({ action: 'load' })).value.items.find((item) => item.id === taskId).data.state, 'todo');
+  await js(`[...document.querySelector(${JSON.stringify(row)}).querySelectorAll('button')].find((button)=>button.textContent.includes('Descartar borrador')).click()`);
+  await js(`[...document.querySelector(${JSON.stringify(row)}).querySelectorAll('summary')].find((item)=>item.textContent==='Registrar evidencia').click()`);
+  await set(row + ' input[aria-label^="Título de evidencia"]', 'Prueba manual de reapertura');
+  await set(row + ' select[aria-label="Origen de evidencia"]', '00000000-0000-4000-8000-000000000004'); await click(row + ' [data-evidence-save]');
+  await waitFor(`(async()=>{const r=await window.a3.planning(${JSON.stringify({ action: 'load', sessionId: active.sessionId })}); return r.ok && r.value.items.find((i)=>i.id===${JSON.stringify(taskId)}).data.evidenceIds.length>0})()`);
+  await js(`[...document.querySelector(${JSON.stringify(row)}).querySelectorAll('button')].find((button)=>button.textContent==='Mostrar nodo en lienzo').click()`);
+  await waitFor(`Boolean(document.querySelector(${JSON.stringify(node)}))`);
+  await js(`[...document.querySelector(${JSON.stringify(node)}).querySelectorAll('button')].find((button)=>button.textContent==='Editar estado y evidencias').click()`);
+  await waitFor(`Boolean(document.querySelector(${JSON.stringify(node + ' [data-task-check]')}))`); await click(node + ' [data-task-check]');
+  await waitFor(`document.querySelector(${JSON.stringify(node + ' [data-task-node-state]')})?.textContent.includes('Estado: done')`);
+  let state = (await request({ action: 'load' })).value; let task = state.items.find((item) => item.id === taskId);
+  assert.equal(task.data.state, 'done'); assert.equal(task.history.at(-1).actor.kind, 'user'); assert.deepEqual(task.history.at(-1).evidenceIds, task.data.evidenceIds); assert.equal(state.criteriaWithoutEvidence.length, 0);
+  const W2 = '00000000-0000-4000-8000-000000000007'; const second = await request({ action: 'show-task', entityId: taskId, workspaceId: W2 }); assert.equal(second.ok, true);
+  const canvas = await js(`window.a3.canvas(${JSON.stringify({ action: 'load', sessionId: active.sessionId, workspaceId: W2 })})`); assert.equal(canvas.value.entities.find((e) => e.id === taskId).properties['a3.planning'].state, 'done');
+  await click('[data-section="tasks"]'); await waitFor(`document.querySelector(${JSON.stringify(row + ' [data-task-canonical]')})?.textContent.includes('Completada')`);
+  await set('[aria-label="Buscar tareas"]', 'no-coincide'); await waitFor("document.querySelectorAll('[data-task-row]').length===0"); await set('[aria-label="Buscar tareas"]', '');
+  await set('[aria-label="Agrupar tareas"]', 'workspace'); await waitFor("document.querySelectorAll('[data-task-row]').length>=2"); await set('[aria-label="Agrupar tareas"]', 'none');
+  // Another view writes after this row loaded; its stale checkbox cannot overwrite it.
+  state = (await request({ action: 'load' })).value; task = state.items.find((item) => item.id === taskId);
+  assert.equal((await request({ action: 'update-task', input: { entityId: taskId, expectedRevision: task.revision, state: 'in_progress', evidenceIds: task.data.evidenceIds } })).ok, true);
+  await click(row + ' [data-task-check]'); await waitFor(`document.querySelector(${JSON.stringify(row + ' [data-task-error]')})?.textContent.includes('REVISION_CONFLICT')`);
+  assert.equal((await request({ action: 'load' })).value.items.find((item) => item.id === taskId).data.state, 'in_progress');
+  await js(`[...document.querySelectorAll('button')].find((button)=>button.textContent==='Recargar planificación').click()`);
+  await waitFor(`document.querySelector(${JSON.stringify(row + ' [data-task-canonical]')})?.textContent.includes('En curso')`);
+  await js(`[...document.querySelector(${JSON.stringify(row)}).querySelectorAll('button')].find((button)=>button.textContent.includes('Descartar borrador')).click()`);
+  await click(row + ' [data-task-check]');
+  await waitFor(`document.querySelector(${JSON.stringify(row + ' [data-task-canonical]')})?.textContent.includes('Completada')`);
+  await js(`[...document.querySelector(${JSON.stringify(row)}).querySelectorAll('button')].find((button)=>button.textContent==='Mostrar nodo en lienzo').click()`);
+  await waitFor(`document.querySelector(${JSON.stringify(node + ' [data-task-node-state]')})?.textContent.includes('Estado: done')`);
+  await click('[data-section="tasks"]'); await waitFor(`Boolean(document.querySelector(${JSON.stringify(row)}))`);
+  const source = readFileSync(resolve(__dirname, '../../../fixtures/e4/planning/task-proposal.json'), 'utf8');
+  await js("[...document.querySelectorAll('summary')].find((item)=>item.textContent==='Revisar borrador de tareas de IA').click()");
+  await set('[aria-label="Propuesta de tareas JSON"]', source); const before = (await request({ action: 'load' })).value.items.length;
+  await click('[data-proposal-preview]'); await waitFor("Boolean(document.querySelector('[aria-label=\"Vista previa de tareas propuestas\"]'))");
+  assert.equal((await request({ action: 'load' })).value.items.length, before); await click('[data-proposal-apply]');
+  await waitFor(`(async()=>{const r=await window.a3.planning(${JSON.stringify({ action: 'load', sessionId: active.sessionId })});return r.ok&&r.value.items.length===${before + 2}})()`);
+  const applied = (await request({ action: 'load' })).value.items.filter((item) => item.data.proposal);
+  assert.ok(applied.every((item) => item.data.state === 'todo' && item.data.proposal.coverageClaim === false));
+  assert.equal((await request({ action: 'load', actor: { kind: 'user', id: 'spoofed' } })).ok, false);
+  await js("document.querySelector('[aria-label=\"Buscar tareas\"]').focus()"); assert.equal(await js("document.activeElement.getAttribute('aria-label')"), 'Buscar tareas');
+  console.log('A3_PLANNING_SMOKE=' + JSON.stringify({ passed: true, checks: ['host evidence policy', 'evidence recording', 'node to checklist sync', 'checklist to node sync', 'two workspace identity', 'actor/evidence activity', 'list search/grouping', 'stale row conflict and preserved draft', 'referenced proposal preview/accept', 'strict IPC', 'keyboard focus', 'renderer without Node'] })); win.close();
+}
+void run().catch((error) => { console.error(error); app.exit(2); }); require(entry);

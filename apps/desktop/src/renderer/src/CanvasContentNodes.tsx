@@ -7,6 +7,8 @@ import { MermaidSourceRenderer } from './MermaidSourceRenderer';
 import { PlantUmlSourceRenderer } from './PlantUmlSourceRenderer';
 import { STRUCTURIZR_DSL_SOURCE_TYPE, STRUCTURIZR_JSON_SOURCE_TYPE } from '@a3/domain/structurizr-source';
 import { StructurizrSourceRenderer } from './StructurizrSourceRenderer';
+import { planningData } from '@a3/domain/planning';
+import { TaskNodeBody } from './TaskNodeBody';
 
 function textProperty(entity: CanvasEntitySummary, key: string): string {
   const value = entity.displayProperties?.[key] ?? entity.properties[key];
@@ -39,6 +41,7 @@ export function CanvasContentBody({ entity, placementId, placementStyle, diagram
   onDiagramImported?: (workspace: LocalCanvasWorkspace) => void; canApplyDiagramImport?: boolean; sessionId: string; workspaceId: string;
   onProjectsChanged?: () => void;
 }): React.JSX.Element {
+  if (planningData(entity)?.kind === 'task') return <TaskNodeBody entity={entity} sessionId={sessionId} workspaceId={workspaceId} onChanged={onDiagramImported} />;
   const resource = entity.contentResource;
   const description = textProperty(entity, 'a3.content.description');
   const altText = textProperty(entity, 'a3.content.alt-text');
