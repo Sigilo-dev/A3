@@ -35,6 +35,7 @@ import { acquireOwnership, projectIdentity, type Ownership } from './ownership.j
 import { jsonBytes, ProgressLog, progressProtocol, transactionRoot } from './progress.js';
 import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
+import type { SnapshotSummary } from './snapshots.js';
 import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
 import { buildMediaGalleryCatalog, mediaGalleryKind, type MediaGalleryAvailability, type MediaGalleryCatalog } from './media-gallery.js';
 import { buildPromptContext, compilePromptTemplate, findNodeType, resolveEntityField, resolveVariableText, validateVariable, type PromptContextBase, type PromptContextCategory, type PromptContextDocument, type PromptContextUnavailable, type PromptTemplateCompilationResult, type VariableBinding, type VariableTextResolution } from '@a3/domain';
@@ -104,6 +105,9 @@ export interface LocalProjectsState {
   preview: ProjectInitializationPreview | null;
   restoreNotice?: string;
 }
+export interface LocalHistoryDiff { path: string; beforeHash: string | null; afterHash: string | null; beforeBytes: number; afterBytes: number; diff: string | null; detail?: string; }
+export interface LocalHistoryRestorePreview { token: string; snapshot: SnapshotSummary; changes: readonly LocalHistoryDiff[]; atomic: false; }
+interface LocalHistoryRestoreBinding { sessionId: string; plan: PreparedWrite; preview: LocalHistoryRestorePreview; expiresAt: number; }
 export interface WorkspaceViewport { x: number; y: number; zoom: number; }
 export interface DiagramStyleState { projectRevision: number; profile: DiagramStyleProfile; canWrite: boolean; diagnostics: readonly string[]; }
 export interface CanvasEntitySummary {
@@ -283,8 +287,25 @@ function historyRequiresDelete(event: ReversibleCanvasCommand, direction: 'undo'
 }
 const canvasHistoryLimit = 50;
 const canvasHistoryByteLimit = 16 * 1024 * 1024;
+function localHistoryDiff(path: string, before: Uint8Array | null, after: Uint8Array | null): string | null {
+  if (before?.includes(0) || after?.includes(0)) return null;
+  let previous: string, next: string;
+  try { previous = before ? new TextDecoder('utf-8', { fatal: true }).decode(before) : ''; next = after ? new TextDecoder('utf-8', { fatal: true }).decode(after) : ''; }
+  catch { return null; }
+  const oldLines = previous.replace(/\r\n/g, '\n').split('\n'), newLines = next.replace(/\r\n/g, '\n').split('\n');
+  let prefix = 0; while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix++;
+  let suffix = 0; while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) suffix++;
+  const contextStart = Math.max(0, prefix - 3), oldEnd = oldLines.length - suffix, newEnd = newLines.length - suffix;
+  const context = oldLines.slice(contextStart, prefix).map((line) => ` ${line}`);
+  const removed = oldLines.slice(prefix, oldEnd).map((line) => `-${line}`), added = newLines.slice(prefix, newEnd).map((line) => `+${line}`);
+  const trailing = suffix ? oldLines.slice(oldEnd, oldEnd + Math.min(3, suffix)).map((line) => ` ${line}`) : [];
+  const leftCount = Math.max(0, oldEnd - contextStart + trailing.length), rightCount = Math.max(0, newEnd - contextStart + trailing.length);
+  return `--- actual/${path}\n+++ snapshot/${path}\n@@ -${contextStart + 1},${leftCount} +${contextStart + 1},${rightCount} @@\n${[...context, ...removed, ...added, ...trailing].join('\n')}`;
+}
 export interface LocalProjectsOptions {
   stateDirectory: string; host: StoreHost;
+  /** Trusted main-process guard; renderer editors may hold drafts outside the store. */
+  hasDirtyBuffers?: () => Promise<boolean>;
   /** Trusted host registry; project documents cannot install or activate their own node renderers. */
   registry?: TypeRegistry;
   /** Trusted main-process prompt, called only for unresolved external changes/recovery. */
@@ -370,6 +391,7 @@ export class LocalProjectManager {
   #loaded = false;
   #active: ActiveProjectBinding | undefined;
   #mediaPlans = new Map<string, { sessionId: string; plan: PreparedWrite; preview: MediaConversionPrepared }>();
+  #historyRestores = new Map<string, LocalHistoryRestoreBinding>();
   #preview: PreviewData | undefined;
   #disposed = false;
   #nameDraft: string | undefined;
@@ -503,6 +525,7 @@ export class LocalProjectManager {
       this.#active = { lease: candidate.value, sessionId: randomUUID(), projectId, name, rootIdentity: await projectIdentity(root) };
       this.#planningProposals.clear(); this.#checklistPreviews.clear();
       this.#mediaPlans.clear();
+      this.#historyRestores.clear();
       this.#focusSession = undefined; this.#restoreNotice = undefined;
       this.#viewportDrafts.clear();
       this.#nameDraft = undefined;
@@ -614,7 +637,7 @@ export class LocalProjectManager {
     const resumeId = this.#catalog.resumeId; delete this.#catalog.resumeId;
     try { await this.#persist(); } catch (error) { if (resumeId) this.#catalog.resumeId = resumeId; throw error; }
     this.#focusSession = undefined;
-    await this.#active.lease.close(); this.#active = undefined; this.#planningProposals.clear(); this.#checklistPreviews.clear(); this.#mediaPlans.clear(); this.#preview = undefined; this.#nameDraft = undefined; this.#resetExplorerBindings(); return this.#state();
+    await this.#active.lease.close(); this.#active = undefined; this.#planningProposals.clear(); this.#checklistPreviews.clear(); this.#mediaPlans.clear(); this.#historyRestores.clear(); this.#preview = undefined; this.#nameDraft = undefined; this.#resetExplorerBindings(); return this.#state();
   }); }
   async #loadFocusSession(active: ActiveProjectBinding): Promise<WorkspaceSession> {
     if (this.#focusSession) return this.#focusSession;
@@ -671,6 +694,52 @@ export class LocalProjectManager {
   commitGitRestore(sessionId: string, plan: PreparedWrite): Promise<void> { return this.#queue(async () => {
     const active = this.#explorerContext(sessionId), result = await active.lease.service.commit(plan);
     demand(result.ok, 'RESTORE_CONFLICT', result.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+  }); }
+  listHistorySnapshots(sessionId: string): Promise<{ snapshots: readonly SnapshotSummary[]; diagnostics: readonly string[] }> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId), result = await active.lease.service.listSnapshots();
+    demand(result.ok, result.diagnostics[0]?.code ?? 'HISTORY_UNAVAILABLE', result.diagnostics.map((item) => item.message).join('\n'));
+    return { snapshots: result.value, diagnostics: result.diagnostics.map((item) => item.message) };
+  }); }
+  prepareHistoryRestore(sessionId: string, snapshotId: string): Promise<LocalHistoryRestorePreview> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId); demand(active.lease.service.state.mode === 'writer', 'PROJECT_READ_ONLY', 'El proyecto está abierto en solo lectura.');
+    demand(!await this.options.hasDirtyBuffers?.(), 'UNSAVED_CHANGES', 'Guarda o cancela los borradores abiertos antes de previsualizar una restauración.');
+    demand(!this.#viewportDrafts.size && this.#nameDraft === undefined, 'UNSAVED_CHANGES', 'Guarda los cambios pendientes antes de previsualizar la restauración.');
+    const snapshotResult = await active.lease.service.listSnapshots();
+    demand(snapshotResult.ok, snapshotResult.diagnostics[0]?.code ?? 'HISTORY_UNAVAILABLE', snapshotResult.diagnostics.map((item) => item.message).join('\n'));
+    const snapshot = snapshotResult.value.find((item) => item.snapshotId === snapshotId);
+    demand(snapshot, 'SNAPSHOT_MISSING', 'El snapshot ya no está disponible o pertenece a otro proyecto.');
+    const token = randomUUID(), prepared = await active.lease.service.prepareSnapshotRestore(snapshotId, token);
+    demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'RESTORE_REJECTED', prepared.diagnostics.map((item) => item.message).join('\n'));
+    const changes: LocalHistoryDiff[] = []; let remaining = 2 * 1024 * 1024;
+    for (const change of prepared.value.changes) {
+      const after = prepared.value.proposedBytes(change.path); let before: Uint8Array | null = null, detail: string | undefined;
+      if (change.beforeHash !== null && change.bytes > remaining) detail = 'diff-too-large';
+      else if (change.beforeHash !== null) {
+        try { before = await fileBytes(active.lease.service.root, change.path, Math.max(1, Math.min(remaining, 1024 * 1024))); remaining -= before.length; }
+        catch (error) { detail = error instanceof Error && error.message.includes('presupuesto') ? 'diff-too-large' : 'diff-unavailable'; }
+      }
+      if (after && after.length > remaining) detail = detail ?? 'diff-too-large';
+      else if (after) remaining -= after.length;
+      const diff = detail ? null : localHistoryDiff(change.path, before, after);
+      if (!diff && !detail) detail = 'binary-or-unsupported-encoding';
+      changes.push({ path: change.path, beforeHash: change.beforeHash, afterHash: change.afterHash,
+        beforeBytes: before?.length ?? (change.beforeHash === null ? 0 : change.bytes), afterBytes: after?.length ?? 0, diff, ...(detail ? { detail } : {}) });
+    }
+    const preview: LocalHistoryRestorePreview = { token, snapshot, changes, atomic: false };
+    for (const [key, value] of this.#historyRestores) if (value.expiresAt < Date.now() || value.sessionId !== sessionId) this.#historyRestores.delete(key);
+    demand(this.#historyRestores.size < 8, 'RESTORE_QUEUE_FULL', 'Confirma o cancela una revisión de restauración antes de preparar otra.');
+    this.#historyRestores.set(token, { sessionId, plan: prepared.value, preview, expiresAt: Date.now() + 5 * 60_000 }); return preview;
+  }); }
+  applyHistoryRestore(sessionId: string, token: string): Promise<import('./service-types.js').WriteReceipt> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId), pending = this.#historyRestores.get(token);
+    demand(pending?.sessionId === sessionId && pending.expiresAt > Date.now(), 'STALE_PREVIEW', 'La revisión venció o pertenece a otro proyecto.');
+    demand(!await this.options.hasDirtyBuffers?.(), 'UNSAVED_CHANGES', 'Guarda o cancela los borradores abiertos antes de aplicar la restauración.');
+    const committed = await active.lease.service.commit(pending.plan);
+    demand(committed.ok, committed.diagnostics[0]?.code ?? 'RESTORE_CONFLICT', committed.diagnostics.map((item) => item.message).join('\n'));
+    this.#historyRestores.delete(token); return committed.value;
+  }); }
+  cancelHistoryRestore(sessionId: string, token: string): Promise<void> { return this.#queue(async () => {
+    const pending = this.#historyRestores.get(token); if (pending?.sessionId === sessionId) this.#historyRestores.delete(token);
   }); }
   setAgentProfile(sessionId: string, profile: Profile): Promise<boolean> { return this.#queue(async () => {
     const active = this.#explorerContext(sessionId);
@@ -3218,11 +3287,11 @@ export class LocalProjectManager {
   shutdown(): Promise<void> {
     const result = this.#tail.then(async () => {
       await this.#allowSwitch(); await this.#active?.lease.close(); this.#active = undefined; this.#planningProposals.clear(); this.#checklistPreviews.clear();
-      this.#disposed = true; await this.#catalogOwnership?.close();
+      this.#historyRestores.clear(); this.#disposed = true; await this.#catalogOwnership?.close();
     });
     this.#tail = result.catch(() => undefined); return result;
   }
-  async dispose(): Promise<void> { await this.#tail; this.#disposed = true; await this.#active?.lease.close(); this.#active = undefined; this.#planningProposals.clear(); this.#checklistPreviews.clear(); await this.#catalogOwnership?.close(); }
+  async dispose(): Promise<void> { await this.#tail; this.#disposed = true; await this.#active?.lease.close(); this.#active = undefined; this.#planningProposals.clear(); this.#checklistPreviews.clear(); this.#historyRestores.clear(); await this.#catalogOwnership?.close(); }
 }
 
 async function initialize(root: string, identity: string, initial: Initialization, options: LocalProjectsOptions): Promise<void> {

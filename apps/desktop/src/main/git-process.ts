@@ -76,6 +76,7 @@ export type GitVersionCommand =
   | { kind: 'tree'; indexFile: string }
   | { kind: 'blob'; oid: string }
   | { kind: 'entry'; commit: string; path: string }
+  | { kind: 'tree-files'; commit: string }
   | { kind: 'index-entry'; path: string }
   | { kind: 'commit-object'; tree: string; parent: string | null; message: string; name: string; email: string; indexFile: string }
   | { kind: 'publish'; branch: string; previous: string | null; next: string }
@@ -112,6 +113,7 @@ export async function runGitVersionCommand(binary: VerifiedGitBinary, cwd: strin
     case 'tree': args = ['write-tree']; break;
     case 'blob': args = ['cat-file', 'blob', oid(command.oid)]; break;
     case 'entry': args = ['ls-tree', '-z', '--full-tree', oid(command.commit), '--', path(command.path)]; break;
+    case 'tree-files': args = ['ls-tree', '-r', '-z', '--full-tree', oid(command.commit)]; break;
     case 'index-entry': args = ['ls-files', '--stage', '-z', '--', path(command.path)]; break;
     case 'commit-object':
       if (!command.name.trim() || /[\x00-\x1f<>]/.test(command.name) || !/^[^\s<>@]+@[^\s<>@]+$/.test(command.email) || !command.message.trim() || command.message.length > 4096 || secretLike(command.message)) throw new GitStatusError('invalid-commit');
@@ -120,7 +122,7 @@ export async function runGitVersionCommand(binary: VerifiedGitBinary, cwd: strin
     case 'publish': args = ['update-ref', '--no-deref', '--stdin']; options.input = Buffer.from(`start\nupdate ${ref(command.branch)} ${oid(command.next)} ${command.previous ? oid(command.previous) : '0'.repeat(40)}\nprepare\ncommit\n`); break;
     case 'branch': args = ['update-ref', '--no-deref', '--stdin']; options.input = Buffer.from(`start\nverify ${ref(command.current)} ${oid(command.head)}\ncreate ${ref(command.branch)} ${oid(command.head)}\nprepare\ncommit\n`); break;
     case 'branches': args = ['for-each-ref', '--format=%(refname:short)%00%(objectname)', 'refs/heads/']; break;
-    case 'log': args = ['log', '-30', '--format=%H%x00%s', '--no-decorate']; break;
+    case 'log': args = ['log', '-30', '--format=%H%x00%cI%x00%s', '--no-decorate']; break;
     case 'objects': args = ['rev-list', '--objects', '--no-object-names', oid(command.oid)]; break;
     case 'object-batch':
       if (!command.oids.length || command.oids.length > 5000) throw new GitStatusError('output-limit');

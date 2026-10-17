@@ -16,6 +16,7 @@ import { validPlanningRequest, type PlanningResult } from '../shared/planning';
 import { validMemorySearchRequest, type MemorySearchResult } from '../shared/memory-search';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import { GitProjectController } from './git-controller';
+import { ProjectHistoryController } from './history-controller';
 import { GithubProjectController } from './github-controller';
 import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validAgentProfilesRequest, type AgentProfilesResult } from '../shared/agent-profiles';
@@ -351,6 +352,10 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
         `Capacidad: ${request.capability}\nAcción: ${request.operation}${request.displayTarget ? '\nCarpeta: ' + request.displayTarget : ''}\nLa aprobación pertenece solo a este proyecto y dispositivo.`);
     } });
   const manager = new LocalProjectManager({ stateDirectory: join(stateDirectory, 'local-projects'), host: { authenticatedActor, capabilities },
+    hasDirtyBuffers: async () => {
+      const window = getWindow(); if (!window || window.isDestroyed()) return true;
+      return !await window.webContents.executeJavaScript("window.dispatchEvent(new Event('beforeunload', { cancelable: true }))");
+    },
     confirmClose: (project) => confirm('Cerrar con cambios externos o recuperación pendiente',
       `${project.name}\n${project.root}\nLos archivos y copias de recuperación se conservarán. La sesión del proyecto se cerrará antes de abrir otra.`) });
   const plantumlRenderer = new PlantUmlRenderer({ artifactPath: plantumlArtifactPath, installDirectory: join(stateDirectory, 'diagram-engines', 'plantuml') });
@@ -589,11 +594,12 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
     }
   };
   const git = new GitProjectController(manager, capabilities, authenticatedActor, getWindow);
+  const history = new ProjectHistoryController(manager);
   const github = new GithubProjectController(stateDirectory, manager, capabilities, authenticatedActor, getWindow, git);
   return {
     manager,
     capabilities,
-    git, github,
+    git, github, history,
     async handleAgentProfiles(value: unknown): Promise<AgentProfilesResult> {
       if (!validAgentProfilesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'La solicitud de perfil de agente no es válida.', recovery: 'Vuelve a cargar Preferencias del proyecto.' } };
       try {

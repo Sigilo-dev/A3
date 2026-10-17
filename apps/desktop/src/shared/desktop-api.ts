@@ -10,6 +10,8 @@ export type { CanvasUmlState, CanvasUmlElement, CanvasUmlRelationship, CanvasUml
 export type { CanvasC4State, CanvasC4Element, CanvasC4Relationship, CanvasC4RelationView } from '@a3/project-store';
 export type { CanvasEntityChoice, CanvasEntitySummary, CanvasPlacementView, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasConceptualRelationView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourceDescriptor, CanvasResourceChoice, CanvasResourcePreview, CanvasMermaidImportPreview, CanvasPlantUmlImportPreview, CanvasStructurizrImportPreview, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace, DiagramStyleState } from '@a3/project-store';
 export type { MediaGalleryCatalog, MediaGalleryItem, MediaGalleryKind, MediaGalleryWorkspace, MediaGalleryGroup, MediaGalleryCollection, MediaGalleryRepresentation, MediaGalleryPreview } from '@a3/project-store';
+export type { LocalHistoryDiff, LocalHistoryRestorePreview } from '@a3/project-store';
+export type { SnapshotSummary } from '@a3/project-store';
 export type { LocalProjectsState, LocalProjectSession, LocalExplorerDeletePreview, LocalExplorerEntry, LocalExplorerListing, LocalExplorerMount, LocalExplorerOpen } from '@a3/project-store';
 // This bridge never carries effective grants, raw services or filesystem handles.
 export const APP_INFO_CHANNEL = 'a3.shell:get-app-info';
@@ -161,6 +163,7 @@ export type ShellResult<T> =
   | { ok: false; error: { code: 'PERMISSION_DENIED' | 'IO_FAILED'; message: string; recovery: string } };
 
 export interface DesktopAPI {
+  history(request: import('./history').HistoryRequest): Promise<import('./history').HistoryResult>;
   github(request: import('./github-publishing').GithubRequest): Promise<import('./github-publishing').GithubResult>;
   git(request: import('./git-operations').GitRequest): Promise<import('./git-operations').GitResult>;
   agentProfiles(request: import('./agent-profiles').AgentProfilesRequest): Promise<import('./agent-profiles').AgentProfilesResult>;

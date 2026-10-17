@@ -96,12 +96,24 @@ export class LocalGitVersions {
     const match = /^(100644|100755) (?:blob )?([a-f0-9]{40})(?: 0)?\t[^\0]+\0$/.exec(line);
     need(match, 'unsupported-file'); return this.run({ kind: 'blob', oid: match![2]! });
   }
+  private async treeFiles(commit: string): Promise<Map<string, { mode: string; oid: string }>> {
+    const raw = await this.run({ kind: 'tree-files', commit }), result = new Map<string, { mode: string; oid: string }>();
+    for (const record of text(raw).split('\0').filter(Boolean)) {
+      const match = /^(100644|100755|120000) blob ([a-f0-9]{40})\t([\s\S]+)$/.exec(record);
+      need(match, 'invalid-output');
+      const path = match![3]!;
+      if (match![1] === '120000') continue;
+      try { safePath(path); } catch { continue; }
+      result.set(path, { mode: match![1]!, oid: match![2]! });
+    }
+    return result;
+  }
   load(): Promise<GitProjectView> { return this.serial(async () => {
     const status = await this.adapter.status(this.repository.repositoryId);
     if (status.state !== 'ready') return { root: this.repository.root, status, branches: [], log: [] };
     await this.allow('git.diff');
     const branches = text(await this.run({ kind: 'branches' })).trimEnd().split('\n').filter(Boolean).map((line) => { const [name, oid] = line.split('\0'); return { name: name!, oid: oid! }; });
-    const log = status.unborn ? [] : text(await this.run({ kind: 'log' })).trimEnd().split('\n').filter(Boolean).map((line) => { const [oid, subject] = line.split('\0'); return { oid: oid!, subject: secretLike(subject ?? '') ? '[mensaje oculto: posible secreto]' : subject ?? '' }; });
+    const log = status.unborn ? [] : text(await this.run({ kind: 'log' })).trimEnd().split('\n').filter(Boolean).map((line) => { const [oid, date, subject] = line.split('\0'); return { oid: oid!, date: date ?? '', subject: secretLike(subject ?? '') ? '[mensaje oculto: posible secreto]' : subject ?? '' }; });
     return { root: this.repository.root, status, branches, log };
   }); }
   cancel(token: string): void { this.reviews.delete(token); }
@@ -122,6 +134,21 @@ export class LocalGitVersions {
     const status = await this.status(); need(!status.entries.some((entry) => entry.kind === 'unmerged'), 'unresolved-conflict');
     const index = await bytesAt(join(this.repository.root, '.git/index'));
     let paths = [...new Set(input.paths ?? [])], targetCommit = input.commit ?? status.head;
+    if (input.kind === 'restore-commit') {
+      need(this.repository.kind === 'a3-project' && status.head && input.commit, 'external-restore-denied');
+      const headFiles = await this.treeFiles(status.head!), targetFiles = await this.treeFiles(input.commit!);
+      const candidates = new Set<string>();
+      for (const path of new Set([...headFiles.keys(), ...targetFiles.keys()])) {
+        const before = headFiles.get(path), after = targetFiles.get(path);
+        if (before?.oid !== after?.oid || before?.mode !== after?.mode) candidates.add(path);
+      }
+      for (const entry of status.entries) if (entry.kind !== 'untracked') {
+        try { candidates.add(safePath(entry.path)); } catch { /* Protected paths never enter a restore review. */ }
+      }
+      paths = [...candidates].filter((path) => !protectedGitPath(path));
+      need(paths.length > 0 && paths.length <= 128, paths.length > 128 ? 'restore-limit' : 'no-restore-changes');
+      targetCommit = input.commit;
+    }
     paths.forEach(safePath);
     need(new Set(paths.map((path) => path.toLowerCase())).size === paths.length, 'invalid-selection');
     if (input.kind === 'stage' || input.kind === 'unstage') need(paths.every((path) => status.entries.some((entry) => entry.path === path)), 'invalid-selection');
@@ -165,7 +192,7 @@ export class LocalGitVersions {
     need([...files.values()].reduce((sum, bytes) => sum + (bytes?.length ?? 0), 0) + diffs.reduce((sum, diff) => sum + Buffer.byteLength(diff.text), 0) <= 32 * 1024 * 1024, 'review-limit');
     const token = randomUUID();
     const view: GitReviewView = { token, root: this.repository.root, kind: input.kind, branch: status.branch ?? null, paths, diffs,
-      ...(input.message ? { message: input.message } : {}), ...(input.branch ? { targetBranch: input.branch } : {}), ...(targetCommit && input.kind === 'restore' ? { targetCommit } : {}),
+      ...(input.message ? { message: input.message } : {}), ...(input.branch ? { targetBranch: input.branch } : {}), ...(targetCommit && input.kind.includes('restore') && input.kind !== 'undo-restore' ? { targetCommit } : {}),
       warnings: input.kind.includes('restore') ? ['Se crea un snapshot local y nuevas revisiones mediante el journal A3.', 'El índice Git no cambia.'] : [] };
     for (const [key, review] of this.reviews) if (review.expires < Date.now()) this.reviews.delete(key);
     need(this.reviews.size < 32, 'review-limit');

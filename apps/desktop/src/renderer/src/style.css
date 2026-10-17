@@ -605,6 +605,15 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .git-actions { display: flex; flex-wrap: wrap; gap: 9px; align-items: end; }
 .git-panel [role=alert] { color: #ffa7a7; }
 .git-panel :focus-visible { outline: 2px solid #c3ed82; outline-offset: 2px; }
+.history-panel { max-width: 980px; display: grid; gap: 14px; }
+.history-panel [role=tabpanel] { display: grid; gap: 12px; }
+.history-panel .history-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.history-panel .history-list > li { border: 1px solid #41515e; border-radius: 8px; padding: 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.history-panel .history-list p { margin: 6px 0 0; }
+.history-panel code { overflow-wrap: anywhere; }
+.history-panel pre { max-height: 380px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #10151b; padding: 12px; font-size: 12px; }
+.history-panel :focus-visible { outline: 2px solid #c3ed82; outline-offset: 2px; }
+@media (max-width: 760px) { .history-panel .history-list > li { align-items: start; flex-direction: column; } }
 .agent-authorization .intro { margin-top: 18px; }
 .agent-authorization :focus-visible, .agent-runtime :focus-visible, .agent-provider-choice :focus-visible { outline: 2px solid #c3ed82; outline-offset: 2px; }
 @media (max-width: 680px) { .agent-runtime-heading, .agent-provider-choice { flex-direction: column; } .agent-effective-capabilities { grid-template-columns: 1fr; } }

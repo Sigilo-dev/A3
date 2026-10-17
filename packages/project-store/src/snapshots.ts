@@ -64,11 +64,15 @@ function missing(error: unknown): boolean { return !!error && typeof error === '
 function bad(path: string, detail: string, message: string): StoreDiagnostic {
   return issue(path, 'io', detail, message, { code: 'IO_FAILED', severity: 'warning' });
 }
-function validatePath(root: string, path: string): boolean {
+/** Paths that may enter the recovery catalog. Local state and likely credential material stay outside it. */
+export function snapshotPathAllowed(root: string, path: string): boolean {
   try {
     resolvePortablePath(root, path);
     const folded = path.toLowerCase();
-    return folded !== '.git' && !folded.startsWith('.git/') && folded !== '.a3/local' && !folded.startsWith('.a3/local/');
+    return folded !== '.git' && !folded.startsWith('.git/') && folded !== '.a3/local' && !folded.startsWith('.a3/local/') &&
+      !/(?:^|\/)(?:\.env(?:\.[^/]*)?|credentials?(?:\.[^/]*)?|secrets?(?:\.[^/]*)?|private-keys?|id_(?:rsa|ed25519)(?:\.pub)?)(?:\/|$)/i.test(folded) &&
+      !/(?:^|\/)(?:node_modules|\.cache|__pycache__|\.pytest_cache|\.mypy_cache|\.venv|codex-authorization)(?:\/|$)/i.test(folded) &&
+      !/\.(?:key|pem|p12|pfx)$/i.test(folded);
   } catch { return false; }
 }
 function summary(manifest: SnapshotManifest): SnapshotSummary {
@@ -83,7 +87,7 @@ function validManifest(value: unknown, folder: string, root: string): SnapshotMa
   const paths = new Set<string>();
   const files: SnapshotFile[] = [];
   for (const [index, raw] of value.files.entries()) {
-    if (!object(raw) || typeof raw.path !== 'string' || !validatePath(root, raw.path) || typeof raw.exists !== 'boolean' ||
+    if (!object(raw) || typeof raw.path !== 'string' || !snapshotPathAllowed(root, raw.path) || typeof raw.exists !== 'boolean' ||
         !(raw.sha256 === null || typeof raw.sha256 === 'string' && /^[0-9a-f]{64}$/.test(raw.sha256)) ||
         !Number.isSafeInteger(raw.bytes) || (raw.bytes as number) < 0 ||
         !(raw.blob === null || raw.blob === `files/${index}.bin`)) return undefined;
@@ -198,6 +202,7 @@ export async function createSnapshot(root: string, request: CreateSnapshotReques
   if (!idPattern.test(request.snapshotId) || !idPattern.test(request.projectId) || !idPattern.test(request.operationId) ||
       !safeReasons.includes(request.reason) || request.files.length > 10000) return { ok: false, diagnostics: [bad(snapshotRoot, 'invalid-snapshot-request', 'La solicitud del snapshot no es válida.')] };
   try {
+    const eligibleFiles = request.files.filter((file) => snapshotPathAllowed(root, file.path));
     const now = request.now ?? new Date();
     const rootPath = await realpath(root);
     const finalFolder = `${snapshotRoot}/${request.snapshotId}`;
@@ -207,7 +212,7 @@ export async function createSnapshot(root: string, request: CreateSnapshotReques
         return { ok: false, diagnostics: [bad(finalFolder, 'snapshot-id-reused', 'El ID ya identifica otra captura.')] };
       }
       const complete = await contents(rootPath, existing, Number.MAX_SAFE_INTEGER);
-      if (!complete || complete.files.length !== request.files.length || complete.files.some((file, index) => file.path !== request.files[index]!.path || file.sha256 !== request.files[index]!.expectedHash)) {
+      if (!complete || complete.files.length !== eligibleFiles.length || complete.files.some((file, index) => file.path !== eligibleFiles[index]!.path || file.sha256 !== eligibleFiles[index]!.expectedHash)) {
         return { ok: false, diagnostics: [bad(finalFolder, 'snapshot-retry-mismatch', 'El snapshot existente no coincide con las precondiciones de esta operación.')] };
       }
       const retention = await applyRetention(rootPath, request, now, new Set([request.snapshotId]));
@@ -215,8 +220,8 @@ export async function createSnapshot(root: string, request: CreateSnapshotReques
     }
     const seen = new Set<string>();
     const captures: { path: string; bytes: Uint8Array | null; hash: string | null }[] = [];
-    for (const file of request.files) {
-      if (!validatePath(rootPath, file.path) || seen.has(file.path.toLowerCase())) throw new Error('snapshot-path-invalid');
+    for (const file of eligibleFiles) {
+      if (!snapshotPathAllowed(rootPath, file.path) || seen.has(file.path.toLowerCase())) throw new Error('snapshot-path-invalid');
       seen.add(file.path.toLowerCase());
       const identityBefore = await existingIdentity(rootPath, file.path);
       let bytes: Uint8Array | null;

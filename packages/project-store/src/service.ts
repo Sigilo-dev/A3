@@ -14,7 +14,7 @@ import { jsonBytes, ProgressLog, progressProtocol, transactionRoot } from './pro
 import { recoverTransactions } from './recovery.js';
 import { checkedPath, fileBytes, ioIssue, PathError, readProject, readProjectResource, resolvePortablePath } from './reader.js';
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
-import { createSnapshot, listSnapshots, readSnapshot, type SnapshotReason } from './snapshots.js';
+import { createSnapshot, listSnapshots, readSnapshot, snapshotPathAllowed, type SnapshotReason } from './snapshots.js';
 import { applyMigrationChain, migrationChain, type MigrationScope } from './migrations.js';
 import { completeMigration, loadPreparedMigration, prepareMigration, verifyAppliedMigration, type LoadedMigration } from './migration-store.js';
 import type { DocumentLocation, JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
@@ -1499,8 +1499,10 @@ export class ProjectService {
       return { ok: true, value: { ...result.value, status: 'created' }, diagnostics: result.diagnostics };
     });
   }
-  restoreSnapshot(snapshotId: string, operationId: string): Promise<StoreResult<WriteReceipt>> {
-    return this.#queue(async () => {
+  prepareSnapshotRestore(snapshotId: string, operationId: string): Promise<StoreResult<PreparedWrite>> {
+    return this.#queue(() => this.#prepareSnapshotRestore(snapshotId, operationId));
+  }
+  async #prepareSnapshotRestore(snapshotId: string, operationId: string): Promise<StoreResult<PreparedWrite>> {
       try {
         const current = await this.#currentForMaintenance(); if (!current.ok) return current;
         const projectId = this.#projectId();
@@ -1555,8 +1557,14 @@ export class ProjectService {
         const requestHash = sha256(Buffer.from(canonicalJson(requestEnvelope)));
         const prepared = this.#makePlan(current.value, operationId, changedImages, records, [], requestHash, { maintenance: true, snapshotReason: 'restore' });
         if (!prepared.ok) return prepared;
-        return await this.#commit(prepared.value, this.#plans.get(prepared.value)!);
+        return prepared;
       } catch (error) { return failure([this.#operationError('snapshot', error)]); }
+  }
+  restoreSnapshot(snapshotId: string, operationId: string): Promise<StoreResult<WriteReceipt>> {
+    return this.#queue(async () => {
+      const prepared = await this.#prepareSnapshotRestore(snapshotId, operationId);
+      if (!prepared.ok) return prepared;
+      return this.#commit(prepared.value, this.#plans.get(prepared.value)!);
     });
   }
   migrateProject(operationId: string): Promise<StoreResult<MigrationReceipt>> {
@@ -1721,7 +1729,7 @@ export class ProjectService {
       }
       if (!data.images.length) return { ok: true, value: { status: 'committed', operationId: plan.operationId, atomic: false, paths: [], transactionPath: null }, diagnostics: [] };
       snapshotId = data.snapshotId ?? plan.operationId;
-      const snapshotChanges = plan.changes.filter((change) => !change.path.toLowerCase().startsWith('.a3/local/'));
+      const snapshotChanges = plan.changes.filter((change) => snapshotPathAllowed(this.root, change.path));
       const snapshot = await createSnapshot(this.root, { snapshotId, projectId: plan.projectId, operationId: data.snapshotOperationId ?? plan.operationId,
         reason: data.snapshotReason ?? 'batch', files: snapshotChanges.map((change) => ({ path: change.path, expectedHash: change.beforeHash,
           expectedIdentity: data.scan.files.get(change.path)?.identity ?? null })), retentionDays: this.#snapshotRetentionDays, maxBytes: this.#snapshotMaxBytes });

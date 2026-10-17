@@ -63,6 +63,37 @@ test('snapshots preserve exact preimages; retention removes oldest first and cat
   assert.equal(old.ok, false);
 });
 
+test('recovery snapshots exclude Git metadata, local state, caches and credential paths', windows, async (t) => {
+  const { root } = await scratch(t), manifest = JSON.parse(await readFile(join(root, 'a3.project.json'), 'utf8'));
+  const entityBytes = await readFile(join(root, entityPath));
+  const snapshot = ok(await createSnapshot(root, { snapshotId: id(921), projectId: manifest.projectId, operationId: id(922), reason: 'batch', files: [
+    { path: entityPath, expectedHash: sha256(entityBytes) }, { path: '.env.local', expectedHash: null }, { path: '.a3/local/session.json', expectedHash: null },
+    { path: '.git/config', expectedHash: null }, { path: 'credentials.json', expectedHash: null }, { path: 'node_modules/cache/item.bin', expectedHash: null }, { path: 'private-key.pem', expectedHash: null },
+    { path: 'dist/application/source.ts', expectedHash: null }, { path: 'build/decisions.md', expectedHash: null }
+  ] }));
+  assert.equal(snapshot.fileCount, 3);
+  const recoveredPaths = ok(await readSnapshot(root, snapshot.snapshotId, manifest.projectId)).files.map((file) => file.path);
+  assert.ok(recoveredPaths.includes(entityPath));
+  assert.ok(recoveredPaths.includes('dist/application/source.ts'));
+  assert.ok(recoveredPaths.includes('build/decisions.md'));
+});
+
+test('snapshot restore can be reviewed before commit and rejects a later external file edit', windows, async (t) => {
+  const { root } = await scratch(t), entityFile = join(root, entityPath);
+  const original = JSON.parse(await readFile(entityFile, 'utf8'));
+  const snapshot = ok(await createSnapshot(root, { snapshotId: id(923), projectId: original.projectId ?? JSON.parse(await readFile(join(root, 'a3.project.json'), 'utf8')).projectId,
+    operationId: id(924), reason: 'batch', files: [{ path: entityPath, expectedHash: sha256(await readFile(entityFile)) }] }));
+  const changed = { ...original, revision: original.revision + 1, title: 'Uncommitted local edit' };
+  await writeFile(entityFile, JSON.stringify(changed, null, 2) + '\n');
+  const lease = await open(root); t.after(() => lease.close());
+  const prepared = ok(await lease.service.prepareSnapshotRestore(snapshot.snapshotId, id(925)));
+  assert.equal(JSON.parse(Buffer.from(prepared.proposedBytes(entityPath)).toString('utf8')).title, original.title);
+  await writeFile(entityFile, JSON.stringify({ ...changed, title: 'External edit after preview' }, null, 2) + '\n');
+  const committed = await lease.service.commit(prepared);
+  assert.equal(committed.ok, false);
+  assert.equal(JSON.parse(await readFile(entityFile, 'utf8')).title, 'External edit after preview');
+});
+
 test('an interrupted write keeps its over-budget snapshot while the D1 transaction is pending', windows, async (t) => {
   const { root } = await scratch(t);
   const lease = ok(await openProjectService(root, { host: await fixtureHost(root, 'quota-user'), pollMs: 5000, snapshotMaxBytes: 1,

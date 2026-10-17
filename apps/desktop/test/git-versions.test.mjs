@@ -135,6 +135,24 @@ test('A3-034 restore uses E1 journal/snapshot, preserves resource ID, increments
   assert.equal(c.lease.service.state.project.diagnostics.some((diagnostic) => diagnostic.severity === 'error'), false);
 });
 
+test('A3-038 Git history includes commit dates and restores a complete reviewed version through E1', native, async (t) => {
+  const c = await context(t, true), notes = join(c.root, 'notes.md'), original = await readFile(notes);
+  await c.file('notes.md', 'an uncommitted edit\n');
+  const history = await c.service.load();
+  assert.ok(history.log[0].date && !Number.isNaN(Date.parse(history.log[0].date)));
+  assert.ok(history.status.entries.some((entry) => entry.path === 'notes.md'), 'uncommitted worktree changes remain separate from commits');
+  const review = await c.service.review({ kind: 'restore-commit', commit: history.log[0].oid });
+  assert.equal(review.targetCommit, history.log[0].oid);
+  assert.ok(review.paths.includes('notes.md'));
+  assert.match(review.diffs.find((diff) => diff.path === 'notes.md').text, /an uncommitted edit/);
+  const applied = await c.service.apply(review.token);
+  assert.ok(applied.snapshotId);
+  assert.deepEqual(await readFile(notes), original);
+  const snapshots = await c.lease.service.listSnapshots(); assert.equal(snapshots.ok, true);
+  assert.ok(snapshots.value.some((snapshot) => snapshot.snapshotId === applied.snapshotId && snapshot.reason === 'restore'));
+  assert.ok(await readFile(join(c.root, '.a3/local/recovery/snapshots', applied.snapshotId, 'snapshot.json')));
+});
+
 test('restore rejects later external bytes and invalid canonical JSON while retaining source and index', native, async (t) => {
   const c = await context(t, true), source = join(c.root, 'other.md'); await c.file('other.md', 'current\n');
   const review = await c.service.review({ kind: 'restore', paths: ['other.md'] }); await c.file('other.md', 'later external\n');

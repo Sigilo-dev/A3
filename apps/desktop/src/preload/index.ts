@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { GIT_OPERATIONS_CHANNEL, type GitRequest } from '../shared/git-operations';
 import { GITHUB_CHANNEL, type GithubRequest } from '../shared/github-publishing';
+import { HISTORY_CHANNEL, type HistoryRequest } from '../shared/history';
 import { MEMORY_SEARCH_CHANNEL, type MemorySearchRequest } from '../shared/memory-search';
 import { PLANNING_CHANNEL, type PlanningRequest } from '../shared/planning';
 import { MANUAL_CHAT_CHANNEL, type ManualChatRequest } from '../shared/manual-chat';
@@ -33,6 +34,7 @@ window.addEventListener('drop', (event) => {
 }, true);
 
 const api: DesktopAPI = Object.freeze({
+  history: (request: HistoryRequest) => ipcRenderer.invoke(HISTORY_CHANNEL, request),
   git: (request: GitRequest) => ipcRenderer.invoke(GIT_OPERATIONS_CHANNEL, request),
   github: (request: GithubRequest) => ipcRenderer.invoke(GITHUB_CHANNEL, request),
   agentProfiles: (request: AgentProfilesRequest) => ipcRenderer.invoke(AGENT_PROFILES_CHANNEL, request),
