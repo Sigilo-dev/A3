@@ -35,6 +35,10 @@
     "./markdown": {
       "types": "./dist/src/markdown.d.ts",
       "import": "./dist/src/markdown.js"
+    },
+    "./extension-points": {
+      "types": "./dist/src/extension-points.d.ts",
+      "import": "./dist/src/extension-points.js"
     }
   },
   "scripts": {

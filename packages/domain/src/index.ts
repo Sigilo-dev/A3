@@ -33,3 +33,8 @@ export { findA3Wikilinks, inspectMarkdownParse, inspectMarkdownSource, type A3Wi
 export { refOf, refKey, revisionsOf, getRecord, indexSnapshot } from './data.js';
 export { SHORTCUTS, defaultShortcuts, normalizeShortcut, validateShortcuts, matchesShortcut } from './shortcuts.js';
 export type { ShortcutId, ShortcutBindings } from './shortcuts.js';
+export { A3_EXTENSION_POINTS, emptyExtensionRegistry, validateVersionedExtensionPackage, validateExtensionRegistry, registerExtensionPackage,
+  activateExtensionPackage, deactivateExtensionPackage, retireExtensionPackage, resolveExtensionRegistry } from './extension-points.js';
+export type { ExtensionPointId, ExtensionPointDefinition, ExtensionPointMode, ExtensionFallback, ExtensionContribution,
+  ExtensionPackageOrigin, ExtensionDependency, VersionedExtensionPackage, RegisteredExtensionPackage,
+  ExtensionRegistry, ExtensionResolution, ExtensionResolutionReport, ExtensionResolutionStatus, ThemeToken } from './extension-points.js';

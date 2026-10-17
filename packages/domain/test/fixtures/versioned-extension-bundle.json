@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1.0.0",
+  "manifest": {
+    "id": "community.a3-design-tools",
+    "name": "A3 Design Tools",
+    "author": "A3 Fixture Author",
+    "version": "1.0.0",
+    "license": "MIT",
+    "a3ApiVersion": "1.0.0",
+    "origin": { "kind": "local-file", "label": "a3-design-tools.json" },
+    "dependencies": [],
+    "permissions": ["web.manual-navigation", "web.open-external", "agent.turn", "project.read", "git.commit"],
+    "obsidianCompatibility": "not-asserted",
+    "extensions": {}
+  },
+  "contributions": [
+    { "id": "community.a3-design-tools.night", "extensionPoint": "a3.theme", "apiVersion": "1.0.0", "payload": { "tokens": { "color.background": "#111827", "color.foreground": "#f9fafb", "font.size": "14px", "spacing": "8px" } } },
+    { "id": "community.a3-design-tools.callout", "extensionPoint": "a3.markdown", "apiVersion": "1.0.0", "payload": { "syntaxId": "community.a3-design-tools.callout", "label": "Callout", "open": ":::note", "close": ":::end", "unknownSource": "preserve" } },
+    { "id": "community.a3-design-tools.language", "extensionPoint": "a3.language", "apiVersion": "1.0.0", "payload": { "languageId": "community.a3-design-tools.dsl", "aliases": ["a3dsl"], "rules": [ { "id": "community.a3-design-tools.keyword", "kind": "keyword", "literals": ["node", "edge"] }, { "id": "community.a3-design-tools.comment", "kind": "line-comment", "open": "#" } ] } },
+    { "id": "community.a3-design-tools.chat", "extensionPoint": "a3.provider", "apiVersion": "1.0.0", "payload": { "kind": "manual-web", "mode": "manual", "origin": "https://chat.example.test", "authentication": "user-session", "cost": "unspecified", "permissions": ["web.manual-navigation"], "terms": "Fixture provider terms" } },
+    { "id": "community.a3-design-tools.agent", "extensionPoint": "a3.provider", "apiVersion": "1.0.0", "payload": { "kind": "agent", "mode": "automated", "origin": "https://agent.example.test", "authentication": "official-oauth", "cost": "user-plan", "permissions": ["agent.turn", "project.read"], "terms": "Fixture agent provider terms" } },
+    { "id": "community.a3-design-tools.on-save", "extensionPoint": "a3.automation", "apiVersion": "1.0.0", "payload": { "trigger": "on-save", "steps": ["git.commit"], "permissions": ["git.commit"] } }
+  ],
+  "extensions": { "community.a3-design-tools.future-metadata": { "retained": true } }
+}
