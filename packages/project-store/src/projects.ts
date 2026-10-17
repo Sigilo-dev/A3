@@ -37,7 +37,7 @@ import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
 import type { SnapshotSummary } from './snapshots.js';
 import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
-import { readDeclarativeNodePackages, type DeclarativeNodePackageCatalog } from './node-packages.js';
+import { readDeclarativeNodePackages, type DeclarativeNodePackageCatalog, type NodePackageEntry, type NodePackageImportReview, type NodePackageInstallOrigin } from './node-packages.js';
 import { buildMediaGalleryCatalog, mediaGalleryKind, type MediaGalleryAvailability, type MediaGalleryCatalog } from './media-gallery.js';
 import { buildPromptContext, compilePromptTemplate, findNodeType, resolveEntityField, resolveVariableText, validateVariable, type PromptContextBase, type PromptContextCategory, type PromptContextDocument, type PromptContextUnavailable, type PromptTemplateCompilationResult, type VariableBinding, type VariableTextResolution } from '@a3/domain';
 import { projectVariablesState, type ProjectVariablesState, type SetProjectVariables, type VariablesQuery } from './variables.js';
@@ -107,7 +107,8 @@ export interface LocalProjectsState {
   restoreNotice?: string;
 }
 export interface ProjectNodePackagesState {
-  projectId: string; packages: readonly DeclarativeNodePackage[]; diagnostics: readonly import('./types.js').StoreDiagnostic[]; canWrite: boolean;
+  projectId: string; packages: readonly DeclarativeNodePackage[]; entries: readonly NodePackageEntry[];
+  diagnostics: readonly import('./types.js').StoreDiagnostic[]; canWrite: boolean;
 }
 export interface LocalHistoryDiff { path: string; beforeHash: string | null; afterHash: string | null; beforeBytes: number; afterBytes: number; diff: string | null; detail?: string; }
 export interface LocalHistoryRestorePreview { token: string; snapshot: SnapshotSummary; changes: readonly LocalHistoryDiff[]; atomic: false; }
@@ -931,18 +932,43 @@ export class LocalProjectManager {
     try { allowed = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
         projectId: active.projectId, operation: 'write', paths: [], refs: [{ kind: 'project', id: active.projectId }], resources: [], requiredCapabilities: ['document.edit'], stage: 'prepare' }).allowed; }
     catch { /* Fail closed if the host broker is unavailable. */ }
-    return { projectId: active.projectId, packages: catalog.packages, diagnostics: catalog.diagnostics,
+    return { projectId: active.projectId, packages: catalog.packages, entries: catalog.entries, diagnostics: catalog.diagnostics,
       canWrite: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && allowed };
   }
   loadNodePackages(sessionId: string): Promise<ProjectNodePackagesState> { return this.#queue(async () => this.#nodePackagesState(this.#explorerContext(sessionId))); }
-  saveNodePackage(sessionId: string, value: unknown): Promise<ProjectNodePackagesState> { return this.#queue(async () => {
-    const active = this.#explorerContext(sessionId);
-    const prepared = await active.lease.service.prepareNodePackage(randomUUID(), value);
-    demand(prepared.ok, prepared.diagnostics[0]?.detail ?? 'NODE_PACKAGE_INVALID', prepared.diagnostics.map((item) => item.message).join('\n'));
-    const committed = await active.lease.service.commit(prepared.value);
-    demand(committed.ok, committed.diagnostics[0]?.detail ?? 'NODE_PACKAGE_SAVE_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
-    return this.#nodePackagesState(active);
-  }); }
+  previewNodePackage(sessionId: string, input: { source: NodePackageInstallOrigin | 'project'; package?: unknown; bytes?: Uint8Array; expectedIntegrity?: string }): Promise<NodePackageImportReview> {
+    return this.#queue(async () => {
+      const active = this.#explorerContext(sessionId);
+      const result = await active.lease.service.previewNodePackage(input);
+      demand(result.ok, result.diagnostics[0]?.detail ?? 'NODE_PACKAGE_PREVIEW_FAILED', result.diagnostics.map((item) => item.message).join('\n'));
+      return result.value;
+    });
+  }
+  installNodePackage(sessionId: string, input: { source: NodePackageInstallOrigin | 'project'; package?: unknown; bytes?: Uint8Array; expectedIntegrity: string; licenseAcknowledged: boolean }): Promise<ProjectNodePackagesState> {
+    return this.#queue(async () => {
+      const active = this.#explorerContext(sessionId); let prepared;
+      if (input.source === 'file-import') {
+        demand(input.bytes !== undefined, 'NODE_PACKAGE_BYTES_REQUIRED', 'El archivo seleccionado ya no está disponible; vuelve a importarlo.');
+        prepared = await active.lease.service.prepareImportedNodePackage(randomUUID(), input.bytes, input.expectedIntegrity, input.licenseAcknowledged);
+      } else if (input.source === 'project') {
+        prepared = await active.lease.service.prepareProjectNodePackageReinstall(randomUUID(), input.package, input.expectedIntegrity, input.licenseAcknowledged);
+      } else prepared = await active.lease.service.prepareNodePackage(randomUUID(), input.package, input.licenseAcknowledged, input.expectedIntegrity);
+      demand(prepared.ok, prepared.diagnostics[0]?.detail ?? 'NODE_PACKAGE_INSTALL_REJECTED', prepared.diagnostics.map((item) => item.message).join('\n'));
+      const committed = await active.lease.service.commit(prepared.value);
+      demand(committed.ok, committed.diagnostics[0]?.detail ?? 'NODE_PACKAGE_INSTALL_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+      return this.#nodePackagesState(active);
+    });
+  }
+  uninstallNodePackage(sessionId: string, packageId: string, version: string, expectedIntegrity: string): Promise<ProjectNodePackagesState> {
+    return this.#queue(async () => {
+      const active = this.#explorerContext(sessionId);
+      const prepared = await active.lease.service.prepareNodePackageUninstall(randomUUID(), packageId, version, expectedIntegrity);
+      demand(prepared.ok, prepared.diagnostics[0]?.detail ?? 'NODE_PACKAGE_UNINSTALL_REJECTED', prepared.diagnostics.map((item) => item.message).join('\n'));
+      const committed = await active.lease.service.commit(prepared.value);
+      demand(committed.ok, committed.diagnostics[0]?.detail ?? 'NODE_PACKAGE_UNINSTALL_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+      return this.#nodePackagesState(active);
+    });
+  }
   async #commitExplorer(active: ActiveProjectBinding, action: 'create-file' | 'create-folder' | 'rename' | 'duplicate' | 'trash', input: { sourcePath?: string; targetPath?: string; identity?: string; parentIdentity?: string; content?: string; cleanupDirectory?: boolean }): Promise<void> {
     const prepared = await active.lease.service.prepareExplorerOperation({ operationId: randomUUID(), action,
       ...(input.sourcePath ? { sourcePath: input.sourcePath } : {}), ...(input.targetPath ? { targetPath: input.targetPath } : {}),

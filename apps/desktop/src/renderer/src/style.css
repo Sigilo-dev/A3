@@ -644,6 +644,12 @@ dt { color: #8f9eaa; margin-top: 14px; } dd { margin: 2px 0 0; overflow-wrap: an
 .node-package-success { color: #c3ed82 !important; }
 .node-package-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .node-package-preview { display: grid; gap: 8px; border: 1px solid #41515e; border-radius: 8px; padding: 14px; background: #151e22; }
+.node-package-review { display: grid; grid-template-columns: minmax(135px, 190px) minmax(0, 1fr); gap: 6px 12px; margin: 0; padding: 10px; border-radius: 6px; background: #10151b; font-size: 12px; }
+.node-package-review dt { color: #aab7c2; }
+.node-package-review dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.node-package-conflict { color: #ffc0b8 !important; border-left: 3px solid #d97368; padding-left: 9px; }
+.node-package-license { display: flex; align-items: start; gap: 8px; font-size: 12px; }
+.node-package-license input { margin-top: 2px; }
 .node-package-preview h2, .node-package-preview h3 { margin: 0; }
 .node-package-preview pre { max-width: 100%; overflow: auto; padding: 10px; border-radius: 5px; background: #10151b; }
 .node-package-preview .canvas-node-preview { min-height: 70px; }

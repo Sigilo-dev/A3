@@ -59,9 +59,30 @@ function validNodePackagesRequest(value: unknown): value is NodePackagesRequest 
   const input = value as Record<string, unknown>, uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (typeof input.sessionId !== 'string' || !uuid.test(input.sessionId)) return false;
   if (input.action === 'load') return Object.keys(input).length === 2 && Object.keys(input).every((key) => ['action', 'sessionId'].includes(key));
-  if (input.action !== 'save' || Object.keys(input).length !== 3 || Object.keys(input).some((key) => !['action', 'sessionId', 'package'].includes(key))) return false;
-  try { return Buffer.byteLength(JSON.stringify(input.package), 'utf8') <= 4 * 1024 * 1024 && validateDeclarativeNodePackage(input.package).length === 0; }
-  catch { return false; }
+  const digest = (candidate: unknown): candidate is string => typeof candidate === 'string' && /^[a-f0-9]{64}$/.test(candidate);
+  const safePackage = (candidate: unknown): boolean => {
+    try { return Buffer.byteLength(JSON.stringify(candidate), 'utf8') <= 4 * 1024 * 1024 && validateDeclarativeNodePackage(candidate).length === 0; }
+    catch { return false; }
+  };
+  const keys = Object.keys(input);
+  if (input.action === 'preview') {
+    if (input.source === 'file-import') return keys.length === 4 && keys.every((key) => ['action', 'sessionId', 'source', 'bytes'].includes(key)) &&
+      input.bytes instanceof Uint8Array && input.bytes.byteLength <= 4 * 1024 * 1024;
+    if ((input.source === 'builder' || input.source === 'project') && safePackage(input.package)) {
+      const expected = input.expectedIntegrity === undefined || digest(input.expectedIntegrity);
+      return expected && keys.every((key) => ['action', 'sessionId', 'source', 'package', 'expectedIntegrity'].includes(key)) && (keys.length === 4 || keys.length === 5);
+    }
+    return false;
+  }
+  if (input.action === 'install') {
+    if (input.licenseAcknowledged !== true || !digest(input.expectedIntegrity)) return false;
+    if (input.source === 'file-import') return keys.length === 6 && keys.every((key) => ['action', 'sessionId', 'source', 'bytes', 'expectedIntegrity', 'licenseAcknowledged'].includes(key)) && input.bytes instanceof Uint8Array && input.bytes.byteLength <= 4 * 1024 * 1024;
+    return (input.source === 'builder' || input.source === 'project') && keys.length === 6 && keys.every((key) => ['action', 'sessionId', 'source', 'package', 'expectedIntegrity', 'licenseAcknowledged'].includes(key)) && safePackage(input.package);
+  }
+  if (input.action === 'uninstall') return keys.length === 5 && keys.every((key) => ['action', 'sessionId', 'packageId', 'version', 'expectedIntegrity'].includes(key)) &&
+    typeof input.packageId === 'string' && /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/.test(input.packageId) && typeof input.version === 'string' &&
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(input.version) && digest(input.expectedIntegrity);
+  return false;
 }
 
 function validSessionRequest(value: unknown): value is WorkspaceSessionRequest {
@@ -957,7 +978,14 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
     async handleNodePackages(value: unknown): Promise<NodePackagesResult> {
       if (!validNodePackagesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'El manifiesto o la petición del paquete no cumplen el esquema declarativo A3.', recovery: 'Corrige los IDs, campos, puertos, mappings o la versión antes de guardarlo. Los paquetes de nodos no admiten código ejecutable.' } };
       try {
-        return { ok: true, value: value.action === 'load' ? await manager.loadNodePackages(value.sessionId) : await manager.saveNodePackage(value.sessionId, value.package) };
+        if (value.action === 'load') return { ok: true, value: await manager.loadNodePackages(value.sessionId) };
+        if (value.action === 'preview') return { ok: true, value: await manager.previewNodePackage(value.sessionId,
+          value.source === 'file-import' ? { source: value.source, bytes: value.bytes } : { source: value.source, package: value.package, ...(value.expectedIntegrity ? { expectedIntegrity: value.expectedIntegrity } : {}) }) };
+        if (value.action === 'install') return { ok: true, value: await manager.installNodePackage(value.sessionId,
+          value.source === 'file-import'
+            ? { source: value.source, bytes: value.bytes, expectedIntegrity: value.expectedIntegrity, licenseAcknowledged: value.licenseAcknowledged }
+            : { source: value.source, package: value.package, expectedIntegrity: value.expectedIntegrity, licenseAcknowledged: value.licenseAcknowledged }) };
+        return { ok: true, value: await manager.uninstallNodePackage(value.sessionId, value.packageId, value.version, value.expectedIntegrity) };
       } catch (error) {
         const code = error instanceof LocalProjectError ? error.code : error && typeof error === 'object' && 'code' in error ? String(error.code) : 'NODE_PACKAGE_FAILED';
         return { ok: false, error: { code, message: error instanceof Error ? error.message : 'No se pudo cargar el catálogo de nodos.', recovery: 'Revisa permisos, versión y diagnóstico del paquete. A3 conserva los archivos anteriores.' } };

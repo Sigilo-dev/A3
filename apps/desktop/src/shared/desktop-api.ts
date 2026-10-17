@@ -27,8 +27,13 @@ export const IMAGE_CONVERSION_CHANNEL = 'a3.media:image-conversion';
 export const AV_CONVERSION_CHANNEL = 'a3.media:av-conversion';
 export const VARIABLES_CHANNEL = 'a3.variables:command';
 export const NODE_PACKAGES_CHANNEL = 'a3.node-packages:command';
-export type NodePackagesRequest = { action: 'load'; sessionId: string } | { action: 'save'; sessionId: string; package: DeclarativeNodePackage };
-export type NodePackagesResult = { ok: true; value: import('@a3/project-store').ProjectNodePackagesState } | { ok: false; error: { code: string; message: string; recovery: string } };
+export type NodePackagesRequest = { action: 'load'; sessionId: string }
+  | { action: 'preview'; sessionId: string; source: 'builder' | 'project'; package: DeclarativeNodePackage; expectedIntegrity?: string }
+  | { action: 'preview'; sessionId: string; source: 'file-import'; bytes: Uint8Array }
+  | { action: 'install'; sessionId: string; source: 'builder' | 'project'; package: DeclarativeNodePackage; expectedIntegrity: string; licenseAcknowledged: boolean }
+  | { action: 'install'; sessionId: string; source: 'file-import'; bytes: Uint8Array; expectedIntegrity: string; licenseAcknowledged: boolean }
+  | { action: 'uninstall'; sessionId: string; packageId: string; version: string; expectedIntegrity: string };
+export type NodePackagesResult = { ok: true; value: import('@a3/project-store').ProjectNodePackagesState | import('@a3/project-store').NodePackageImportReview } | { ok: false; error: { code: string; message: string; recovery: string } };
 export type { AvRequest, AvResult, AvJobView, AvEngineInfo, AvSettings } from './av-conversion';
 export type { ImageConversionRequest, ImageConversionResult, ImageConversionView, ImageConversionSettings, ImageInspection, ImageOutputInfo } from './image-conversion';
 export type GalleryRequest = { action: 'load'; sessionId: string } | { action: 'preview'; sessionId: string; resourceId: string; purpose?: 'preview' | 'playback' };

@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
-import { createDeclarativeNodePackage, validateDeclarativeNodePackage, type DeclarativeNodePackage, type FieldRule, type NodeType, type NodeTypeCollection, type NodeTypeMapping, type ValueType } from '@a3/domain';
+import { useEffect, useRef, useState } from 'react';
+import { createDeclarativeNodePackage, type DeclarativeNodePackage, type FieldRule, type NodeType, type NodeTypeCollection, type NodeTypeMapping, type ValueType } from '@a3/domain';
 import type { LocalProjectSession, NodePackagesRequest, NodePackagesResult } from '../../shared/desktop-api';
-import type { ProjectNodePackagesState } from '@a3/project-store';
+import type { NodePackageImportReview, ProjectNodePackagesState } from '@a3/project-store';
 
 interface FieldDraft { name: string; valueType: ValueType; required: boolean; acceptsBinding: boolean; defaultValue: string; enumValues: string; }
 interface PortDraft { id: string; label: string; direction: 'input' | 'output'; dataType: string; min: string; max: string; }
@@ -46,11 +46,21 @@ function composePackage(input: {
     a3ApiVersion: '1.0.0', nodeTypes: types, collections });
 }
 
-async function call(request: NodePackagesRequest): Promise<ProjectNodePackagesState> {
+async function call(request: NodePackagesRequest): Promise<ProjectNodePackagesState | NodePackageImportReview> {
   const result: NodePackagesResult | undefined = await window.a3?.nodePackages(request);
   if (!result) throw new Error('El puente local de paquetes no está disponible.');
   if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message} ${result.error.recovery}`);
   return result.value;
+}
+async function stateCall(request: NodePackagesRequest): Promise<ProjectNodePackagesState> {
+  const value = await call(request);
+  if (!('entries' in value)) throw new Error('El host devolvió una vista previa en lugar del catálogo.');
+  return value;
+}
+async function reviewCall(request: NodePackagesRequest): Promise<NodePackageImportReview> {
+  const value = await call(request);
+  if (!('canInstall' in value)) throw new Error('El host devolvió el catálogo en lugar de una vista previa.');
+  return value;
 }
 
 export function NodePackagesPanel({ project }: { project: LocalProjectSession | null }): React.JSX.Element {
@@ -58,46 +68,72 @@ export function NodePackagesPanel({ project }: { project: LocalProjectSession | 
   const [packageId, setPackageId] = useState('comunidad.mi-paquete'), [packageName, setPackageName] = useState('Mi paquete de nodos'), [version, setVersion] = useState('1.0.0'), [license, setLicense] = useState('MIT');
   const [typeName, setTypeName] = useState('comunidad.mi-paquete.mi-nodo'), [description, setDescription] = useState(''), [collectionId, setCollectionId] = useState('comunidad.mi-paquete.nodos'), [collectionName, setCollectionName] = useState('Mis nodos');
   const [fields, setFields] = useState<FieldDraft[]>([emptyField()]), [ports, setPorts] = useState<PortDraft[]>([emptyPort()]);
-  const [preview, setPreview] = useState<{ value: DeclarativeNodePackage; diagnostics: string[]; source: 'form' | 'import' } | null>(null);
+  const [preview, setPreview] = useState<{ sessionId: string; review: NodePackageImportReview; source: 'builder' | 'file-import' | 'project'; bytes?: Uint8Array } | null>(null);
+  const [licenseAcknowledged, setLicenseAcknowledged] = useState(false);
   const [icon, setIcon] = useState(''), [background, setBackground] = useState('#222c34'), [foreground, setForeground] = useState('#e8edf0'), [borderColor, setBorderColor] = useState('#526472');
   const [borderStyle, setBorderStyle] = useState<'solid' | 'dashed' | 'dotted'>('solid'), [width, setWidth] = useState('260');
   const [importFormat, setImportFormat] = useState(''), [importTarget, setImportTarget] = useState(''), [importFields, setImportFields] = useState('{}'), [importPorts, setImportPorts] = useState('{}');
   const [exportFormat, setExportFormat] = useState(''), [exportTarget, setExportTarget] = useState(''), [exportFields, setExportFields] = useState('{}'), [exportPorts, setExportPorts] = useState('{}');
 
-  useEffect(() => { let alive = true; setState(null); setError('');
-    if (project) void call({ action: 'load', sessionId: project.sessionId }).then((next) => { if (alive) setState(next); }).catch((reason: unknown) => { if (alive) setError(reason instanceof Error ? reason.message : 'No se cargó el catálogo.'); });
+  const currentSessionId = useRef(project?.sessionId); currentSessionId.current = project?.sessionId;
+  useEffect(() => { let alive = true; setState(null); setError(''); setMessage(''); setPreview(null); setLicenseAcknowledged(false);
+    if (project) void stateCall({ action: 'load', sessionId: project.sessionId }).then((next) => { if (alive && currentSessionId.current === project.sessionId) setState(next); }).catch((reason: unknown) => { if (alive && currentSessionId.current === project.sessionId) setError(reason instanceof Error ? reason.message : 'No se cargó el catálogo.'); });
     return () => { alive = false; };
   }, [project?.sessionId]);
-  async function save(value: DeclarativeNodePackage): Promise<void> {
-    if (!project || busy) return; setBusy(true); setError(''); setMessage('');
-    try { setState(await call({ action: 'save', sessionId: project.sessionId, package: value })); setPreview(null); setMessage(`Paquete ${value.manifest.id}@${value.manifest.version} guardado como datos JSON del proyecto.`); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'No se guardó el paquete.'); }
+  async function buildPreview(): Promise<void> {
+    if (!project || busy) return; setBusy(true); setError(''); setMessage(''); setPreview(null);
+    try {
+      const value = composePackage({ packageId, packageName, version, license, typeName, description, collectionId, collectionName, fields, ports, icon, background, foreground, borderColor, borderStyle, width,
+        importFormat, importTarget, importFields, importPorts, exportFormat, exportTarget, exportFields, exportPorts });
+      const sessionId = project.sessionId;
+      const review = await reviewCall({ action: 'preview', sessionId, source: 'builder', package: value });
+      if (currentSessionId.current === sessionId) { setPreview({ sessionId, review, source: 'builder' }); setLicenseAcknowledged(false); }
+    } catch (reason) { if (currentSessionId.current === project.sessionId) setError(reason instanceof Error ? reason.message : 'Corrige el formulario antes de la vista previa.'); }
     finally { setBusy(false); }
   }
-  function buildPreview(): void {
-    try { const value = composePackage({ packageId, packageName, version, license, typeName, description, collectionId, collectionName, fields, ports, icon, background, foreground, borderColor, borderStyle, width,
-      importFormat, importTarget, importFields, importPorts, exportFormat, exportTarget, exportFields, exportPorts });
-      setPreview({ value, diagnostics: validateDeclarativeNodePackage(value).map((item) => item.message), source: 'form' }); setError('');
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Corrige el formulario antes de guardar.'); }
-  }
-  function savePreview(): void {
-    if (!preview) return;
-    if (preview.source === 'import') { void save(preview.value); return; }
+  async function savePreview(): Promise<void> {
+    if (!project || !preview || preview.sessionId !== project.sessionId || !state?.canWrite || busy || !licenseAcknowledged || !preview.review.canInstall) return;
+    setBusy(true); setError(''); setMessage('');
     try {
-      const current = composePackage({ packageId, packageName, version, license, typeName, description, collectionId, collectionName, fields, ports, icon, background, foreground, borderColor, borderStyle, width,
-        importFormat, importTarget, importFields, importPorts, exportFormat, exportTarget, exportFields, exportPorts });
-      if (JSON.stringify(current) !== JSON.stringify(preview.value)) { buildPreview(); setError('Los datos cambiaron después de la vista previa. Revisa la vista previa actualizada antes de guardar.'); return; }
-      void save(current);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Corrige el formulario antes de guardar.'); }
+      const common = { action: 'install' as const, sessionId: project.sessionId, expectedIntegrity: preview.review.integrity, licenseAcknowledged };
+      const request: NodePackagesRequest = preview.source === 'file-import'
+        ? { ...common, source: 'file-import', bytes: preview.bytes! }
+        : { ...common, source: preview.source, package: preview.review.package };
+      const next = await stateCall(request);
+      if (currentSessionId.current === project.sessionId) { setState(next); setMessage(`Instalado ${preview.review.package.manifest.id}@${preview.review.package.manifest.version}. Las versiones existentes y sus instancias siguen intactas.`); }
+      setPreview(null); setLicenseAcknowledged(false);
+    } catch (reason) { if (currentSessionId.current === project.sessionId) setError(reason instanceof Error ? reason.message : 'No se instaló el paquete. La transacción conserva el estado anterior.'); }
+    finally { setBusy(false); }
   }
   async function importFile(file?: File): Promise<void> {
-    if (!file) return; setError('');
+    if (!project || !file || busy) return; setError(''); setMessage(''); setPreview(null); setBusy(true);
     try {
-      const value: unknown = JSON.parse(await file.text()), diagnostics = validateDeclarativeNodePackage(value);
-      if (diagnostics.length) { setError(diagnostics.map((item) => item.message).join('\n')); return; }
-      setPreview({ value: value as DeclarativeNodePackage, diagnostics: [], source: 'import' }); setMessage('Paquete validado para vista previa. Pulsa Guardar para agregarlo al proyecto.');
+      if (file.size > 4 * 1024 * 1024) throw new Error('El archivo excede el límite de 4 MiB.');
+      const bytes = new Uint8Array(await file.arrayBuffer()), sessionId = project.sessionId;
+      const review = await reviewCall({ action: 'preview', sessionId, source: 'file-import', bytes });
+      if (currentSessionId.current === sessionId) { setPreview({ sessionId, review, source: 'file-import', bytes }); setLicenseAcknowledged(false); }
     }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'El archivo no es un JSON de paquete A3 válido.'); }
+    catch (reason) { if (currentSessionId.current === project.sessionId) setError(reason instanceof Error ? reason.message : 'El archivo no es un JSON de paquete A3 válido.'); }
+    finally { setBusy(false); }
+  }
+  async function reviewExisting(entry: ProjectNodePackagesState['entries'][number]): Promise<void> {
+    if (!project || busy || !state?.canWrite) return; setBusy(true); setError(''); setMessage(''); setPreview(null);
+    try {
+      const sessionId = project.sessionId;
+      const review = await reviewCall({ action: 'preview', sessionId, source: 'project', package: entry.package, expectedIntegrity: entry.integrity });
+      if (currentSessionId.current === sessionId) { setPreview({ sessionId, review, source: 'project' }); setLicenseAcknowledged(false); }
+    } catch (reason) { if (currentSessionId.current === project.sessionId) setError(reason instanceof Error ? reason.message : 'No se pudo revisar el paquete disponible.'); }
+    finally { setBusy(false); }
+  }
+  async function uninstall(entry: ProjectNodePackagesState['entries'][number]): Promise<void> {
+    if (!project || busy || !state?.canWrite || entry.status !== 'installed') return;
+    if (!window.confirm(`Quitar ${entry.package.manifest.id}@${entry.package.manifest.version} de las representaciones activas? Las entidades, propiedades, archivos y conexiones se conservarán en fallback.`)) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const sessionId = project.sessionId, next = await stateCall({ action: 'uninstall', sessionId, packageId: entry.package.manifest.id, version: entry.package.manifest.version, expectedIntegrity: entry.integrity });
+      if (currentSessionId.current === sessionId) { setState(next); setMessage(`Se quitó ${entry.package.manifest.id}@${entry.package.manifest.version}; sus datos quedan conservados en el proyecto.`); }
+    } catch (reason) { if (currentSessionId.current === project.sessionId) setError(reason instanceof Error ? reason.message : 'No se quitó el paquete.'); }
+    finally { setBusy(false); }
   }
   function exportFile(value: DeclarativeNodePackage): void {
     const blob = new Blob([JSON.stringify(value, null, 2) + '\n'], { type: 'application/json' }), url = URL.createObjectURL(blob), anchor = document.createElement('a');
@@ -105,7 +141,8 @@ export function NodePackagesPanel({ project }: { project: LocalProjectSession | 
   }
   function updateField(index: number, patch: Partial<FieldDraft>): void { setFields((items) => items.map((item, at) => at === index ? { ...item, ...patch } : item)); }
   function updatePort(index: number, patch: Partial<PortDraft>): void { setPorts((items) => items.map((item, at) => at === index ? { ...item, ...patch } : item)); }
-  const previewType = preview?.value.nodeTypes[0];
+  const previewPackage = preview?.review.package;
+  const previewType = previewPackage?.nodeTypes[0];
 
   return <section className="node-packages-panel" aria-labelledby="node-package-title">
     <header className="node-package-heading"><div><p className="eyebrow">Paquetes del proyecto</p><h1 id="node-package-title">Creador de nodos declarativos</h1><p>Define campos, puertos, estilo y mappings como datos JSON versionados. A3 nunca ejecuta este paquete.</p></div>
@@ -159,11 +196,19 @@ export function NodePackagesPanel({ project }: { project: LocalProjectSession | 
           <div className="node-package-mapping"><h3>Exportación</h3><label>Formato<input value={exportFormat} onChange={(e) => setExportFormat(e.target.value)} placeholder="plantuml.class" /></label><label>Tipo destino<input value={exportTarget} onChange={(e) => setExportTarget(e.target.value)} /></label><label>Campos · objeto JSON<input value={exportFields} onChange={(e) => setExportFields(e.target.value)} /></label><label>Puertos · objeto JSON<input value={exportPorts} onChange={(e) => setExportPorts(e.target.value)} /></label></div>
         </fieldset>
         <div className="node-package-actions"><button className="secondary" type="submit" disabled={busy}>Vista previa</button>
-          <button className="primary" type="button" disabled={!state?.canWrite || busy || !preview || preview.diagnostics.length > 0} onClick={savePreview}>{busy ? 'Guardando…' : 'Guardar versión declarativa'}</button></div>
+          <button className="primary" type="button" disabled={!state?.canWrite || busy || !preview || !preview.review.canInstall || !licenseAcknowledged} onClick={() => { void savePreview(); }}>{busy ? 'Instalando…' : 'Instalar versión revisada'}</button></div>
       </form>
-      {preview && previewType && <section className="node-package-preview" aria-label="Vista previa del paquete">
-        <h2>Vista previa · {previewType.name}@{previewType.version}</h2>
-        <p>{previewType.description || 'Tipo personalizado'} · {preview.value.nodeTypes.length} tipo(s) · {preview.value.collections.length} colección(es)</p>
+      {preview && previewType && previewPackage && <section className="node-package-preview" aria-label="Vista previa de instalación">
+        <h2>Revisión de instalación · {previewPackage.manifest.id}@{previewPackage.manifest.version}</h2>
+        <p>{previewType.description || 'Tipo personalizado'} · {previewPackage.nodeTypes.length} tipo(s) · {previewPackage.collections.length} colección(es)</p>
+        <dl className="node-package-review"><dt>Origen declarado</dt><dd>{preview.review.source === 'file-import' ? 'archivo local seleccionado' : preview.review.source === 'project' ? 'artefacto disponible en este proyecto' : 'creador declarativo de A3'}</dd>
+          <dt>Destino fijo</dt><dd><code>{preview.review.destination}</code></dd><dt>SHA-256 de entrada</dt><dd><code>{preview.review.integrity}</code></dd>
+          <dt>Licencia declarada</dt><dd>{preview.review.license}</dd><dt>API A3 requerida</dt><dd>{preview.review.a3ApiVersion}</dd>
+          <dt>Tipos</dt><dd>{preview.review.typeIds.join(', ')}</dd><dt>Colecciones</dt><dd>{preview.review.collectionIds.join(', ')}</dd></dl>
+        <p>El paquete es dato no confiable. A3 no sigue rutas incluidas en el JSON ni ejecuta código. La licencia declarada no es una verificación legal.</p>
+        {preview.review.notices.map((item) => <p className="node-package-diagnostic" role="status" key={item}>{item}</p>)}
+        {preview.review.conflicts.map((item) => <p className="node-package-conflict" role="alert" key={`${item.code}:${item.message}`}>{item.code}: {item.message}</p>)}
+        <label className="node-package-license"><input type="checkbox" checked={licenseAcknowledged} onChange={(event) => setLicenseAcknowledged(event.currentTarget.checked)} disabled={!state?.canWrite || busy || !preview.review.canInstall} />Revisé la licencia declarada y autorizo instalar esta versión inmutable.</label>
         <div className="canvas-node-preview" style={{ background: previewType.style?.background, color: previewType.style?.foreground,
           borderColor: previewType.style?.borderColor, borderStyle: previewType.style?.borderStyle, width: previewType.style?.width }}>
           <strong>{previewType.style?.icon || '◇'} {previewType.name.split('.').at(-1)}</strong>
@@ -171,15 +216,20 @@ export function NodePackagesPanel({ project }: { project: LocalProjectSession | 
         </div>
         <h3>Ejemplo de instancia</h3><pre>{JSON.stringify({ type: previewType.name, typeVersion: previewType.version,
           properties: Object.fromEntries(previewType.fields.map((field) => [field.name, field.defaultValue ?? (field.valueType === 'number' ? 0 : field.valueType === 'boolean' ? false : field.valueType === 'list' ? [] : field.valueType === 'json' ? {} : field.valueType === 'reference' ? null : field.valueType === 'enum' ? field.enumValues?.[0] ?? '' : 'ejemplo')])) }, null, 2)}</pre>
-        {preview.diagnostics.map((item, index) => <p role="alert" key={`${item}:${index}`}>{item}</p>)}
+        {preview.review.action === 'already-installed' && <p role="status">Esta versión ya está instalada.</p>}
       </section>}
       {error && <p role="alert" className="error">{error}</p>}{message && <p role="status" className="node-package-success">{message}</p>}
-      <section aria-label="Paquetes instalados en este proyecto"><h2>Paquetes del proyecto ({state?.packages.length ?? 0})</h2>
-        {!state?.packages.length && <p>No hay paquetes declarativos. Añade uno con el formulario o importa un JSON existente.</p>}
-        {state?.packages.map((pkg) => <article className="node-package-card" key={`${pkg.manifest.id}@${pkg.manifest.version}`}><div><strong>{pkg.manifest.name}</strong><span>{pkg.manifest.id}@{pkg.manifest.version}</span></div>
-          <p>Licencia declarada: {pkg.manifest.license} · {pkg.nodeTypes.length} tipo(s) · {pkg.collections.length} colección(es)</p>
+      <section aria-label="Paquetes del proyecto"><h2>Paquetes del proyecto ({state?.entries.length ?? 0})</h2>
+        {!state?.entries.length && <p>No hay paquetes declarativos. Añade uno con el formulario o importa un JSON existente.</p>}
+        {state?.entries.map((entry) => { const pkg = entry.package; return <article className="node-package-card" key={`${pkg.manifest.id}@${pkg.manifest.version}`}>
+          <div><strong>{pkg.manifest.name}</strong><span>{pkg.manifest.id}@{pkg.manifest.version} · {entry.status}</span></div>
+          <p>Licencia declarada: {pkg.manifest.license} · Origen: {entry.origin ?? 'sin instalar'} · SHA-256: <code>{entry.integrity}</code></p>
+          {entry.detail && <p className="node-package-diagnostic" role="status">{entry.detail}</p>}
           <ul>{pkg.nodeTypes.map((type) => <li key={`${type.name}@${type.version}`}>{type.name}@{type.version} · {type.fields.length} campos · {type.ports.length} puertos</li>)}</ul>
-          <button type="button" className="secondary" onClick={() => exportFile(pkg)}>Exportar JSON</button></article>)}
+          <div className="node-package-actions"><button type="button" className="secondary" onClick={() => exportFile(pkg)}>Exportar JSON</button>
+            {entry.status === 'installed' ? <button type="button" className="quiet danger" disabled={!state?.canWrite || busy} onClick={() => { void uninstall(entry); }}>Quitar · conservar instancias</button>
+              : <button type="button" className="secondary" disabled={!state?.canWrite || busy || entry.status === 'integrity-mismatch' || entry.status === 'lock-invalid' || entry.status === 'conflict'} onClick={() => { void reviewExisting(entry); }}>Revisar e instalar</button>}</div>
+        </article>; })}
       </section>
     </>}
   </section>;

@@ -16,7 +16,8 @@ import { checkedPath, fileBytes, ioIssue, PathError, readProject, readProjectRes
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
 import { createSnapshot, listSnapshots, readSnapshot, snapshotPathAllowed, type SnapshotReason } from './snapshots.js';
 import { applyMigrationChain, migrationChain, type MigrationScope } from './migrations.js';
-import { nodePackagePath, readDeclarativeNodePackages } from './node-packages.js';
+import { canonicalNodePackageBytes, decodeNodePackageBytes, encodeNodePackageInstallLock, nodePackageInstallLockPath, nodePackagePath, readDeclarativeNodePackages, readNodePackageInstallLock,
+  type NodePackageImportReview, type NodePackageInstallOrigin, type NodePackageInstallRecord } from './node-packages.js';
 import { completeMigration, loadPreparedMigration, prepareMigration, verifyAppliedMigration, type LoadedMigration } from './migration-store.js';
 import type { DocumentLocation, JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
 import type { AccessRequest, DerivedResourceRequest, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerFileEntry, ExplorerMountEntry, ExplorerOpenResult, ExplorerOperationRequest, FaultPhase, IntentEntry, MigrationReceipt, MountActionRequest, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
@@ -1407,29 +1408,190 @@ export class ProjectService {
       } catch (error) { return failure([this.#operationError('memory', error)]); }
     });
   }
-  /** Save one immutable, data-only node package through the same journal and capability broker as project documents. */
-  prepareNodePackage(operationId: string, value: unknown): Promise<StoreResult<PreparedWrite>> {
+  #nodePackageReview(scan: Scan, pkg: DeclarativeNodePackage, source: NodePackageInstallOrigin | 'project', payloadIntegrity: string): Promise<StoreResult<NodePackageImportReview>> {
+    return (async () => {
+      try {
+        const problems = validateDeclarativeNodePackage(pkg);
+        if (problems.length) return failure(problems.map((problem) => issue('node-package-import', 'schema', problem.detail, problem.message)));
+        const path = nodePackagePath(this.#catalog, pkg), lockPath = nodePackageInstallLockPath(this.#catalog);
+        resolvePortablePath(this.root, path); resolvePortablePath(this.root, lockPath);
+        const observed = await this.#withExtraPaths(scan, [path, lockPath]);
+        const lockRead = await readNodePackageInstallLock(this.root, this.#catalog);
+        const catalog = await readDeclarativeNodePackages(this.root, this.#catalog, defaultRegistry());
+        const conflicts: { code: string; message: string }[] = [], notices: string[] = [];
+        if (!lockRead.valid) conflicts.push({ code: 'node-package-lock-invalid', message: 'El lock está dañado; no se activa ni se reemplaza automáticamente.' });
+        const key = `${pkg.manifest.id}@${pkg.manifest.version}`;
+        const record = lockRead.lock.packages.find((item) => item.packageId === pkg.manifest.id && item.version === pkg.manifest.version);
+        if (record && (record.license !== pkg.manifest.license || record.a3ApiVersion !== pkg.manifest.a3ApiVersion)) {
+          conflicts.push({ code: 'node-package-lock-metadata-mismatch', message: 'La licencia o la versión de API fijadas no coinciden con el manifiesto.' });
+        }
+        const existingObservation = observed.files.get(path);
+        let artifactIntegrity: string | null = existingObservation?.hash ?? null;
+        let sameArtifact = false;
+        if (existingObservation?.problem) conflicts.push({ code: 'node-package-path-unavailable', message: 'La ruta fija del paquete no se puede leer de forma segura.' });
+        if (artifactIntegrity) {
+          try {
+            const bytes = await fileBytes(this.root, path, 4 * 1024 * 1024);
+            const decoded = decodeNodePackageBytes(bytes);
+            if (!decoded.package) conflicts.push({ code: 'node-package-existing-invalid', message: 'Ya existe un artefacto de esa versión inválido; se conserva y no se sobrescribe.' });
+            else sameArtifact = JSON.stringify(canonicalJson(decoded.package as unknown as JsonValue)) === JSON.stringify(canonicalJson(pkg as unknown as JsonValue));
+            artifactIntegrity = sha256(bytes);
+            if (!sameArtifact && decoded.package) conflicts.push({ code: 'node-package-id-version-conflict', message: `Ya existe ${key} con contenido diferente. Las versiones instaladas son inmutables.` });
+          } catch { conflicts.push({ code: 'node-package-existing-unreadable', message: 'El artefacto existente no se pudo validar; se conservan sus bytes.' }); }
+        }
+        if (record && artifactIntegrity && record.integrity !== artifactIntegrity) conflicts.push({ code: 'node-package-integrity-mismatch', message: 'El hash del paquete existente no coincide con el lock; requiere resolución explícita.' });
+        if (record && !artifactIntegrity && record.integrity !== sha256(canonicalNodePackageBytes(pkg))) conflicts.push({ code: 'node-package-integrity-mismatch', message: 'El artefacto fijado falta y el paquete propuesto no coincide con su hash instalado.' });
+        if (record?.status === 'installed' && sameArtifact && record.integrity === artifactIntegrity && record.license === pkg.manifest.license && record.a3ApiVersion === pkg.manifest.a3ApiVersion) {
+          conflicts.push({ code: 'node-package-already-installed', message: `${key} ya está instalado.` });
+        }
+        const added = addDeclarativeNodePackage(catalog.registry, pkg);
+        for (const problem of added.diagnostics) {
+          const alreadySameInstalled = record?.status === 'installed' && sameArtifact;
+          if (!alreadySameInstalled) conflicts.push({ code: problem.detail, message: problem.message });
+        }
+        const installedPackageIds = new Set(catalog.entries.filter((entry) => entry.status === 'installed').map((entry) => entry.package.manifest.id));
+        if (installedPackageIds.has(pkg.manifest.id) && !record?.status) notices.push('Otra versión del mismo paquete está instalada: esta versión se agregará en paralelo y no migrará las instancias existentes.');
+        for (const entry of catalog.entries.filter((candidate) => candidate.status === 'installed' && candidate.package.manifest.id !== pkg.manifest.id)) {
+          const overlap = pkg.collections.find((collection) => entry.package.collections.some((installed) => installed.id === collection.id));
+          if (overlap) conflicts.push({ code: 'node-package-collection-id-conflict', message: `La colección ${overlap.id} ya pertenece al paquete ${entry.package.manifest.id}.` });
+        }
+        if (source === 'project' && (!sameArtifact || !artifactIntegrity || payloadIntegrity !== artifactIntegrity)) {
+          conflicts.push({ code: 'node-package-project-source-changed', message: 'El artefacto del proyecto cambió desde la vista previa.' });
+        }
+        const action = conflicts.some((item) => item.code === 'node-package-already-installed') ? 'already-installed' : conflicts.length ? 'blocked' :
+          record?.status === 'removed' ? 'reinstall' : 'install';
+        return { ok: true, value: {
+          package: structuredClone(pkg), source, integrity: payloadIntegrity, destination: path, license: pkg.manifest.license, a3ApiVersion: pkg.manifest.a3ApiVersion,
+          typeIds: pkg.nodeTypes.map((type) => `${type.name}@${type.version}`), collectionIds: pkg.collections.map((collection) => collection.id),
+          conflicts, notices, canInstall: conflicts.length === 0, action, changesExistingInstances: false
+        }, diagnostics: lockRead.diagnostics };
+      } catch (error) { return failure([this.#operationError('node-package-preview', error)]); }
+    })();
+  }
+  /** Reviews untrusted package bytes or builder data without writing or activating anything. */
+  previewNodePackage(input: { source: NodePackageInstallOrigin | 'project'; package?: unknown; bytes?: Uint8Array; expectedIntegrity?: string }): Promise<StoreResult<NodePackageImportReview>> {
+    const bytes = input.bytes ? Uint8Array.from(input.bytes) : undefined;
+    const captured = input.package === undefined ? undefined : JSON.parse(JSON.stringify(input.package)) as unknown;
+    return this.#queue(async () => {
+      const current = await this.#currentForWrite(); if (!current.ok) return current;
+      let pkg: DeclarativeNodePackage, integrity: string;
+      if (input.source === 'file-import') {
+        if (!bytes) return failure([issue('node-package-import', 'schema', 'node-package-bytes-required', 'Selecciona un archivo de paquete para revisarlo.')]);
+        const decoded = decodeNodePackageBytes(bytes); if (!decoded.package) return failure(decoded.diagnostics);
+        pkg = decoded.package; integrity = decoded.integrity;
+      } else {
+        const problems = validateDeclarativeNodePackage(captured);
+        if (problems.length || !captured || typeof captured !== 'object') return failure(problems.map((problem) => issue('node-package-preview', 'schema', problem.detail, problem.message)));
+        pkg = captured as DeclarativeNodePackage;
+        if (input.source === 'project') {
+          const path = nodePackagePath(this.#catalog, pkg); resolvePortablePath(this.root, path);
+          const bytes = await fileBytes(this.root, path, 4 * 1024 * 1024), decoded = decodeNodePackageBytes(bytes);
+          if (!decoded.package || canonicalJson(decoded.package as unknown as JsonValue) !== canonicalJson(pkg as unknown as JsonValue)) {
+            return failure([conflict(path, 'node-package-project-source-changed')]);
+          }
+          integrity = decoded.integrity;
+        } else {
+          const canonicalBytes = canonicalNodePackageBytes(pkg); integrity = sha256(canonicalBytes);
+        }
+      }
+      if (input.expectedIntegrity !== undefined && input.expectedIntegrity !== integrity) return failure([conflict('node-package', 'node-package-preview-hash-changed')]);
+      return this.#nodePackageReview(current.value, pkg, input.source, integrity);
+    });
+  }
+  #prepareNodePackageInstall(operationId: string, source: NodePackageInstallOrigin | 'project', pkg: DeclarativeNodePackage, inputBytes: Uint8Array,
+    expectedIntegrity: string, licenseAcknowledged: boolean): Promise<StoreResult<PreparedWrite>> {
+    return (async () => {
+      try {
+        const current = await this.#currentForWrite(); if (!current.ok) return current;
+        if (!licenseAcknowledged) return failure([issue('node-package', 'schema', 'node-package-license-review-required', 'Revisa y confirma la licencia declarada antes de instalar.')]);
+        if (sha256(inputBytes) !== expectedIntegrity) return failure([conflict('node-package', 'node-package-preview-hash-changed')]);
+        const review = await this.#nodePackageReview(current.value, pkg, source, expectedIntegrity);
+        if (!review.ok) return review;
+        if (!review.value.canInstall) return failure(review.value.conflicts.map((item) => issue('node-package', 'references', item.code, item.message)));
+        const artifactPath = nodePackagePath(this.#catalog, pkg), lockPath = nodePackageInstallLockPath(this.#catalog);
+        const scan = await this.#withExtraPaths(current.value, [artifactPath, lockPath]);
+        const lockRead = await readNodePackageInstallLock(this.root, this.#catalog);
+        if (!lockRead.valid) return failure([...lockRead.diagnostics]);
+        const artifactBytes = canonicalNodePackageBytes(pkg), existing = scan.files.get(artifactPath);
+        let installedArtifactBytes = artifactBytes, installedHash = sha256(artifactBytes);
+        if (existing?.hash) {
+          const bytes = await fileBytes(this.root, artifactPath, 4 * 1024 * 1024), decoded = decodeNodePackageBytes(bytes);
+          if (!decoded.package || canonicalJson(decoded.package as unknown as JsonValue) !== canonicalJson(pkg as unknown as JsonValue)) return failure([conflict(artifactPath, 'node-package-id-version-conflict')]);
+          installedArtifactBytes = bytes; installedHash = sha256(bytes);
+        }
+        const oldRecord = lockRead.lock.packages.find((item) => item.packageId === pkg.manifest.id && item.version === pkg.manifest.version);
+        if (oldRecord && oldRecord.integrity !== installedHash) return failure([conflict(artifactPath, 'node-package-integrity-mismatch')]);
+        const added = addDeclarativeNodePackage((await readDeclarativeNodePackages(this.root, this.#catalog, defaultRegistry())).registry, pkg);
+        if (added.diagnostics.length) return failure(added.diagnostics.map((problem) => issue('node-package', 'schema', problem.detail, problem.message)));
+        const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+        const installRecord: NodePackageInstallRecord = { packageId: pkg.manifest.id, version: pkg.manifest.version, integrity: installedHash,
+          origin: oldRecord?.origin ?? (source === 'project' ? 'file-import' : source), license: pkg.manifest.license,
+          a3ApiVersion: pkg.manifest.a3ApiVersion, status: 'installed', installedAt: oldRecord?.installedAt ?? now };
+        const nextLock = { ...lockRead.lock, packages: [...lockRead.lock.packages.filter((item) => !(item.packageId === installRecord.packageId && item.version === installRecord.version)), installRecord]
+          .sort((left, right) => `${left.packageId}@${left.version}`.localeCompare(`${right.packageId}@${right.version}`)) };
+        const lockBytes = encodeNodePackageInstallLock(nextLock);
+        const images: Image[] = [];
+        if (!existing?.hash) images.push({ path: artifactPath, bytes: installedArtifactBytes });
+        images.push({ path: lockPath, bytes: lockBytes });
+        const requestHash = sha256(jsonBytes({ operationId, source, identity: `${pkg.manifest.id}@${pkg.manifest.version}`, inputIntegrity: expectedIntegrity,
+          artifactIntegrity: installedHash, lockBefore: scan.files.get(lockPath)?.hash ?? null, actor: this.options.host.authenticatedActor }));
+        return this.#makePlan(scan, operationId, images, scan.project.snapshot.records, [], requestHash, {
+          externalPaths: [artifactPath, lockPath], requiredCapabilities: ['document.edit'], registryAfter: added.registry
+        });
+      } catch (error) { return failure([this.#operationError('node-package-install', error)]); }
+    })();
+  }
+  /** Saves a builder package as an explicitly reviewed, installed immutable version. */
+  /** Host-only build path; the manager passes the digest and confirmation from its reviewed preview. */
+  prepareNodePackage(operationId: string, value: unknown, licenseAcknowledged: boolean, expectedIntegrity: string): Promise<StoreResult<PreparedWrite>> {
     const captured = JSON.parse(JSON.stringify(value)) as unknown;
+    return this.#queue(async () => {
+      const problems = validateDeclarativeNodePackage(captured);
+      if (problems.length || !captured || typeof captured !== 'object') return failure(problems.map((problem) => issue('node-package', 'schema', problem.detail, problem.message)));
+      const pkg = captured as DeclarativeNodePackage, bytes = canonicalNodePackageBytes(pkg);
+      if (sha256(bytes) !== expectedIntegrity) return failure([conflict('node-package', 'node-package-preview-hash-changed')]);
+      return this.#prepareNodePackageInstall(operationId, 'builder', pkg, bytes, sha256(bytes), licenseAcknowledged);
+    });
+  }
+  prepareImportedNodePackage(operationId: string, bytesInput: Uint8Array, expectedIntegrity: string, licenseAcknowledged: boolean): Promise<StoreResult<PreparedWrite>> {
+    const bytes = Uint8Array.from(bytesInput);
+    return this.#queue(async () => {
+      const decoded = decodeNodePackageBytes(bytes); if (!decoded.package) return failure(decoded.diagnostics);
+      return this.#prepareNodePackageInstall(operationId, 'file-import', decoded.package, bytes, expectedIntegrity, licenseAcknowledged);
+    });
+  }
+  prepareProjectNodePackageReinstall(operationId: string, value: unknown, expectedIntegrity: string, licenseAcknowledged: boolean): Promise<StoreResult<PreparedWrite>> {
+    const captured = JSON.parse(JSON.stringify(value)) as unknown;
+    return this.#queue(async () => {
+      const problems = validateDeclarativeNodePackage(captured);
+      if (problems.length || !captured || typeof captured !== 'object') return failure(problems.map((problem) => issue('node-package', 'schema', problem.detail, problem.message)));
+      const pkg = captured as DeclarativeNodePackage, path = nodePackagePath(this.#catalog, pkg);
+      const bytes = await fileBytes(this.root, path, 4 * 1024 * 1024), decoded = decodeNodePackageBytes(bytes);
+      if (!decoded.package || canonicalJson(decoded.package as unknown as JsonValue) !== canonicalJson(pkg as unknown as JsonValue)) return failure([conflict(path, 'node-package-project-source-changed')]);
+      return this.#prepareNodePackageInstall(operationId, 'project', pkg, bytes, expectedIntegrity, licenseAcknowledged);
+    });
+  }
+  prepareNodePackageUninstall(operationId: string, packageId: string, version: string, expectedIntegrity: string): Promise<StoreResult<PreparedWrite>> {
     return this.#queue(async () => {
       try {
         const current = await this.#currentForWrite(); if (!current.ok) return current;
-        const problems = validateDeclarativeNodePackage(captured);
-        if (problems.length) return failure(problems.map((problem) => issue('node-package', 'schema', problem.detail, problem.message)));
-        const pkg = captured as DeclarativeNodePackage;
-        const added = addDeclarativeNodePackage(this.#registry, pkg);
-        if (added.diagnostics.length) return failure(added.diagnostics.map((problem) => issue('node-package', 'schema', problem.detail, problem.message)));
-        const path = nodePackagePath(this.#catalog, pkg);
-        const scan = await this.#withExtraPaths(current.value, [path]);
-        const destination = scan.files.get(path);
-        if (destination?.problem || destination?.hash !== null && destination?.hash !== undefined) return failure([conflict(path, 'node-package-destination-exists')]);
-        const bytes = Buffer.from(canonicalJson(pkg as unknown as JsonValue) + '\n', 'utf8');
-        const operation = { operationId, path, hash: sha256(bytes), actor: this.options.host.authenticatedActor };
-        return this.#makePlan(scan, operationId, [{ path, bytes }], scan.project.snapshot.records, [], sha256(jsonBytes(operation)), {
-          // This operation persists inert project data. package.install remains unavailable
-          // until an actual installation/runtime boundary is verified.
-          externalPaths: [path], requiredCapabilities: ['document.edit'], registryAfter: added.registry
-        });
-      } catch (error) { return failure([this.#operationError('node-package', error)]); }
+        const catalog = await readDeclarativeNodePackages(this.root, this.#catalog, defaultRegistry());
+        if (!catalog.lockValid) return failure([...await Promise.resolve(catalog.diagnostics.filter((item) => item.detail === 'node-package-lock-invalid'))]);
+        const entry = catalog.entries.find((item) => item.package.manifest.id === packageId && item.package.manifest.version === version);
+        if (!entry || entry.status !== 'installed' || entry.integrity !== expectedIntegrity) return failure([conflict(nodePackagePath(this.#catalog, { manifest: { id: packageId, version } } as Pick<DeclarativeNodePackage, 'manifest'>), 'node-package-uninstall-precondition')]);
+        const lockRead = await readNodePackageInstallLock(this.root, this.#catalog);
+        const record = lockRead.lock.packages.find((item) => item.packageId === packageId && item.version === version);
+        if (!record || record.status !== 'installed' || record.integrity !== expectedIntegrity) return failure([conflict(nodePackageInstallLockPath(this.#catalog), 'node-package-uninstall-precondition')]);
+        const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), updated = { ...record, status: 'removed' as const, removedAt: now };
+        const nextLock = { ...lockRead.lock, packages: lockRead.lock.packages.map((item) => item === record ? updated : item) };
+        const lockPath = nodePackageInstallLockPath(this.#catalog), lockBytes = encodeNodePackageInstallLock(nextLock);
+        const nextRegistry = { ...catalog.registry, nodeTypes: catalog.registry.nodeTypes.filter((type) => !entry.package.nodeTypes.some((candidate) => candidate.name === type.name && candidate.version === type.version)) };
+        const scan = await this.#withExtraPaths(current.value, [lockPath, nodePackagePath(this.#catalog, entry.package)]);
+        return this.#makePlan(scan, operationId, [{ path: lockPath, bytes: lockBytes }], scan.project.snapshot.records, [],
+          sha256(jsonBytes({ operationId, action: 'uninstall', packageId, version, expectedIntegrity, actor: this.options.host.authenticatedActor })), {
+            externalPaths: [lockPath, nodePackagePath(this.#catalog, entry.package)], requiredCapabilities: ['document.edit'], registryAfter: nextRegistry
+          });
+      } catch (error) { return failure([this.#operationError('node-package-uninstall', error)]); }
     });
   }
   prepareResourceWrite(input: ResourceWriteRequest): Promise<StoreResult<PreparedWrite>> {

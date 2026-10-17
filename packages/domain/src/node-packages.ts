@@ -35,6 +35,13 @@ export function validateDeclarativeNodePackage(value: unknown): Diagnostic[] {
     diagnostics.push(issue('declarative-package-executable-content', 'Un paquete de nodos A3 solo admite datos declarativos; elimina scripts, entrypoints, comandos y código.'));
   }
   if (!semver.test(manifest.version) || !semver.test(manifest.a3ApiVersion)) diagnostics.push(issue('package-version-invalid', 'La versión del paquete y de API debe ser SemVer exacto.'));
+  if (manifest.a3ApiVersion !== '1.0.0') diagnostics.push(issue('package-api-version-unsupported', `A3 solo admite paquetes declarativos con a3ApiVersion 1.0.0; se recibió ${manifest.a3ApiVersion}.`));
+  const license = manifest.license.trim();
+  const licenseIdentifier = /^[A-Za-z0-9][A-Za-z0-9.+() _-]{0,254}$/.test(license);
+  const licenseReference = /^https:\/\/[A-Za-z0-9.-]+(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/.test(license);
+  if (!license || license !== manifest.license || (!licenseIdentifier && !licenseReference)) {
+    diagnostics.push(issue('package-license-invalid', 'La licencia debe ser un identificador/expresión declarada o una referencia HTTPS breve; A3 no verifica derechos de distribución.'));
+  }
   if (!nodeTypes.length) diagnostics.push(issue('node-package-empty', 'El paquete debe definir al menos un tipo de nodo.'));
   const typeKeys = new Set<string>();
   for (const type of nodeTypes) {
