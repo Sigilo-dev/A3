@@ -31,10 +31,15 @@ export interface CapabilityDecision {
   reason: 'granted' | 'profile-denied' | 'approval-required' | 'approval-rejected' | 'actor-mismatch' | 'capability-unavailable' | 'grant-unavailable' | 'audit-unavailable';
   mode: GrantMode;
 }
+export interface CapabilityApprovalReview {
+  tool: 'apply_changes' | 'undo_changes';
+  affected: readonly { kind: 'entity'; id: string; expectedRevision: number; resultingRevision: number }[];
+  diff: readonly { entityId: string; field: 'title' | 'tags'; before: string; after: string }[];
+}
 export interface ProjectCapabilityBroker {
   authorizeAccess(request: AccessRequest): CapabilityDecision;
   authorizeDomain(root: string, actor: Actor, request: AuthorizationRequest): CapabilityDecision;
-  authorizeApply(root: string, actor: Actor, request: AuthorizationRequest): Promise<CapabilityDecision>;
+  authorizeApply(root: string, actor: Actor, request: AuthorizationRequest, review?: CapabilityApprovalReview): Promise<CapabilityDecision>;
   authorizeCapabilities(root: string, actor: Actor, projectId: string, capabilities: readonly Capability[], operation: string, stage?: 'prepare' | 'apply'): Promise<CapabilityDecision>;
   setProfile(input: { root: string; projectId: string; profile?: Profile }): Promise<boolean>;
   setGrant(input: { root: string; projectId: string; capability: Capability; mode: GrantMode }): Promise<boolean>;
@@ -49,7 +54,7 @@ export interface BrokerOptions {
   /** Set only by the trusted main-process StoreHost constructor. */
   authenticatedActor: Actor;
   /** Main-process user confirmation callback. No callback means no interactive approvals. */
-  confirmUserAction?: (input: { projectId: string; capability: Capability; operation: string; displayTarget?: string }) => boolean | Promise<boolean>;
+  confirmUserAction?: (input: { projectId: string; capability: Capability; operation: string; displayTarget?: string; review?: CapabilityApprovalReview }) => boolean | Promise<boolean>;
 }
 interface GrantFile { schemaVersion: '1.0.0'; rootKey: string; projectId: string; profile: Profile; overrides: Partial<Record<Capability, GrantMode>>; }
 interface MountFile { schemaVersion: '1.0.0'; rootKey: string; projectId: string; mounts: Record<string, { canonicalRoot: string; permission: MountPermission; rootIdentity: string }>; }
@@ -232,7 +237,7 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
   const actorMatches = (actor: Actor): boolean => !!actor && actor.kind === hostActor.kind && actor.id === hostActor.id;
   const hostActor: Actor = Object.freeze({ ...options.authenticatedActor });
   const humanActor: Actor = Object.freeze({ kind: 'user', id: 'local-user' });
-  const authorizeOne = async (root: string, actor: Actor, projectId: string, capability: Capability, operation: string, stage: 'prepare' | 'apply'): Promise<CapabilityDecision> => {
+  const authorizeOne = async (root: string, actor: Actor, projectId: string, capability: Capability, operation: string, stage: 'prepare' | 'apply', review?: CapabilityApprovalReview): Promise<CapabilityDecision> => {
     if (!actorMatches(actor)) return audited(root, projectId, actor, operation, capability, 'deny', 'actor-mismatch');
     const grant = readGrant(root, projectId);
     if (!grant) return audited(root, projectId, actor, operation, capability, 'deny', 'grant-unavailable');
@@ -246,7 +251,7 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
       return audited(root, projectId, actor, operation, capability, mode, 'profile-denied');
     }
     let approved = false;
-    try { approved = await options.confirmUserAction?.({ projectId, capability, operation: safeOperation(operation) }) === true; } catch { /* No UI response denies. */ }
+    try { approved = await options.confirmUserAction?.({ projectId, capability, operation: safeOperation(operation), ...(review ? { review } : {}) }) === true; } catch { /* No UI response denies. */ }
     const reason: CapabilityDecision['reason'] = approved ? 'granted' : options.confirmUserAction ? 'approval-rejected' : 'approval-required';
     return audited(root, projectId, actor, operation, capability, mode, reason, approved);
   };
@@ -317,20 +322,24 @@ export function createProjectCapabilityBroker(options: BrokerOptions): ProjectCa
         capability: result.capability, allowed: false, reason: result.reason })) return decision(result.capability, result.mode, 'audit-unavailable');
       return result;
     },
-    async authorizeApply(root: string, actor: Actor, request: AuthorizationRequest): Promise<CapabilityDecision> {
+    async authorizeApply(root: string, actor: Actor, request: AuthorizationRequest, review?: CapabilityApprovalReview): Promise<CapabilityDecision> {
       const caps = modesForRequest(request);
+      let lastMode: GrantMode = 'deny';
       for (const capability of caps) {
-        const result = await authorizeOne(root, actor, request.projectId, capability, `${request.command}:${request.operationId ?? 'unidentified'}`, 'apply');
+        const result = await authorizeOne(root, actor, request.projectId, capability, `${request.command}:${request.operationId ?? 'unidentified'}`, 'apply', review);
         if (!result.allowed) return result;
+        lastMode = result.mode;
       }
-      return { allowed: true, capability: caps[0] ?? 'document.edit', reason: 'granted', mode: 'direct' };
+      return { allowed: true, capability: caps[0] ?? 'document.edit', reason: 'granted', mode: lastMode };
     },
     async authorizeCapabilities(root: string, actor: Actor, projectId: string, capabilities: readonly Capability[], operation: string, stage: 'prepare' | 'apply' = 'apply'): Promise<CapabilityDecision> {
+      let lastMode: GrantMode = 'deny';
       for (const capability of capabilities) {
         const result = await authorizeOne(root, actor, projectId, capability, operation, stage);
         if (!result.allowed) return result;
+        lastMode = result.mode;
       }
-      return { allowed: true, capability: capabilities[0] ?? 'document.edit', reason: 'granted', mode: 'direct' };
+      return { allowed: true, capability: capabilities[0] ?? 'document.edit', reason: 'granted', mode: lastMode };
     },
     async setProfile(input: { root: string; projectId: string; profile?: Profile }): Promise<boolean> {
       const profile = input.profile ?? 'proponer';

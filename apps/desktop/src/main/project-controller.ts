@@ -333,9 +333,20 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       buttons: ['Cancelar', 'Aprobar'], defaultId: 0, cancelId: 0, noLink: true });
     return result.response === 1;
   };
+  const safeReviewText = (value: string): string => value
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[redacted token]')
+    .replace(/(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|authorization|private[_-]?key)(\s*[:=]\s*)[^,}\]]+/ig, '$1$2[redacted]')
+    .replace(/[\r\n\t]/g, ' ').slice(0, 8192);
   const capabilities = createProjectCapabilityBroker({ stateDirectory, authenticatedActor,
-    confirmUserAction: (request) => confirm('Aprobar permiso del proyecto',
-      `Capacidad: ${request.capability}\nAcción: ${request.operation}${request.displayTarget ? '\nCarpeta: ' + request.displayTarget : ''}\nLa aprobación pertenece solo a este proyecto y dispositivo.`) });
+    confirmUserAction: (request) => {
+      if (request.review) {
+        const affected = request.review.affected.map((item) => `${item.kind} ${item.id} · revisión ${item.expectedRevision} → ${item.resultingRevision}`).join('\n');
+        const diff = request.review.diff.map((item) => `${item.entityId} · ${item.field}: ${safeReviewText(item.before)} → ${safeReviewText(item.after)}`).join('\n');
+        return confirm('Revisar propuesta A3', `Herramienta: ${request.review.tool}\nPermiso: ${request.capability}\nAcción: ${request.operation}\nAfectados:\n${affected}\nCambios:\n${diff}\n\nAprobar aplica el lote mediante el journal local. Cancelar conserva la propuesta sin aplicarla.`);
+      }
+      return confirm('Aprobar permiso del proyecto',
+        `Capacidad: ${request.capability}\nAcción: ${request.operation}${request.displayTarget ? '\nCarpeta: ' + request.displayTarget : ''}\nLa aprobación pertenece solo a este proyecto y dispositivo.`);
+    } });
   const manager = new LocalProjectManager({ stateDirectory: join(stateDirectory, 'local-projects'), host: { authenticatedActor, capabilities },
     confirmClose: (project) => confirm('Cerrar con cambios externos o recuperación pendiente',
       `${project.name}\n${project.root}\nLos archivos y copias de recuperación se conservarán. La sesión del proyecto se cerrará antes de abrir otra.`) });

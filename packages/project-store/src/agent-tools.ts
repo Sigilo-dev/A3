@@ -1,7 +1,7 @@
 import { getRecord, type DomainRecord } from '@a3/domain';
 import { isProjectCapabilityBroker, type Capability } from './capabilities.js';
 import type { ProjectService } from './service.js';
-import type { StoreHost } from './service-types.js';
+import type { PreparedWrite, StoreHost, WriteReceipt } from './service-types.js';
 import { searchExcluded } from './search-index.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -27,11 +27,24 @@ export const A3_TOOL_SCHEMAS = Object.freeze({
   read_resource: { $schema: JSON_SCHEMA_DRAFT, type: 'object', additionalProperties: false, required: ['resourceId', 'expectedRevision'], properties: {
     resourceId: { type: 'string', format: 'uuid' }, expectedRevision: { type: 'integer', minimum: 1 }
   } },
-  validate_changes: { $schema: JSON_SCHEMA_DRAFT, type: 'object', additionalProperties: false, required: ['operationId', 'entityId', 'expectedRevision', 'patch'], properties: {
+  validate_changes: { $schema: JSON_SCHEMA_DRAFT, type: 'object', additionalProperties: false, required: ['operationId'], oneOf: [
+    { required: ['entityId', 'expectedRevision', 'patch'], not: { required: ['changes'] } },
+    { required: ['changes'], not: { anyOf: [{ required: ['entityId'] }, { required: ['expectedRevision'] }, { required: ['patch'] }] } }
+  ], properties: {
     operationId: { type: 'string', format: 'uuid' }, entityId: { type: 'string', format: 'uuid' }, expectedRevision: { type: 'integer', minimum: 1 },
     patch: { type: 'object', minProperties: 1, additionalProperties: false, properties: {
       title: { type: 'string', minLength: 1, maxLength: 240 }, tags: { type: 'array', maxItems: 64, items: { type: 'string', minLength: 1, maxLength: 64 } }
-    } }
+    } },
+    changes: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'object', additionalProperties: false, required: ['entityId', 'expectedRevision', 'patch'], properties: {
+      entityId: { type: 'string', format: 'uuid' }, expectedRevision: { type: 'integer', minimum: 1 }, patch: { type: 'object', minProperties: 1, additionalProperties: false, properties: {
+        title: { type: 'string', minLength: 1, maxLength: 240 }, tags: { type: 'array', maxItems: 64, items: { type: 'string', minLength: 1, maxLength: 64 } }
+      } }
+    } } }
+  } },
+  apply_changes: { $schema: JSON_SCHEMA_DRAFT, type: 'object', additionalProperties: false, required: ['operationId'], properties: { operationId: { type: 'string', format: 'uuid' } } },
+  cancel_changes: { $schema: JSON_SCHEMA_DRAFT, type: 'object', additionalProperties: false, required: ['operationId'], properties: { operationId: { type: 'string', format: 'uuid' } } },
+  undo_changes: { $schema: JSON_SCHEMA_DRAFT, type: 'object', additionalProperties: false, required: ['operationId', 'undoOperationId'], properties: {
+    operationId: { type: 'string', format: 'uuid' }, undoOperationId: { type: 'string', format: 'uuid' }
   } }
 } as const);
 const A3_TOOL_DESCRIPTIONS: Record<A3ToolName, string> = {
@@ -39,10 +52,15 @@ const A3_TOOL_DESCRIPTIONS: Record<A3ToolName, string> = {
   query_entities: 'Busca títulos, tipos y etiquetas entre las entidades explícitamente seleccionadas.',
   query_memory: 'Busca fragmentos en los documentos de memoria seleccionados, con procedencia por ID y hash.',
   read_resource: 'Lee un recurso de texto seleccionado por ID después de comprobar su revisión y permiso.',
-  validate_changes: 'Valida una propuesta limitada a título y etiquetas con revisión esperada; devuelve diff y procedencia sin guardar.'
+  validate_changes: 'Valida un lote de hasta 32 cambios de título/etiquetas con revisiones y devuelve diff/procedencia sin guardar.',
+  apply_changes: 'Aplica una propuesta pendiente con el broker, confirmación efectiva cuando corresponda y journal local.',
+  cancel_changes: 'Cancela una propuesta pendiente sin escribir archivos.',
+  undo_changes: 'Revierte una propuesta aplicada como nueva transacción; falla si cambió una revisión después de aplicarla.'
 };
 
 export type A3ToolName = keyof typeof A3_TOOL_SCHEMAS;
+export interface A3EntityPatch { title?: string; tags?: string[]; }
+export interface A3EntityUpdate { entityId: string; expectedRevision: number; patch: A3EntityPatch; }
 export interface A3ToolScope {
   /** Selected by trusted host preferences; never supplied by a tool call. */
   projectId: string;
@@ -61,7 +79,9 @@ export type A3ToolCall =
   | { name: 'query_entities'; arguments: { query: string; limit?: number } }
   | { name: 'query_memory'; arguments: { query: string; limit?: number } }
   | { name: 'read_resource'; arguments: { resourceId: string; expectedRevision: number } }
-  | { name: 'validate_changes'; arguments: { operationId: string; entityId: string; expectedRevision: number; patch: { title?: string; tags?: string[] } } };
+  | { name: 'validate_changes'; arguments: { operationId: string; changes: A3EntityUpdate[] } }
+  | { name: 'apply_changes' | 'cancel_changes'; arguments: { operationId: string } }
+  | { name: 'undo_changes'; arguments: { operationId: string; undoOperationId: string } };
 export type A3ToolErrorCode = 'INVALID_SCHEMA' | 'SIZE_LIMIT' | 'PROJECT_MISMATCH' | 'STALE_SESSION' | 'ID_OUT_OF_SCOPE' |
   'PERMISSION_DENIED' | 'RESOURCE_MISSING' | 'RESOURCE_NOT_TEXT' | 'REVISION_CONFLICT' | 'VALIDATION_FAILED' | 'TOOL_FAILED';
 export type A3ToolResult = { ok: true; value: Record<string, unknown> } | { ok: false; error: { code: A3ToolErrorCode; missingCapability?: Capability } };
@@ -71,6 +91,13 @@ export interface ProjectAgentToolOptions {
   host: StoreHost;
   scope: A3ToolScope;
   context: A3ToolContext;
+}
+type ProposalStatus = 'pending' | 'applied' | 'conflict' | 'cancelled' | 'uncertain' | 'undone';
+interface EntityProposal {
+  operationId: string; fingerprint: string; prepared: PreparedWrite; changes: A3EntityUpdate[];
+  before: Map<string, { id: string; title: string; tags: string[] }>;
+  review: Record<string, unknown>; status: ProposalStatus; needsReprepare?: boolean; receipt?: WriteReceipt;
+  undoState?: 'pending' | 'conflict' | 'cancelled' | 'undone'; undoOperationId?: string; undoReceipt?: WriteReceipt;
 }
 
 const plainObject = (value: unknown): value is Record<string, unknown> => {
@@ -103,8 +130,21 @@ function parseCall(input: unknown): A3ToolCall | undefined {
   if (name === 'validate_changes' && exactKeys(args, ['operationId', 'entityId', 'expectedRevision', 'patch'], ['operationId', 'entityId', 'expectedRevision', 'patch']) && validUuid(args.operationId) && validUuid(args.entityId) && Number.isSafeInteger(args.expectedRevision) && Number(args.expectedRevision) >= 1 &&
       plainObject(args.patch) && exactKeys(args.patch, ['title', 'tags']) && Object.keys(args.patch).length > 0 &&
       (args.patch.title === undefined || boundedString(args.patch.title, 1, 240)) && (args.patch.tags === undefined || Array.isArray(args.patch.tags) && args.patch.tags.length <= 64 && args.patch.tags.every((tag) => boundedString(tag, 1, 64)))) {
-    return { name, arguments: { operationId: args.operationId, entityId: args.entityId, expectedRevision: Number(args.expectedRevision), patch: { ...(args.patch.title === undefined ? {} : { title: args.patch.title }), ...(args.patch.tags === undefined ? {} : { tags: [...args.patch.tags as string[]] }) } } };
+    return { name, arguments: { operationId: args.operationId, changes: [{ entityId: args.entityId, expectedRevision: Number(args.expectedRevision), patch: { ...(args.patch.title === undefined ? {} : { title: args.patch.title }), ...(args.patch.tags === undefined ? {} : { tags: [...args.patch.tags as string[]] }) } }] } };
   }
+  if (name === 'validate_changes' && exactKeys(args, ['operationId', 'changes'], ['operationId', 'changes']) && validUuid(args.operationId) && Array.isArray(args.changes) && args.changes.length >= 1 && args.changes.length <= 32) {
+    const changes: A3EntityUpdate[] = [];
+    for (const item of args.changes) {
+      if (!plainObject(item) || !exactKeys(item, ['entityId', 'expectedRevision', 'patch'], ['entityId', 'expectedRevision', 'patch']) || !validUuid(item.entityId) ||
+          !Number.isSafeInteger(item.expectedRevision) || Number(item.expectedRevision) < 1 || !plainObject(item.patch) || !exactKeys(item.patch, ['title', 'tags']) || !Object.keys(item.patch).length ||
+          item.patch.title !== undefined && !boundedString(item.patch.title, 1, 240) || item.patch.tags !== undefined && (!Array.isArray(item.patch.tags) || item.patch.tags.length > 64 || item.patch.tags.some((tag) => !boundedString(tag, 1, 64)))) return undefined;
+      changes.push({ entityId: item.entityId, expectedRevision: Number(item.expectedRevision), patch: { ...(item.patch.title === undefined ? {} : { title: item.patch.title }), ...(item.patch.tags === undefined ? {} : { tags: [...item.patch.tags as string[]] }) } });
+    }
+    if (new Set(changes.map((item) => item.entityId.toLowerCase())).size !== changes.length) return undefined;
+    return { name, arguments: { operationId: args.operationId, changes } };
+  }
+  if ((name === 'apply_changes' || name === 'cancel_changes') && exactKeys(args, ['operationId'], ['operationId']) && validUuid(args.operationId)) return { name, arguments: { operationId: args.operationId } };
+  if (name === 'undo_changes' && exactKeys(args, ['operationId', 'undoOperationId'], ['operationId', 'undoOperationId']) && validUuid(args.operationId) && validUuid(args.undoOperationId)) return { name, arguments: { operationId: args.operationId, undoOperationId: args.undoOperationId } };
   return undefined;
 }
 function safeMemoryResource(record: DomainRecord | undefined): record is Extract<DomainRecord, { kind: 'resource' }> {
@@ -126,6 +166,7 @@ export class ProjectAgentTools {
   readonly #service: ProjectService;
   readonly #host: StoreHost;
   readonly #context: A3ToolContext;
+  readonly #proposals = new Map<string, EntityProposal>();
   constructor(options: ProjectAgentToolOptions) {
     if (!isProjectCapabilityBroker(options.host?.capabilities)) throw new TypeError('ProjectAgentTools requiere el broker sellado del host.');
     if (!validScope(options.scope)) throw new TypeError('El scope A3 debe ser una selección acotada y válida.');
@@ -152,6 +193,9 @@ export class ProjectAgentTools {
         case 'query_memory': value = await this.#queryMemory(snapshot.records, call.arguments.query, call.arguments.limit ?? 10); break;
         case 'read_resource': value = await this.#readResource(snapshot.records, call.arguments.resourceId, call.arguments.expectedRevision); break;
         case 'validate_changes': value = await this.#validateChanges(snapshot.records, call.arguments); break;
+        case 'apply_changes': value = await this.#applyChanges(call.arguments.operationId); break;
+        case 'cancel_changes': value = this.#cancelChanges(call.arguments.operationId); break;
+        case 'undo_changes': value = await this.#undoChanges(call.arguments.operationId, call.arguments.undoOperationId); break;
       }
       if (!this.#context.isCurrent()) return resultError('STALE_SESSION');
       if (Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_RESPONSE_BYTES) return resultError('SIZE_LIMIT');
@@ -252,15 +296,32 @@ export class ProjectAgentTools {
       provenance: { entityIds, sha256: opened.value.sha256, descriptorHash: opened.value.descriptorHash, byteLength: opened.value.bytes.byteLength } };
   }
   async #validateChanges(records: DomainRecord[], input: Extract<A3ToolCall, { name: 'validate_changes' }>['arguments']): Promise<Record<string, unknown>> {
-    if (!this.#scope.entityIds.some((id) => id.toLowerCase() === input.entityId.toLowerCase())) throw { toolError: 'ID_OUT_OF_SCOPE' };
-    const entity = records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === input.entityId.toLowerCase());
-    if (entity?.kind !== 'entity') throw { toolError: 'RESOURCE_MISSING' };
-    if (entity.value.revision !== input.expectedRevision) throw { toolError: 'REVISION_CONFLICT' };
-    const patch = input.patch;
+    const fingerprint = JSON.stringify({ projectId: this.#scope.projectId, changes: input.changes });
+    const existing = this.#proposals.get(input.operationId.toLowerCase());
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) throw { toolError: 'VALIDATION_FAILED' };
+      return { ...existing.review, status: existing.status, persisted: existing.status === 'applied' || existing.status === 'undone' };
+    }
+    if (this.#proposals.size >= 64) throw { toolError: 'SIZE_LIMIT' };
+    for (const change of input.changes) {
+      if (!this.#scope.entityIds.some((id) => id.toLowerCase() === change.entityId.toLowerCase())) throw { toolError: 'ID_OUT_OF_SCOPE' };
+      const entity = records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === change.entityId.toLowerCase());
+      if (entity?.kind !== 'entity') throw { toolError: 'RESOURCE_MISSING' };
+      if (entity.value.revision !== change.expectedRevision) throw { toolError: 'REVISION_CONFLICT' };
+      if (entity.value.type.startsWith('a3.planning.')) throw { toolError: 'VALIDATION_FAILED' };
+    }
+    const before = new Map(input.changes.map((change) => {
+      const entity = records.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === change.entityId.toLowerCase());
+      const value = (entity as Extract<DomainRecord, { kind: 'entity' }>).value;
+      return [change.entityId.toLowerCase(), { id: value.id, title: value.title, tags: [...value.tags] }];
+    }));
     const command = { operationId: input.operationId, projectId: this.#scope.projectId, actor: this.#host.authenticatedActor,
-      command: 'a3.core.update-entity' as const, payload: patch, expectedRevisions: [{ kind: 'entity' as const, id: entity.value.id, revision: input.expectedRevision }],
-      expectedContentHashes: [], scope: { entityIds: [entity.value.id] } };
-    const prepared = await this.#service.prepare(command);
+      command: 'a3.core.update-entities' as const, payload: { updates: input.changes.map((change) => ({ entityId: change.entityId, ...change.patch })) },
+      expectedRevisions: input.changes.map((change) => ({ kind: 'entity' as const, id: change.entityId, revision: change.expectedRevision })),
+      expectedContentHashes: [], scope: { entityIds: input.changes.map((change) => change.entityId) } };
+    const permission = await this.#host.capabilities.authorizeCapabilities(this.#service.root, this.#host.authenticatedActor, this.#scope.projectId,
+      ['document.edit'], `a3.core.update-entities:${input.operationId}`, 'prepare');
+    const prepared = await this.#service.prepare(command, { proposalPreview: true });
     if (!prepared.ok) {
       if (prepared.diagnostics.some((diagnostic) => diagnostic.code === 'PERMISSION_DENIED')) {
         const missing = prepared.diagnostics.find((diagnostic) => diagnostic.missingCapability)?.missingCapability as Capability | undefined;
@@ -270,14 +331,118 @@ export class ProjectAgentTools {
       throw { toolError: 'VALIDATION_FAILED' };
     }
     const fields: Record<string, unknown>[] = [];
-    if (patch.title !== undefined && patch.title !== entity.value.title) fields.push({ field: 'title', before: redactLikelySecrets(entity.value.title), after: redactLikelySecrets(patch.title) });
-    if (patch.tags !== undefined && JSON.stringify(patch.tags) !== JSON.stringify(entity.value.tags)) fields.push({ field: 'tags', before: entity.value.tags.map(redactLikelySecrets), after: patch.tags.map(redactLikelySecrets) });
-    const latest = this.#service.state.project, document = latest.documents.find((item) => item.record?.kind === 'entity' && item.record.value.id.toLowerCase() === entity.value.id.toLowerCase());
+    const affected: Record<string, unknown>[] = [];
+    for (const change of input.changes) {
+      const entity = before.get(change.entityId.toLowerCase())!;
+      let changed = false;
+      if (change.patch.title !== undefined && change.patch.title !== entity.title) { changed = true; fields.push({ entityId: entity.id, field: 'title', before: redactLikelySecrets(entity.title), after: redactLikelySecrets(change.patch.title) }); }
+      if (change.patch.tags !== undefined && JSON.stringify(change.patch.tags) !== JSON.stringify(entity.tags)) { changed = true; fields.push({ entityId: entity.id, field: 'tags', before: entity.tags.map(redactLikelySecrets), after: change.patch.tags.map(redactLikelySecrets) }); }
+      affected.push({ kind: 'entity', id: entity.id, expectedRevision: change.expectedRevision, resultingRevision: change.expectedRevision + (changed ? 1 : 0) });
+    }
+    const latest = this.#service.state.project;
     const project = latest.snapshot.records.find((record) => record.kind === 'project');
-    return { projectId: this.#scope.projectId, operationId: input.operationId, validated: true, persisted: false,
-      diff: { entityId: entity.value.id, expectedRevision: input.expectedRevision, resultingRevision: fields.length ? input.expectedRevision + 1 : input.expectedRevision, fields },
+    const review = { projectId: this.#scope.projectId, operationId: input.operationId, proposalId: input.operationId, status: 'pending', validated: true, persisted: false,
+      tool: 'apply_changes', affected, permission: { capability: 'document.edit', decision: !permission.allowed ? 'denied' : permission.mode === 'approval' ? 'approval-required' : 'granted', mode: permission.mode, stage: 'apply' },
+      diff: { fields },
       provenance: { projectRevision: project?.kind === 'project' ? project.value.revision : null,
-        entityId: entity.value.id, sourceRevision: entity.value.revision, sourceHash: document?.sha256 ?? null, command: command.command } };
+        entities: input.changes.map((change) => ({ entityId: change.entityId, sourceRevision: change.expectedRevision,
+          sourceHash: latest.documents.find((item) => item.record?.kind === 'entity' && item.record.value.id.toLowerCase() === change.entityId.toLowerCase())?.sha256 ?? null })), command: command.command } };
+    this.#proposals.set(input.operationId.toLowerCase(), { operationId: input.operationId, fingerprint, prepared: prepared.value, changes: structuredClone(input.changes), before, review, status: 'pending' });
+    return review;
+  }
+
+  async #applyChanges(operationId: string): Promise<Record<string, unknown>> {
+    const proposal = this.#proposals.get(operationId.toLowerCase());
+    if (!proposal) throw { toolError: 'RESOURCE_MISSING' };
+    if (proposal.status === 'applied' || proposal.status === 'undone') return { status: proposal.status, proposalId: proposal.operationId, receipt: proposal.receipt ?? null, review: proposal.review };
+    if (proposal.status !== 'pending') return { status: proposal.status, proposalId: proposal.operationId, review: proposal.review };
+    if (!this.#context.isCurrent()) throw { toolError: 'STALE_SESSION' };
+    const permission = await this.#host.capabilities.authorizeCapabilities(this.#service.root, this.#host.authenticatedActor, this.#scope.projectId,
+      ['document.edit'], `a3.core.update-entities:${proposal.operationId}`, 'prepare');
+    proposal.review = { ...proposal.review, permission: { capability: 'document.edit', decision: !permission.allowed ? 'denied' : permission.mode === 'approval' ? 'approval-required' : 'granted', mode: permission.mode, stage: 'apply' } };
+    if (proposal.needsReprepare) {
+      const command = { operationId: proposal.operationId, projectId: this.#scope.projectId, actor: this.#host.authenticatedActor,
+        command: 'a3.core.update-entities' as const, payload: { updates: proposal.changes.map((change) => ({ entityId: change.entityId, ...change.patch })) },
+        expectedRevisions: proposal.changes.map((change) => ({ kind: 'entity' as const, id: change.entityId, revision: change.expectedRevision })),
+        expectedContentHashes: [], scope: { entityIds: proposal.changes.map((change) => change.entityId) } };
+      const refreshed = await this.#service.prepare(command, { proposalPreview: true });
+      if (!refreshed.ok) {
+        if (refreshed.diagnostics.some((item) => item.code === 'REVISION_CONFLICT')) { proposal.status = 'conflict'; proposal.review = { ...proposal.review, status: proposal.status }; return { status: 'conflict', proposalId: proposal.operationId, review: proposal.review }; }
+        throw { toolError: 'VALIDATION_FAILED' };
+      }
+      proposal.prepared = refreshed.value; proposal.needsReprepare = false;
+    }
+    const result = await this.#service.commit(proposal.prepared, { tool: 'apply_changes' });
+    if (!result.ok) {
+      if (result.diagnostics.some((item) => item.code === 'REVISION_CONFLICT')) { proposal.status = 'conflict'; proposal.review = { ...proposal.review, status: proposal.status }; return { status: 'conflict', proposalId: proposal.operationId, review: proposal.review, diagnostics: result.diagnostics.map((item) => ({ code: item.code, message: item.message })) }; }
+      const rejected = result.diagnostics.some((item) => item.recovery === 'approval-rejected');
+      if (rejected) { proposal.status = 'cancelled'; proposal.review = { ...proposal.review, status: proposal.status }; return { status: 'cancelled', proposalId: proposal.operationId, review: proposal.review }; }
+      if (result.recoveryRequired) { proposal.status = 'uncertain'; proposal.review = { ...proposal.review, status: proposal.status }; return { status: 'uncertain', proposalId: proposal.operationId, review: proposal.review, recoveryRequired: true }; }
+      if (result.diagnostics.some((item) => item.code === 'PERMISSION_DENIED')) proposal.needsReprepare = true;
+      if (result.diagnostics.some((item) => item.code === 'PERMISSION_DENIED')) throw { toolError: 'PERMISSION_DENIED', missingCapability: result.diagnostics.find((item) => item.missingCapability)?.missingCapability };
+      throw { toolError: 'VALIDATION_FAILED' };
+    }
+    proposal.status = 'applied'; proposal.review = { ...proposal.review, status: proposal.status, persisted: true }; proposal.receipt = result.value;
+    return { status: 'applied', proposalId: proposal.operationId, receipt: { operationId: result.value.operationId, atomic: false, paths: result.value.paths, snapshotId: result.value.snapshotId ?? null }, review: proposal.review };
+  }
+  #cancelChanges(operationId: string): Record<string, unknown> {
+    const proposal = this.#proposals.get(operationId.toLowerCase());
+    if (!proposal) throw { toolError: 'RESOURCE_MISSING' };
+    if (proposal.status === 'pending') { proposal.status = 'cancelled'; proposal.review = { ...proposal.review, status: proposal.status }; }
+    return { status: proposal.status, proposalId: proposal.operationId, persisted: proposal.status === 'applied' || proposal.status === 'undone' };
+  }
+  async #undoChanges(operationId: string, undoOperationId: string): Promise<Record<string, unknown>> {
+    const proposal = this.#proposals.get(operationId.toLowerCase());
+    if (!proposal) throw { toolError: 'RESOURCE_MISSING' };
+    if (proposal.undoState === 'undone' || proposal.status === 'undone') return { status: 'undone', proposalId: proposal.operationId, operationId: proposal.undoOperationId, receipt: proposal.undoReceipt ?? null };
+    if (proposal.status !== 'applied') throw { toolError: proposal.status === 'conflict' ? 'REVISION_CONFLICT' : 'VALIDATION_FAILED' };
+    if (proposal.undoOperationId && proposal.undoOperationId !== undoOperationId) throw { toolError: 'VALIDATION_FAILED' };
+    proposal.undoOperationId = undoOperationId; proposal.undoState = 'pending';
+    const current = this.#service.state.project.snapshot.records;
+    const permission = await this.#host.capabilities.authorizeCapabilities(this.#service.root, this.#host.authenticatedActor, this.#scope.projectId,
+      ['document.edit'], `a3.core.update-entities:${undoOperationId}`, 'prepare');
+    const updates: A3EntityUpdate[] = [];
+    const affected: Record<string, unknown>[] = [], fields: Record<string, unknown>[] = [];
+    for (const change of proposal.changes) {
+      const before = proposal.before.get(change.entityId.toLowerCase());
+      const after = current.find((record) => record.kind === 'entity' && record.value.id.toLowerCase() === change.entityId.toLowerCase());
+      const changedTitle = !!before && change.patch.title !== undefined && change.patch.title !== before.title;
+      const changedTags = !!before && change.patch.tags !== undefined && JSON.stringify(change.patch.tags) !== JSON.stringify(before.tags);
+      const changed = changedTitle || changedTags;
+      const expectedAppliedValues = !!before && after?.kind === 'entity' && (!changedTitle || after.value.title === change.patch.title) && (!changedTags || JSON.stringify(after.value.tags) === JSON.stringify(change.patch.tags));
+      if (after?.kind === 'entity') {
+        affected.push({ kind: 'entity', id: after.value.id, expectedRevision: after.value.revision, resultingRevision: after.value.revision + (changed ? 1 : 0) });
+        if (before && changed && change.patch.title !== undefined && after.value.title !== before.title) fields.push({ entityId: after.value.id, field: 'title', before: redactLikelySecrets(after.value.title), after: redactLikelySecrets(before.title) });
+        if (before && changed && change.patch.tags !== undefined && JSON.stringify(after.value.tags) !== JSON.stringify(before.tags)) fields.push({ entityId: after.value.id, field: 'tags', before: after.value.tags.map(redactLikelySecrets), after: before.tags.map(redactLikelySecrets) });
+      }
+      const review = { tool: 'undo_changes', operationId: undoOperationId, permission: { capability: 'document.edit', decision: !permission.allowed ? 'denied' : permission.mode === 'approval' ? 'approval-required' : 'granted', mode: permission.mode, stage: 'apply' }, affected, diff: { fields } };
+      if (!before || after?.kind !== 'entity' || after.value.revision !== change.expectedRevision + (changed ? 1 : 0) || !expectedAppliedValues) { proposal.undoState = 'conflict'; return { status: 'conflict', proposalId: proposal.operationId, operationId: undoOperationId, review, message: 'La revisión o el contenido cambió después de aplicar; se conserva la propuesta y no se revierte sobre cambios nuevos.' }; }
+      if (!changed) continue;
+      updates.push({ entityId: change.entityId, expectedRevision: after.value.revision, patch: {
+        ...(change.patch.title !== undefined ? { title: before.title } : {}), ...(change.patch.tags !== undefined ? { tags: [...before.tags] } : {})
+      } });
+    }
+    const review = { tool: 'undo_changes', operationId: undoOperationId, permission: { capability: 'document.edit', decision: !permission.allowed ? 'denied' : permission.mode === 'approval' ? 'approval-required' : 'granted', mode: permission.mode, stage: 'apply' }, affected, diff: { fields } };
+    if (!updates.length) { proposal.undoState = 'undone'; proposal.status = 'undone'; proposal.review = { ...proposal.review, status: proposal.status }; return { status: 'undone', proposalId: proposal.operationId, operationId: undoOperationId, receipt: null, review }; }
+    const command = { operationId: undoOperationId, projectId: this.#scope.projectId, actor: this.#host.authenticatedActor,
+      command: 'a3.core.update-entities' as const, payload: { updates: updates.map((change) => ({ entityId: change.entityId, ...change.patch })) },
+      expectedRevisions: updates.map((change) => ({ kind: 'entity' as const, id: change.entityId, revision: change.expectedRevision })),
+      expectedContentHashes: [], scope: { entityIds: updates.map((change) => change.entityId) } };
+    const prepared = await this.#service.prepare(command);
+    if (!prepared.ok) {
+      if (prepared.diagnostics.some((item) => item.code === 'PERMISSION_DENIED')) throw { toolError: 'PERMISSION_DENIED', missingCapability: prepared.diagnostics.find((item) => item.missingCapability)?.missingCapability };
+      if (prepared.diagnostics.some((item) => item.code !== 'REVISION_CONFLICT')) throw { toolError: 'VALIDATION_FAILED' };
+      proposal.undoState = 'conflict'; return { status: 'conflict', proposalId: proposal.operationId, operationId: undoOperationId, review, diagnostics: prepared.diagnostics.map((item) => ({ code: item.code, message: item.message })) };
+    }
+    const result = await this.#service.commit(prepared.value, { tool: 'undo_changes' });
+    if (!result.ok) {
+      if (result.diagnostics.some((item) => item.recovery === 'approval-rejected')) { proposal.undoState = 'cancelled'; return { status: 'cancelled', proposalId: proposal.operationId, operationId: undoOperationId, review }; }
+      if (result.diagnostics.some((item) => item.code === 'REVISION_CONFLICT')) { proposal.undoState = 'conflict'; return { status: 'conflict', proposalId: proposal.operationId, operationId: undoOperationId, review }; }
+      if (result.diagnostics.some((item) => item.code === 'PERMISSION_DENIED')) throw { toolError: 'PERMISSION_DENIED', missingCapability: result.diagnostics.find((item) => item.missingCapability)?.missingCapability };
+      throw { toolError: 'VALIDATION_FAILED' };
+    }
+    proposal.undoState = 'undone'; proposal.status = 'undone'; proposal.review = { ...proposal.review, status: proposal.status }; proposal.undoReceipt = result.value;
+    return { status: 'undone', proposalId: proposal.operationId, operationId: undoOperationId, receipt: { operationId: result.value.operationId, atomic: false, snapshotId: result.value.snapshotId ?? null }, review };
   }
 }
 

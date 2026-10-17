@@ -27,7 +27,7 @@ class DomainFault extends Error {
 function fail(detail: string, message: string, ref?: DocumentRef, code: Diagnostic['code'] = 'VALIDATION_FAILED'): never {
   throw new DomainFault(diagnostic(detail, message, ref, code));
 }
-const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity', 'a3.diagrams.set-style',
+const commands = new Set(['a3.core.create-project', 'a3.core.create-document', 'a3.core.rename', 'a3.core.update-entity', 'a3.core.update-entities', 'a3.diagrams.set-style',
   'a3.c4.change',
   'a3.uml.change',
   'a3.er.change',
@@ -942,6 +942,30 @@ function apply(draft: Draft): void {
         if (request.payload.bindings !== undefined) value.bindings = { ...value.bindings, ...copy(request.payload.bindings) };
         if (request.payload.ports !== undefined) value.ports = request.payload.ports.map((port) => ({ ...value.ports.find((old) => old.id === port.id), ...copy(port) }));
       });
+      break;
+    }
+    case 'a3.core.update-entities': {
+      const { updates } = request.payload;
+      if (!Array.isArray(updates) || updates.length < 1 || updates.length > 32 ||
+          updates.some((update) => !isObject(update) || Object.keys(update).some((key) => !['entityId', 'title', 'tags'].includes(key)) ||
+            typeof update.entityId !== 'string' || !UUID_PATTERN.test(update.entityId) || Object.keys(update).length < 2 ||
+            update.title !== undefined && (typeof update.title !== 'string' || !update.title.trim() || update.title.length > 240) ||
+            update.tags !== undefined && (!Array.isArray(update.tags) || update.tags.length > 64 || update.tags.some((tag) => typeof tag !== 'string' || !tag.trim() || tag.length > 64))) ||
+          new Set(updates.map((update) => update.entityId.toLowerCase())).size !== updates.length ||
+          request.scope.entityIds.length !== updates.length || !updates.every((update) => request.scope.entityIds.some((id) => sameId(id, update.entityId)))) {
+        fail('invalid-entity-update-batch', 'El lote requiere entre 1 y 32 entidades únicas y solo permite título o etiquetas.');
+      }
+      for (const update of updates) {
+        const current = draft.require({ kind: 'entity', id: update.entityId });
+        if (current.kind !== 'entity') fail('wrong-document-kind', 'El lote solo edita entidades.', { kind: 'entity', id: update.entityId });
+        if (planningKind(current.value)) fail('planning-command-required', 'Las entidades de planificación requieren su comando con evidencia y actor.', { kind: 'entity', id: update.entityId });
+        const changed = update.title !== undefined && update.title !== current.value.title || update.tags !== undefined && JSON.stringify(update.tags) !== JSON.stringify(current.value.tags);
+        if (!changed) continue;
+        draft.edit({ kind: 'entity', id: update.entityId }, 'entity', (value) => {
+        if (update.title !== undefined) value.title = update.title;
+        if (update.tags !== undefined) value.tags = copy(update.tags);
+        });
+      }
       break;
     }
     case 'a3.core.move-placement':

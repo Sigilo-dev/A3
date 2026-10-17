@@ -19,7 +19,7 @@ import { applyMigrationChain, migrationChain, type MigrationScope } from './migr
 import { completeMigration, loadPreparedMigration, prepareMigration, verifyAppliedMigration, type LoadedMigration } from './migration-store.js';
 import type { DocumentLocation, JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
 import type { AccessRequest, DerivedResourceRequest, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerFileEntry, ExplorerMountEntry, ExplorerOpenResult, ExplorerOperationRequest, FaultPhase, IntentEntry, MigrationReceipt, MountActionRequest, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
-import type { Capability, CapabilityDecision } from './capabilities.js';
+import type { Capability, CapabilityApprovalReview, CapabilityDecision } from './capabilities.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 
 interface Observation { hash: string | null; identity: string | null; stamp: string; problem?: string; }
@@ -40,8 +40,14 @@ interface PlanData {
   snapshotReason?: SnapshotReason;
   externalPaths?: readonly string[];
   externalDirectories?: readonly DirectoryObservation[];
+  proposalPreview?: boolean;
 }
 const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const approvalSecretLine = /^(\s*(?:[\w.-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|authorization|private[_-]?key)[\w.-]*\s*[:=]\s*).+)$/i;
+const approvalToken = /\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
+function approvalSafeText(value: string): string {
+  return value.split(/\r?\n/).map((line) => approvalSecretLine.test(line) ? '[redacted secret-like setting]' : line.replace(approvalToken, '[redacted token]')).join('\n').slice(0, 8192);
+}
 const pool = new Map<string, { service: ProjectService; host: ServiceOptions['host']; leases: number }>();
 const missing: Observation = { hash: null, identity: null, stamp: 'missing' };
 const equal = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
@@ -1153,7 +1159,7 @@ export class ProjectService {
       afterHash: image.bytes === null ? null : sha256(image.bytes), bytes: image.bytes?.length ?? 0 }));
     const requiredCapabilities: Capability[] = extra.requiredCapabilities ?? (extra.domain ? domainCapabilities(extra.domain) : ['document.edit']);
     if (extra.maintenance && images.some((image) => image.bytes === null) && !requiredCapabilities.includes('delete')) requiredCapabilities.push('delete');
-    if (!this.#authorized('write', images.map((i) => i.path), changes.flatMap((c) => c.ref ? [c.ref] : []), resources, requiredCapabilities, 'prepare')) return failure([this.#denied('operation')]);
+    if (!extra.proposalPreview && !this.#authorized('write', images.map((i) => i.path), changes.flatMap((c) => c.ref ? [c.ref] : []), resources, requiredCapabilities, 'prepare')) return failure([this.#denied('operation')]);
     const projectId = this.#projectId();
     if (!projectId) return failure([issue('a3.project.json', 'compatibility', 'project-id-unavailable', 'No se pudo validar la identidad del proyecto.')]);
     const requestPayload = extra.domain?.request.payload as unknown as Record<string, unknown> | undefined;
@@ -1168,12 +1174,17 @@ export class ProjectService {
     this.#plans.set(plan, { scan, images, nextRecords, resources, requestHash, actor: JSON.stringify(this.options.host.authenticatedActor), requiredCapabilities, ...extra });
     return { ok: true, value: plan, diagnostics: [] };
   }
-  prepare(input: unknown): Promise<StoreResult<PreparedWrite>> {
+  /** Proposal previews validate the full domain command without granting apply permission; commit always reauthorizes. */
+  prepare(input: unknown, options: { proposalPreview?: boolean } = {}): Promise<StoreResult<PreparedWrite>> {
     return this.#queue(async () => {
       try {
         const current = await this.#currentForWrite(); if (!current.ok) return current;
         const scan = current.value;
-        const result = prepareCommand(scan.project.snapshot, input, this.#context(scan));
+        const context = this.#context(scan);
+        const previewContext: CommandContext = options.proposalPreview ? { ...context, authorization: {
+          authorize: () => true, authorizeDetailed: () => ({ allowed: true, reason: 'proposal-preview' })
+        } } : context;
+        const result = prepareCommand(scan.project.snapshot, input, previewContext);
         if (!result.ok) return failure(domainIssues(result.diagnostics));
         const domain = result.value;
         if (domain.nodeTypeChanges.length) return failure([issue('registry', 'schema', 'registry-persistence-unavailable', 'La persistencia de paquetes/tipos requiere su módulo; no se confirma solo en memoria.')]);
@@ -1261,7 +1272,7 @@ export class ProjectService {
           for (const record of augmented) if (record.kind === 'resource' && images.some((image) => image.ref?.id === record.value.id) && !resources.some((r) => r.id === record.value.id)) resources.push(record.value);
         }
         return this.#makePlan(scan, domain.operationId, images, nextRecords, resources,
-          sha256(Buffer.from(domain.requestFingerprint)), { domain });
+          sha256(Buffer.from(domain.requestFingerprint)), { domain, ...(options.proposalPreview ? { proposalPreview: true } : {}) });
       } catch (error) { return failure([this.#operationError('operation', error)]); }
     });
   }
@@ -1613,15 +1624,16 @@ export class ProjectService {
   async #fault(phase: FaultPhase, operationId: string, index?: number, path?: string): Promise<void> {
     await this.options.fault?.(phase, { operationId, ...(index !== undefined ? { index } : {}), ...(path ? { path } : {}) });
   }
-  commit(plan: PreparedWrite): Promise<StoreResult<WriteReceipt>> {
+  commit(plan: PreparedWrite, approval?: { tool: CapabilityApprovalReview['tool'] }): Promise<StoreResult<WriteReceipt>> {
     return this.#queue(async () => {
       const data = this.#plans.get(plan);
       if (!data) return failure([issue('operation', 'schema', 'unknown-plan', 'La propuesta no fue preparada por este servicio.')]);
       if (data.outcome) return data.outcome;
-      const outcome = freeze(await this.#commit(plan, data)); data.outcome = outcome; return outcome;
+      if (approval && data.domain?.request.command !== 'a3.core.update-entities') return failure([issue('operation', 'schema', 'review-context-not-supported', 'La revisión de propuestas A3 solo se admite para el lote de título/etiquetas.')]);
+      const outcome = freeze(await this.#commit(plan, data, approval)); data.outcome = outcome; return outcome;
     });
   }
-  async #commit(plan: PreparedWrite, data: PlanData): Promise<StoreResult<WriteReceipt>> {
+  async #commit(plan: PreparedWrite, data: PlanData, approval?: { tool: CapabilityApprovalReview['tool'] }): Promise<StoreResult<WriteReceipt>> {
     let transactionPath: string | undefined;
     let log: ProgressLog | undefined;
     let activePath = 'a3.project.json';
@@ -1645,7 +1657,7 @@ export class ProjectService {
           entityIds: data.domain.request.scope.entityIds, refs: data.domain.changes.map((change) => change.ref),
           contentEffects: data.domain.contentEffects, registryWrite: data.domain.nodeTypeChanges.length > 0,
           changes: data.domain.changes, nodeTypeChanges: data.domain.nodeTypeChanges
-        })
+        }, approval ? this.#approvalReview(approval.tool, data.domain.changes) : undefined)
         : await this.options.host.capabilities.authorizeCapabilities(this.root, this.options.host.authenticatedActor, plan.projectId,
           data.requiredCapabilities, `${data.maintenance ? 'project.maintenance' : 'resource.write'}:${data.snapshotOperationId ?? plan.operationId}`, 'apply');
       if (!applyDecision.allowed) return failure([this.#denied('operation', applyDecision)]);
@@ -1800,6 +1812,17 @@ export class ProjectService {
       this.#emit({ kind: 'write-failed', diagnostics });
       return { ok: false, diagnostics, ...(transactionPath ? { recoveryRequired: true, transactionPath } : {}) };
     }
+  }
+  #approvalReview(tool: CapabilityApprovalReview['tool'], changes: readonly PreparedPlan['changes'][number][]): CapabilityApprovalReview {
+    const affected: CapabilityApprovalReview['affected'][number][] = [];
+    const diff: CapabilityApprovalReview['diff'][number][] = [];
+    for (const change of changes) {
+      if (change.before?.kind !== 'entity' || change.after?.kind !== 'entity') continue;
+      affected.push({ kind: 'entity', id: change.after.value.id, expectedRevision: change.before.value.revision, resultingRevision: change.after.value.revision });
+      if (change.before.value.title !== change.after.value.title) diff.push({ entityId: change.after.value.id, field: 'title', before: approvalSafeText(change.before.value.title), after: approvalSafeText(change.after.value.title) });
+      if (!equal(change.before.value.tags, change.after.value.tags)) diff.push({ entityId: change.after.value.id, field: 'tags', before: approvalSafeText(JSON.stringify(change.before.value.tags)), after: approvalSafeText(JSON.stringify(change.after.value.tags)) });
+    }
+    return { tool, affected, diff };
   }
   /** Host lifecycle; leases call this only after the last window closes. */
   async dispose(): Promise<void> {

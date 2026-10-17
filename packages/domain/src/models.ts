@@ -164,6 +164,8 @@ export interface StructurizrImportChange {
   mapping: Record<string, UUID>; records: DomainRecord[];
 }
 export type EntityPatch = Partial<Pick<Entity, 'title' | 'tags' | 'properties' | 'ports' | 'bindings'>>;
+/** Deliberately narrow batch patch used by reviewed A3 agent proposals. */
+export interface EntitySummaryUpdate { entityId: UUID; title?: string; tags?: string[]; }
 export type Payloads = {
   'a3.planning.change': PlanningChange;
   'a3.planning.set-policy': { requireEvidenceForDone: boolean };
@@ -189,6 +191,7 @@ export type Payloads = {
   'a3.core.rename': { ref: DocumentRef; name: string };
   'a3.core.set-workspace-viewport': { workspaceId: UUID; viewport: { x: number; y: number; zoom: number } };
   'a3.core.update-entity': EntityPatch;
+  'a3.core.update-entities': { updates: EntitySummaryUpdate[] };
   'a3.core.move-placement': { ref: DocumentRef; position: Point };
   'a3.core.move-placements': { workspaceId: UUID; placements: { id: UUID; position: Point }[] };
   'a3.core.update-placement-views': { workspaceId: UUID; placements: { id: UUID; position?: Point; style?: ExtensionMap }[] };

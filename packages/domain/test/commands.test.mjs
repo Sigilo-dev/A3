@@ -44,6 +44,22 @@ test('rename and metadata patches preserve unknown fields, nested port data and 
   assert.equal(find(next, 'entity', E1).value.ports[0].id, 'stable');
 });
 
+test('agent summary update batch validates every member and produces one reversible project plan', () => {
+  const state = fixture();
+  const plan = success(run(state, 'a3.core.update-entities', { updates: [
+    { entityId: E1, title: 'Visión revisada' }, { entityId: E2, tags: ['referencia', 'validada'] }
+  ] }, [], context(), { scope: { entityIds: [E1, E2] } }));
+  assert.equal(plan.changes.length, 2);
+  assert.deepEqual(plan.changes.map((change) => change.after.value.revision), [2, 2]);
+  assert.equal(find(plan.nextSnapshot, 'entity', E1).value.title, 'Visión revisada');
+  assert.deepEqual(find(plan.nextSnapshot, 'entity', E2).value.tags, ['referencia', 'validada']);
+  assert.equal(find(state, 'entity', E1).value.revision, 1);
+  assert.equal(find(state, 'entity', E2).value.revision, 1);
+  rejection(run(state, 'a3.core.update-entities', { updates: [
+    { entityId: E1, title: 'first' }, { entityId: E1, tags: ['duplicate'] }
+  ] }, [], context(), { scope: { entityIds: [E1] } }), 'invalid-entity-update-batch');
+});
+
 test('revision conflict, missing write precondition and forged identity produce no plan', () => {
   const state = fixture();
   const cmd = request(state, 'a3.core.rename', { ref: { kind: 'entity', id: E1 }, name: 'Nuevo' });
