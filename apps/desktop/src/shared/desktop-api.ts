@@ -21,6 +21,8 @@ export const WORKSPACE_SESSION_CHANNEL = 'a3.workspace:session';
 export const NAVIGATION_CHANNEL = 'a3.navigation:command';
 export const GALLERY_CHANNEL = 'a3.gallery:command';
 export const IMAGE_CONVERSION_CHANNEL = 'a3.media:image-conversion';
+export const AV_CONVERSION_CHANNEL = 'a3.media:av-conversion';
+export type { AvRequest, AvResult, AvJobView, AvEngineInfo, AvSettings } from './av-conversion';
 export type { ImageConversionRequest, ImageConversionResult, ImageConversionView, ImageConversionSettings, ImageInspection, ImageOutputInfo } from './image-conversion';
 export type GalleryRequest = { action: 'load'; sessionId: string } | { action: 'preview'; sessionId: string; resourceId: string; purpose?: 'preview' | 'playback' };
 export type GalleryValue = MediaGalleryCatalog | MediaGalleryPreview;
@@ -165,6 +167,7 @@ export interface DesktopAPI {
   files(request: FilesRequest): Promise<FilesResult>;
   gallery(request: GalleryRequest): Promise<GalleryResult>;
   imageConversion(request: import('./image-conversion').ImageConversionRequest): Promise<import('./image-conversion').ImageConversionResult>;
+  avConversion(request: import('./av-conversion').AvRequest): Promise<import('./av-conversion').AvResult>;
   canvas(request: Extract<CanvasRequest, { action: 'mermaid-import-preview' }>): Promise<CanvasMermaidImportResult>;
   canvas(request: Extract<CanvasRequest, { action: 'mermaid-import-apply' }>): Promise<CanvasResult>;
   canvas(request: Extract<CanvasRequest, { action: 'plantuml-import-preview' }>): Promise<CanvasPlantUmlImportResult>;

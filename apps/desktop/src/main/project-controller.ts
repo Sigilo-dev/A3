@@ -8,6 +8,9 @@ import { tmpdir } from 'node:os';
 import { CONTENT_NODE_CATALOG, CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_RELATION_KINDS, IOT_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { validIotCircuitOperation } from '@a3/domain/iot-circuit';
 import { ImageConversionJobs, runImageWorker } from './image-conversion';
+import { AvConversionJobs } from './av-conversion';
+import { AvEngine } from './av-engine';
+import { validAvRequest, type AvResult } from '../shared/av-conversion';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
@@ -335,6 +338,9 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       `${project.name}\n${project.root}\nLos archivos y copias de recuperación se conservarán. La sesión del proyecto se cerrará antes de abrir otra.`) });
   const plantumlRenderer = new PlantUmlRenderer({ artifactPath: plantumlArtifactPath, installDirectory: join(stateDirectory, 'diagram-engines', 'plantuml') });
   const imageConversions = new ImageConversionJobs(manager, join(stateDirectory, 'image-conversion-staging'), runImageWorker(join(__dirname, 'image-worker.cjs')));
+  const avEngine = new AvEngine(join(stateDirectory, 'media-engines', 'ffmpeg'));
+  const avConversions = new AvConversionJobs(manager, join(stateDirectory, 'av-conversion-staging'), avEngine);
+  let mediaProjectTransitions = 0;
   const dropDrafts = new Map<string, StagedDrop>();
   const exportJobs = new Map<string, { sessionId: string; cancel: () => void }>();
   const cancelledExport = (): CanvasExportResult => ({ ok: true, value: { cancelled: true } });
@@ -554,6 +560,17 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   return {
     manager,
     imageConversions,
+    avConversions,
+    async handleAvConversion(value: unknown): Promise<AvResult> {
+      if (!validAvRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud multimedia inválida.', recovery: 'Reabre la conversión.' } };
+      if (mediaProjectTransitions) return { ok: false, error: { code: 'STALE_SESSION', message: 'Hay un cambio de proyecto en curso.', recovery: 'Espera y abre la conversión en el proyecto activo.' } };
+      if (value.action !== 'configure-engine') return avConversions.handle(value);
+      try {
+        if (!await confirm('Configurar componente opcional FFmpeg/ffprobe', 'Selecciona la carpeta bin de Gyan 8.0.1 full_build Windows x64. Se comprobarán hashes, versión y GPLv3. No se descargan ni redistribuyen binarios. El proceso usa medios por pipes y límites, pero corre con tu usuario: no es una sandbox de Windows.')) return { ok: true, value: await avEngine.status() };
+        const folder = await chooseFolder('Selecciona la carpeta bin de FFmpeg y ffprobe 8.0.1');
+        return { ok: true, value: folder ? await avEngine.configure(folder) : await avEngine.status() };
+      } catch { return { ok: false, error: { code: 'ENGINE_INTEGRITY', message: 'El paquete seleccionado no coincide con los artefactos aprobados.', recovery: 'Selecciona la build Gyan 8.0.1 full_build Windows x64 de E0-D3.' } }; }
+    },
     async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasExportResult | CanvasMermaidImportResult | CanvasPlantUmlImportResult | CanvasPlantUmlResult | CanvasStyleResult | CanvasStructurizrImportResult> {
       if (!validCanvasRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de lienzo inválida.', recovery: 'Reabre el workspace.' } };
       try {
@@ -679,7 +696,10 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
     },
     async handle(value: unknown): Promise<ProjectsResult> {
       if (!validRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de proyecto inválida.', recovery: 'Vuelve a realizar la acción desde A3.' } };
+      const switching = ['restore', 'open', 'recent', 'relocate', 'confirm', 'close'].includes(value.action);
+      if (switching) mediaProjectTransitions++;
       try {
+        if (switching) await avConversions.cancelAll();
         switch (value.action) {
           case 'list': return { ok: true, value: await manager.getState() };
           case 'restore': return { ok: true, value: await manager.restoreLastProject() };
@@ -714,7 +734,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
         const code = error instanceof LocalProjectError ? error.code : error && typeof error === 'object' && 'code' in error ? String(error.code) : 'IO_FAILED';
         const message = error instanceof LocalProjectError ? error.message : code === 'ENOENT' ? 'La carpeta o unidad ya no está disponible.' : ['EACCES', 'EPERM'].includes(code) ? 'No tienes permiso para acceder a esta carpeta.' : 'No se pudo completar la operación del proyecto.';
         return { ok: false, error: { code, message, recovery: 'Conecta la unidad, revisa los permisos o localiza la carpeta. Los archivos existentes se conservaron; si hay metadatos pendientes, vuelve a abrir la carpeta para recuperarlos.' } };
-      }
+      } finally { if (switching) mediaProjectTransitions--; }
     },
     stageDrop,
     async handleNavigation(value: unknown): Promise<NavigationResult> {

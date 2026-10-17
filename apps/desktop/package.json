@@ -18,6 +18,8 @@
     "prebuild": "npm run prepare:plantuml && npm run verify:images",
     "verify:images": "node scripts/verify-image-engine.mjs",
     "test:images": "node --experimental-strip-types --experimental-transform-types --test test/image-conversion.test.mjs",
+    "test:av": "node --experimental-strip-types --experimental-transform-types --test test/av-conversion.test.mjs",
+    "test:av:smoke": "node test/run-av-conversion.mjs",
     "test:images:smoke": "node test/run-image-conversion.mjs",
     "test:images:packaged": "node scripts/verify-image-engine.mjs --packaged && node test/run-image-conversion.mjs --packaged",
     "pack:win": "npm run build && electron-builder --win --x64 --dir --publish never",

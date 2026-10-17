@@ -8,7 +8,7 @@ import type { AccessRequest } from './service-types.js';
 /** Capability names are stable policy identifiers; none are inferred from agent prompts. */
 export const CAPABILITIES = [
   'project.read', 'mount.read', 'mount.index', 'mount.write', 'document.edit', 'diagram.edit', 'task.edit', 'delete', 'project.recover', 'process.run',
-  'network.access', 'package.install', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push',
+  'network.access', 'package.install', 'media.convert', 'git.status', 'git.diff', 'git.stage', 'git.commit', 'git.push',
   'git.branch', 'git.restore', 'export'
 ] as const;
 export type Capability = typeof CAPABILITIES[number];
@@ -57,8 +57,8 @@ export interface SharedPolicyRequest { schemaVersion: '1.0.0'; requests: readonl
 
 const profileModes: Record<Profile, Partial<Record<Capability, GrantMode>>> = {
   consultar: { 'project.read': 'direct' },
-  proponer: { 'project.read': 'direct', 'mount.index': 'approval', 'document.edit': 'approval', 'diagram.edit': 'approval', 'task.edit': 'approval', 'project.recover': 'approval', export: 'approval' },
-  trabajar: { 'project.read': 'direct', 'mount.index': 'direct', 'document.edit': 'direct', 'diagram.edit': 'direct', 'task.edit': 'direct', 'project.recover': 'approval', export: 'direct' },
+  proponer: { 'project.read': 'direct', 'mount.index': 'approval', 'media.convert': 'approval', 'document.edit': 'approval', 'diagram.edit': 'approval', 'task.edit': 'approval', 'project.recover': 'approval', export: 'approval' },
+  trabajar: { 'project.read': 'direct', 'mount.index': 'direct', 'media.convert': 'direct', 'document.edit': 'direct', 'diagram.edit': 'direct', 'task.edit': 'direct', 'project.recover': 'approval', export: 'direct' },
   personalizado: { 'project.read': 'deny' }
 };
 // E0-C2 did not verify OS process isolation, network confinement, package execution,
@@ -82,6 +82,7 @@ function safeOperation(value: string): string {
   if (/^mount\.bind:(read-only|read-write)$/.test(value)) return value;
   if (value === 'mount.revoke') return value;
   if (value === 'policy.revoke') return value;
+  if (value === 'media.convert') return value;
   for (const prefix of ['snapshot.create:', 'project.maintenance:', 'resource.write:', 'journal.recovery:']) {
     if (new RegExp(`^${prefix.replaceAll('.', '\\.')} ${uuid}$`.replace(' ', ''), 'i').test(value)) return `${prefix}<operation-id>`;
   }

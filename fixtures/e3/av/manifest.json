@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "generator": "Gyan FFmpeg 8.0.1 full_build Windows x64",
+  "executableSha256": "74db6c184a03dba2bdfe23e1a1f41cf5a8385bc1de6a7a1b26db1dc541abef93",
+  "fixtures": {
+    "video.mkv": {
+      "sha256": "245f1454dbf204bac1437f18a27a85f1d18b9165d2cc5a5f53a5f68902e08bca",
+      "bytes": 200994
+    },
+    "audio.wav": {
+      "sha256": "2a5f163e85b4560e6d893bb2246b7f94a115d0df81ff40e5cce6c075b49ceb7f",
+      "bytes": 96078
+    },
+    "invalid.bin": {
+      "sha256": "5e5bbbc370efd87f8f882e119744c93fe29d62390e0f4a13cbf1da6b1eae0574",
+      "bytes": 7
+    }
+  }
+}

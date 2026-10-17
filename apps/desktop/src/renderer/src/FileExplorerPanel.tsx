@@ -5,6 +5,7 @@ import { ContextMenu, menuAt, useMenuPermissions, type MenuState, type ContextAc
 import { useTextPrompt } from './TextInputDialog';
 import { matchesShortcut, useShortcuts } from './shortcuts';
 import { ImageConversionDialog } from './ImageConversionDialog';
+import { AvConversionDialog } from './AvConversionDialog';
 
 type Crumb = { id: string; name: string };
 export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChanged }: { active: LocalProjectSession | null | undefined; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number; onChanged?: () => void }): React.JSX.Element {
@@ -19,6 +20,7 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChange
   const [opened, setOpened] = useState<LocalExplorerOpen | null>(null);
   const [deleting, setDeleting] = useState<LocalExplorerDeletePreview | null>(null);
   const [conversionId, setConversionId] = useState<string | null>(null);
+  const [avId, setAvId] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const current = stack.at(-1)!;
   const writable = active?.mode === 'writer';
@@ -36,6 +38,7 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChange
     finally { setBusy(false); }
   }
   useEffect(() => {
+    setAvId(null);
     setStack([{ id: 'project-root', name: 'Proyecto' }]); setListing(null); setSelected(null); setOpened(null); setDeleting(null);
     if (active) void load('project-root');
   }, [active?.sessionId]);
@@ -80,6 +83,8 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChange
     } });
     if (entry?.kind === 'file' && entry.resourceId) actions.push({ id: 'convert-image', label: 'Convertir imagen… · inspeccionar archivo', capability: 'document', reason: unavailable,
       run: () => setConversionId(entry.resourceId!) });
+    if (entry?.kind === 'file' && entry.resourceId) actions.push({ id: 'convert-av', label: 'Convertir audio/video… · inspeccionar archivo', capability: 'read', reason: unavailable,
+      run: () => setAvId(entry.resourceId!) });
     setMenu(menuAt(event, entry?.kind === 'directory' ? 'folder' : entry ? 'file' : 'files', actions));
   }
   async function openEntry(entry: LocalExplorerEntry): Promise<void> {
@@ -163,6 +168,7 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChange
               if (result.ok && 'text' in result.value) setOpened(result.value); else if (!result.ok) setError(`${result.error.code}: ${result.error.message}`);
             }}>Abrir referencia</button>
             <button className="quiet" data-edit-mounted-code disabled={busy || mount.status !== 'available'} onClick={() => onOpenCode({ sessionId: active.sessionId, title: mount.name, target: { resourceId: mount.id } })}>Ver código · solo lectura</button>
+            <button className="quiet" disabled={busy || mount.status !== 'available'} onClick={() => setAvId(mount.id)}>Convertir audio/video… · inspeccionar referencia</button>
             <button className="quiet" disabled={busy || mount.status !== 'available'} onClick={() => void mutate({ action: 'copy-mount-path', sessionId: active.sessionId, resourceId: mount.id, kind: 'absolute' })}>Copiar ruta absoluta</button>
             <button className="quiet" disabled={busy || mount.status !== 'available'} onClick={() => void mutate({ action: 'copy-mount-path', sessionId: active.sessionId, resourceId: mount.id, kind: 'relative' })}>Copiar ruta relativa</button>
           </div>)}
@@ -184,5 +190,6 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChange
     {menu && <ContextMenu menu={menu} permissions={permissions} onClose={() => setMenu(null)} />}{promptDialog}
     {conversionId && <ImageConversionDialog sessionId={active.sessionId} resourceIds={[conversionId]} onClose={() => setConversionId(null)}
       onSaved={() => { void load(current.id); onChanged?.(); }} />}
+    {avId && <AvConversionDialog key={active.sessionId} sessionId={active.sessionId} resourceIds={[avId]} onClose={() => setAvId(null)} onSaved={() => { void load(current.id); onChanged?.(); }} />}
   </section>;
 }

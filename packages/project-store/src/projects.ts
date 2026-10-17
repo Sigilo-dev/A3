@@ -31,7 +31,7 @@ import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
 import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
 import { buildMediaGalleryCatalog, mediaGalleryKind, type MediaGalleryAvailability, type MediaGalleryCatalog } from './media-gallery.js';
-import type { DerivedResourceSource, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, PreparedWrite, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
+import type { DerivedMediaType, DerivedResourceSource, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, PreparedWrite, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function detectedMediaType(resource: Extract<DomainRecord, { kind: 'resource' }>['value']): string | undefined {
@@ -923,8 +923,16 @@ export class LocalProjectManager {
         descriptorHash: source.value.descriptorHash, bytes: source.value.bytes, name: source.value.path.split('/').at(-1) ?? 'imagen' };
     });
   }
+  authorizeAvConversion(sessionId: string): Promise<void> {
+    return this.#queue(async () => {
+      const active = this.#active; demand(active?.sessionId === sessionId, 'STALE_SESSION', 'La conversión pertenece a otra sesión.');
+      const decision = await this.options.host.capabilities.authorizeCapabilities(active.lease.service.root, this.options.host.authenticatedActor,
+        active.projectId, ['project.read', 'media.convert'], 'media.convert', 'apply');
+      demand(decision.allowed, 'PERMISSION_DENIED', `El broker denegó ${decision.missingCapability ?? 'media.convert'} para este proyecto.`);
+    });
+  }
   prepareMediaConversionOutput(sessionId: string, source: DerivedResourceSource, bytes: Uint8Array, path: string,
-    mediaType: 'image/png' | 'image/jpeg' | 'image/avif' | 'application/pdf', provenance: JsonValue): Promise<MediaConversionPrepared> {
+    mediaType: DerivedMediaType, provenance: JsonValue): Promise<MediaConversionPrepared> {
     const captured = Uint8Array.from(bytes);
     return this.#queue(async () => {
       const active = this.#active;

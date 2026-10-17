@@ -88,9 +88,11 @@ export interface ResourceWriteRequest {
 }
 /** Host-owned output from a fixed local converter, never accepted as arbitrary renderer bytes. */
 export interface DerivedResourceSource { resourceId: string; revision: number; sha256: string; descriptorHash: string; }
+export type DerivedMediaType = 'image/png' | 'image/jpeg' | 'image/avif' | 'application/pdf' |
+  'video/mp4' | 'video/quicktime' | 'video/x-matroska' | 'audio/mpeg' | 'audio/flac';
 export interface DerivedResourceRequest {
   operationId: string; source: DerivedResourceSource; resourceId: string; path: string;
-  mediaType: 'image/png' | 'image/jpeg' | 'image/avif' | 'application/pdf'; bytes: Uint8Array;
+  mediaType: DerivedMediaType; bytes: Uint8Array;
   provenance: import('@a3/domain').JsonValue;
 }
 export interface MountActionRequest {

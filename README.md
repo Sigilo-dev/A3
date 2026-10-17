@@ -10,6 +10,8 @@ E3-B1 incorpora el modelo nativo UML de clases, interfaces, enumeraciones, paque
 
 E3-B2 incorpora el modelo entidad–relación separado de UML: tablas, campos, claves y cardinalidades persistentes, con exportador acotado a Mermaid ER. Consulta [subconjunto, pruebas y límites](docs/e3/e3-b2-er.md); la importación Mermaid y la exportación SQL siguen pendientes.
 
+E3-G3 añade conversión local de audio/video con FFmpeg/ffprobe opcionales verificados, cinco perfiles comprobados y salidas nuevas confirmadas por el escritor. Consulta [configuración, pruebas y límites](docs/e3/audio-video-conversion.md) y la [evidencia consolidada E3](docs/e3/evidence.md).
+
 La especificación y los prompts de planificación se mantienen localmente y no se publican. E0-A aporta contratos, JSON Schemas y fixtures comprobables, sin UI ni servicios de producción.
 
 Contratos: [dominio e invariantes](docs/e0/contracts/domain.md), [comandos y migración](docs/e0/contracts/commands-and-migrations.md), [extensiones](docs/e0/contracts/extensions.md). El trabajo realizado y los errores corregidos están en [AUDIR.md](AUDIR.md).

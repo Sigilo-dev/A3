@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, GALLERY_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type AppInfo, type ShellResult } from '../shared/desktop-api';
 import { createProjectController } from './project-controller';
-import { IMAGE_CONVERSION_CHANNEL } from '../shared/desktop-api';
+import { AV_CONVERSION_CHANNEL, IMAGE_CONVERSION_CHANNEL } from '../shared/desktop-api';
 import { PLANTUML_ARTIFACT_FILE } from './plantuml-renderer';
 import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL } from '../shared/desktop-api';
 
@@ -36,6 +36,7 @@ async function finishQuit(): Promise<void> {
       }
     }
     await projects?.imageConversions.cancelAll();
+    await projects?.avConversions.cancelAll();
     await projects?.manager.shutdown();
     quitting = true; clearTimeout(bootTimer); app.quit();
   } catch {
@@ -183,6 +184,13 @@ async function startDesktop(): Promise<void> {
     }
     return projects.imageConversions.handle(args[0]);
   });
+  ipcMain.handle(AV_CONVERSION_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) {
+      return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Conversión multimedia no autorizada.', recovery: 'Reabre el proyecto.' } };
+    }
+    return projects.handleAvConversion(args[0]);
+  });
   ipcMain.handle(CANVAS_CHANNEL, (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
         !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) {
@@ -258,7 +266,7 @@ async function startDesktop(): Promise<void> {
 
 app.on('before-quit', (event) => { if (!quitting) { event.preventDefault(); void finishQuit(); } });
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => { ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(GALLERY_CHANNEL); ipcMain.removeHandler(IMAGE_CONVERSION_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); ipcMain.removeHandler(NAVIGATION_CHANNEL); });
+app.on('will-quit', () => { ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(GALLERY_CHANNEL); ipcMain.removeHandler(IMAGE_CONVERSION_CHANNEL); ipcMain.removeHandler(AV_CONVERSION_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); ipcMain.removeHandler(NAVIGATION_CHANNEL); });
 process.on('uncaughtException', fatalStartup);
 process.on('unhandledRejection', fatalStartup);
 void app.whenReady().then(() => { if (primaryInstance) return startDesktop(); }).catch(fatalStartup);

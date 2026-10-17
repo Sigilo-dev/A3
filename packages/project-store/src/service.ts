@@ -1308,7 +1308,8 @@ export class ProjectService {
             broker: this.options.host.capabilities, resource: source.value, maxBytes: this.#resourceLimit });
         if (!opened.ok) return opened;
         if (opened.value.sha256 !== request.source.sha256) return failure([conflict('resource', 'source-bytes-changed')]);
-        const extension = { 'image/png': 'png', 'image/jpeg': 'jpe?g', 'image/avif': 'avif', 'application/pdf': 'pdf' }[request.mediaType];
+        const extension = { 'image/png': 'png', 'image/jpeg': 'jpe?g', 'image/avif': 'avif', 'application/pdf': 'pdf',
+          'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/x-matroska': 'mkv', 'audio/mpeg': 'mp3', 'audio/flac': 'flac' }[request.mediaType];
         const fileName = request.path.split('/').at(-1)!;
         if (!extension || !request.path.startsWith('assets/converted/') || request.path.split('/').length !== 3 || !explorerName(fileName) ||
             !new RegExp(`\\.(?:${extension})$`, 'i').test(fileName)) throw new PathError('derived-destination-invalid', 'El destino debe ser un archivo nuevo en assets/converted con la extensión del perfil.');
@@ -1327,9 +1328,10 @@ export class ProjectService {
           { resource: source.value, sha256: opened.value.sha256, identity: String(opened.value.identity) } : undefined;
         return this.#makePlan(scan, request.operationId, [{ path: request.path, bytes: request.bytes, ref: refOf(record) },
           { path: descriptorPath, bytes: Uint8Array.from(encoded.bytes), ref: refOf(record) }], nextRecords, [resource],
-        sha256(jsonBytes({ action: 'derived-image', source: request.source, resource, outputHash: sha256(request.bytes) })), {
+        sha256(jsonBytes({ action: 'derived-media', source: request.source, resource, outputHash: sha256(request.bytes) })), {
           externalPaths: [request.path, descriptorPath], ...(mountSource ? { mountSource } : {}),
-          requiredCapabilities: source.value.kind === 'mounted-file' ? ['document.edit', 'project.read', 'mount.read'] : ['document.edit', 'project.read'] });
+          requiredCapabilities: [...(source.value.kind === 'mounted-file' ? ['document.edit', 'project.read', 'mount.read'] as const : ['document.edit', 'project.read'] as const),
+            ...(/^(?:audio|video)\//.test(request.mediaType) ? ['media.convert' as const] : [])] });
       } catch (error) { return failure([this.#operationError('resource', error)]); }
     });
   }

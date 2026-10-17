@@ -3,6 +3,7 @@ import type { LocalProjectSession, MediaGalleryCatalog, MediaGalleryItem, MediaG
 import { filterMediaGalleryItems } from '@a3/project-store/media-gallery';
 import { screenToWorld } from '../../shared/world-viewport';
 import { ImageConversionDialog } from './ImageConversionDialog';
+import { AvConversionDialog } from './AvConversionDialog';
 
 type GalleryProject = Pick<LocalProjectSession, 'sessionId' | 'projectId' | 'name'>;
 interface Props { project: GalleryProject | null; onOpenWorkspace(workspaceId: string): Promise<void>; onShowPlacement(workspaceId: string, placementId: string): Promise<void>; }
@@ -27,6 +28,8 @@ export function MediaGalleryPanel({ project, onOpenWorkspace, onShowPlacement }:
   const [previewLoading, setPreviewLoading] = useState(false), [imageUrl, setImageUrl] = useState<string | null>(null), [targetWorkspace, setTargetWorkspace] = useState('');
   const [actionBusy, setActionBusy] = useState(false), [actionMessage, setActionMessage] = useState<string | null>(null);
   const [conversionIds, setConversionIds] = useState<string[]>([]), [batchIds, setBatchIds] = useState<string[]>([]);
+  const [avIds, setAvIds] = useState<string[]>([]), [avBatch, setAvBatch] = useState<string[]>([]);
+  useEffect(() => { setAvIds([]); setAvBatch([]); }, [project?.sessionId]);
 
   useEffect(() => {
     let live = true;
@@ -115,6 +118,8 @@ export function MediaGalleryPanel({ project, onOpenWorkspace, onShowPlacement }:
     {items.filter((item) => item.kind === kind).map((item) => <article className="gallery-card" key={item.resourceId} data-media-kind={item.kind} data-gallery-resource-id={item.resourceId}>
       {kind === 'image' && item.resourceKind !== 'remote-url' && <label className="gallery-batch-choice"><input type="checkbox" aria-label={`Seleccionar ${item.label} para convertir`} checked={batchIds.includes(item.resourceId)} disabled={!batchIds.includes(item.resourceId) && batchIds.length >= 16}
         onChange={(event) => setBatchIds((before) => event.target.checked ? [...before, item.resourceId] : before.filter((id) => id !== item.resourceId))} /> Seleccionar</label>}
+      {kind === 'video' && item.resourceKind && item.resourceKind !== 'remote-url' && <label className="gallery-batch-choice"><input type="checkbox" aria-label={`Seleccionar ${item.label} para convertir audio/video`} checked={avBatch.includes(item.resourceId)} disabled={!avBatch.includes(item.resourceId) && avBatch.length >= 16}
+        onChange={(event) => setAvBatch((before) => event.target.checked ? [...before, item.resourceId] : before.filter((id) => id !== item.resourceId))} /> Seleccionar audio/video</label>}
       <button className="gallery-card-preview" onClick={() => void openPreview(item)} aria-label={`Abrir preview de ${item.label}`}>
         {item.kind === 'image' ? <span className="gallery-icon" aria-hidden="true">▧</span> : <span className="gallery-icon gallery-video-icon" aria-hidden="true">▶</span>}
         <span className="gallery-card-title">{item.label}</span>
@@ -133,6 +138,7 @@ export function MediaGalleryPanel({ project, onOpenWorkspace, onShowPlacement }:
     <div className="gallery-heading"><div><p className="eyebrow">Catálogo de recursos</p><h1 id="gallery-title">Galería</h1><p>{project ? `Proyecto actual: ${catalog?.projectName ?? project.name}` : 'Abre un proyecto para consultar sus recursos.'}</p></div>
       <button className="secondary" disabled={!project || loading} onClick={() => setRefresh((value) => value + 1)}>Actualizar</button></div>
     {project && batchIds.length > 0 && <button className="secondary" onClick={() => setConversionIds(batchIds)}>Convertir selección ({batchIds.length})…</button>}
+    {project && avBatch.length > 0 && <button className="secondary" onClick={() => setAvIds(avBatch)}>Convertir selección audio/video ({avBatch.length})…</button>}
     {project && <div className="gallery-filters" aria-label="Filtros de la galería">
       <label>Proyecto<select aria-label="Proyecto" value={catalog?.projectId ?? project.projectId} disabled><option value={catalog?.projectId ?? project.projectId}>{catalog?.projectName ?? project.name} · abierto</option></select></label>
       <label>Workspace<select value={workspaceFilter} onChange={(event) => setWorkspaceFilter(event.target.value)}><option value="">Todos</option>{catalog?.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select></label>
@@ -157,6 +163,7 @@ export function MediaGalleryPanel({ project, onOpenWorkspace, onShowPlacement }:
         <header><div><p className="eyebrow">{selected.kind === 'image' ? 'Imagen' : 'Video'}</p><h2 id="gallery-preview-title">{selected.label}</h2></div>
           <button className="secondary" onClick={() => setSelected(null)} aria-label="Cerrar preview">Cerrar</button></header>
         {selected.kind === 'image' && selected.resourceKind && selected.resourceKind !== 'remote-url' && <button className="secondary" data-gallery-convert onClick={() => { setConversionIds([selected.resourceId]); setSelected(null); }}>Convertir imagen…</button>}
+        {selected.kind === 'video' && selected.resourceKind && selected.resourceKind !== 'remote-url' && <button className="secondary" data-gallery-convert-av onClick={() => { setAvIds([selected.resourceId]); setSelected(null); }}>Convertir audio/video…</button>}
         {previewLoading ? <p role="status">Preparando preview…</p> : imageUrl && selected.kind === 'image' ? <img className="gallery-large-preview" src={imageUrl} alt={selected.label} /> :
           imageUrl && selected.kind === 'video' ? <video className="gallery-large-preview" src={imageUrl} controls autoPlay playsInline aria-label={`Reproducción de ${selected.label}`} /> :
           <div className="gallery-preview-placeholder"><span aria-hidden="true">{selected.kind === 'image' ? '▧' : '▶'}</span>
@@ -184,5 +191,7 @@ export function MediaGalleryPanel({ project, onOpenWorkspace, onShowPlacement }:
     </div>}
     {project && conversionIds.length > 0 && <ImageConversionDialog sessionId={project.sessionId} resourceIds={conversionIds}
       onClose={() => setConversionIds([])} onSaved={() => { setBatchIds([]); setRefresh((value) => value + 1); }} />}
+    {project && avIds.length > 0 && <AvConversionDialog key={project.sessionId} sessionId={project.sessionId} resourceIds={avIds}
+      onClose={() => setAvIds([])} onSaved={() => { setAvBatch([]); setRefresh((value) => value + 1); }} />}
   </section>;
 }
