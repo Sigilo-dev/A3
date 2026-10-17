@@ -4,7 +4,7 @@ import type { CanvasC4RelationView, CanvasConceptualRelationView, CanvasErRelati
 import { umlMultiplicityText } from '@a3/domain/uml';
 import type { ErCardinality } from '@a3/domain/er';
 import type { C4Step } from '@a3/domain/c4';
-import { adaptDiagramStyle } from '@a3/domain';
+import { adaptDiagramStyle } from '@a3/domain/diagram-style';
 
 export type CanvasTool = 'select' | 'connect' | 'text' | 'draw';
 type EdgeData = { view: CanvasVisualEdgeView; origin: { x: number; y: number }; defaultLineColor?: string };

@@ -17,7 +17,7 @@ import { createSnapshot, listSnapshots, readSnapshot, type SnapshotReason } from
 import { applyMigrationChain, migrationChain, type MigrationScope } from './migrations.js';
 import { completeMigration, loadPreparedMigration, prepareMigration, verifyAppliedMigration, type LoadedMigration } from './migration-store.js';
 import type { DocumentLocation, JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
-import type { AccessRequest, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerFileEntry, ExplorerMountEntry, ExplorerOpenResult, ExplorerOperationRequest, FaultPhase, IntentEntry, MigrationReceipt, MountActionRequest, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
+import type { AccessRequest, DerivedResourceRequest, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerFileEntry, ExplorerMountEntry, ExplorerOpenResult, ExplorerOperationRequest, FaultPhase, IntentEntry, MigrationReceipt, MountActionRequest, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
 import type { Capability, CapabilityDecision } from './capabilities.js';
 import { isProjectCapabilityBroker } from './capabilities.js';
 
@@ -1288,6 +1288,49 @@ export class ProjectService {
         return this.#makePlan(guarded, input.operationId, encoded.images, next, [resource.value, replacement.value],
           sha256(jsonBytes({ action: 'relocate-missing-resource', ...input, selectedHash: selected.hash })), { maintenance: true, requiredCapabilities: ['document.edit'], externalPaths: [input.path] });
       } catch (error) { return failure([this.#operationError(input.path, error)]); }
+    });
+  }
+  prepareDerivedResource(input: DerivedResourceRequest): Promise<StoreResult<PreparedWrite>> {
+    const request = structuredClone(input);
+    return this.#queue(async () => {
+      try {
+        const current = await this.#currentForWrite(); if (!current.ok) return current;
+        let scan = current.value;
+        const records = scan.project.snapshot.records;
+        const source = getRecord(scan.project.snapshot, { kind: 'resource', id: request.source.resourceId });
+        const descriptor = scan.project.documents.find((document) => document.record === source);
+        if (!uuid.test(request.operationId) || !uuid.test(request.resourceId) || source?.kind !== 'resource' || source.value.kind === 'remote-url' ||
+            !descriptor || !request.bytes.length || request.bytes.length > 32 * 1024 * 1024) return failure([issue('resource', 'schema', 'derived-resource-invalid', 'La conversión requiere una fuente local y salida acotada.')]);
+        if (source.value.revision !== request.source.revision || descriptor.sha256 !== request.source.descriptorHash) return failure([conflict('resource', 'source-descriptor-changed')]);
+        if (!this.#authorized('read-resource', source.value.kind === 'project-file' ? [source.value.path] : [], [refOf(source)], [source.value])) return failure([this.#denied('resource')]);
+        const opened = source.value.kind === 'project-file' ? await readProjectResource(this.root, source.value, this.#resourceLimit) :
+          await readMountedResourceDetailed({ projectRoot: this.root, projectId: this.#projectId()!, actor: this.options.host.authenticatedActor,
+            broker: this.options.host.capabilities, resource: source.value, maxBytes: this.#resourceLimit });
+        if (!opened.ok) return opened;
+        if (opened.value.sha256 !== request.source.sha256) return failure([conflict('resource', 'source-bytes-changed')]);
+        const extension = { 'image/png': 'png', 'image/jpeg': 'jpe?g', 'image/avif': 'avif', 'application/pdf': 'pdf' }[request.mediaType];
+        const fileName = request.path.split('/').at(-1)!;
+        if (!extension || !request.path.startsWith('assets/converted/') || request.path.split('/').length !== 3 || !explorerName(fileName) ||
+            !new RegExp(`\\.(?:${extension})$`, 'i').test(fileName)) throw new PathError('derived-destination-invalid', 'El destino debe ser un archivo nuevo en assets/converted con la extensión del perfil.');
+        this.#sourcePath(request.path);
+        if (records.some((record) => record.kind === 'resource' && (record.value.id.toLowerCase() === request.resourceId.toLowerCase() ||
+            record.value.kind === 'project-file' && record.value.path.toLowerCase() === request.path.toLowerCase()))) return failure([conflict(request.path, 'destination-in-use')]);
+        const resource: Resource = { schemaVersion: '1.0.0', id: request.resourceId, revision: 1, kind: 'project-file', path: request.path,
+          mediaType: request.mediaType, extensions: { 'a3.media.conversion': request.provenance } };
+        const record: DomainRecord = { kind: 'resource', value: resource }, descriptorPath = recordPath(record, this.#catalog);
+        scan = await this.#withExtraPaths(scan, [request.path, descriptorPath]);
+        for (const path of [request.path, descriptorPath]) if (scan.files.get(path)?.hash !== null || scan.files.get(path)?.problem) return failure([conflict(path, 'destination-exists')]);
+        const nextRecords = [...records, record], invalid = validateSnapshot({ records: nextRecords }, this.#registry).filter((diagnostic) => diagnostic.severity === 'error');
+        if (invalid.length) return failure(domainIssues(invalid));
+        const encoded = serializeRecord({ kind: 'resource', path: descriptorPath }, record); if (!encoded.ok) return encoded;
+        const mountSource = source.value.kind === 'mounted-file' && 'identity' in opened.value ?
+          { resource: source.value, sha256: opened.value.sha256, identity: String(opened.value.identity) } : undefined;
+        return this.#makePlan(scan, request.operationId, [{ path: request.path, bytes: request.bytes, ref: refOf(record) },
+          { path: descriptorPath, bytes: Uint8Array.from(encoded.bytes), ref: refOf(record) }], nextRecords, [resource],
+        sha256(jsonBytes({ action: 'derived-image', source: request.source, resource, outputHash: sha256(request.bytes) })), {
+          externalPaths: [request.path, descriptorPath], ...(mountSource ? { mountSource } : {}),
+          requiredCapabilities: source.value.kind === 'mounted-file' ? ['document.edit', 'project.read', 'mount.read'] : ['document.edit', 'project.read'] });
+      } catch (error) { return failure([this.#operationError('resource', error)]); }
     });
   }
   prepareResourceWrite(input: ResourceWriteRequest): Promise<StoreResult<PreparedWrite>> {

@@ -1,10 +1,14 @@
 import { defineConfig } from 'electron-vite';
 import react from '@vitejs/plugin-react';
+import { resolve } from 'node:path';
 
 export default defineConfig({
   main: {
     build: {
-      rollupOptions: { output: { format: 'cjs', entryFileNames: 'index.cjs' } }
+      rollupOptions: {
+        input: { index: resolve('src/main/index.ts'), 'image-worker': resolve('src/main/image-worker.ts') },
+        output: { format: 'cjs', entryFileNames: '[name].cjs' }
+      }
     }
   },
   preload: {

@@ -28,7 +28,7 @@ import { GRID_SIZE, MAX_ZOOM, MIN_ZOOM, fitContent, fromVisualViewport, gridOffs
 import { CONTENT_NODE_CATALOG, contentNodeDefinition, type ContentNodeKind } from '@a3/domain/content-nodes';
 import { conceptualNodeKind } from '@a3/domain/conceptual-diagrams';
 import type { ConceptualNodeKind, ConceptualRelationKind, Drawing, DrawingParameters, DrawingPoint, GroupMember } from '@a3/domain';
-import { adaptDiagramStyle, DIAGRAM_STYLE_EXTENSION, diagramStyleLayer, type DiagramStyleProfile } from '@a3/domain';
+import { adaptDiagramStyle, DIAGRAM_STYLE_EXTENSION, diagramStyleLayer, type DiagramStyleProfile } from '@a3/domain/diagram-style';
 import type { CSSProperties } from 'react';
 
 // Navigation reference only: no Entity, Placement, drawing or React Flow node is created.

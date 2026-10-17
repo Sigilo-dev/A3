@@ -3,6 +3,7 @@ export { decodeDocument, encodeDocument, serializeRecord, supportedVersion, sha2
 export { decodeCodeText, encodeCodeText, codeLineEnding } from './code-text.js';
 export type { CodeDocument, CodeOpenTarget, CodeEncoding, CodeLineEnding, DecodedCodeText } from './code-text.js';
 export type * from './service-types.js';
+export type { MediaConversionSource, MediaConversionPrepared } from './projects.js';
 export { openProjectService, type ProjectLease } from './service.js';
 export type { SnapshotReason, SnapshotSummary } from './snapshots.js';
 export { migrationChain, applyMigrationChain } from './migrations.js';

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { adaptDiagramStyle, defaultDiagramStyleProfile, serializeDiagramTheme, type DiagramEngine, type DiagramStyleProfile } from '@a3/domain';
+import { adaptDiagramStyle, defaultDiagramStyleProfile, serializeDiagramTheme, type DiagramEngine, type DiagramStyleProfile } from '@a3/domain/diagram-style';
 import type { DiagramStyleState, LocalProjectSession } from '../../shared/desktop-api';
 
 const engines: { id: DiagramEngine; label: string }[] = [

@@ -2,7 +2,8 @@ import { useEffect, useId, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { MERMAID_RENDERER_VERSION, MERMAID_SOURCE_LIMIT, MERMAID_SOURCE_TYPE, renderMermaidSource, supportsMermaidSourceRenderer, type MermaidEngine, type MermaidRenderResult } from '@a3/domain/mermaid-source';
 import type { CanvasEntitySummary, CanvasMermaidImportPreview, LocalCanvasWorkspace } from '../../shared/desktop-api';
-import { adaptDiagramStyle, DIAGRAM_STYLE_EXTENSION, diagramStyleLayer, type DiagramStyleProfile, type ExtensionMap } from '@a3/domain';
+import { adaptDiagramStyle, DIAGRAM_STYLE_EXTENSION, diagramStyleLayer, type DiagramStyleProfile } from '@a3/domain/diagram-style';
+import type { ExtensionMap } from '@a3/domain';
 
 let engineInitialized = false;
 async function loadMermaidEngine(): Promise<MermaidEngine> {

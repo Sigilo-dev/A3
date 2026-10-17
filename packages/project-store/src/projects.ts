@@ -31,7 +31,7 @@ import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
 import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
 import { buildMediaGalleryCatalog, mediaGalleryKind, type MediaGalleryAvailability, type MediaGalleryCatalog } from './media-gallery.js';
-import type { ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
+import type { DerivedResourceSource, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerMountEntry, ExplorerOpenResult, IntentEntry, PreparedWrite, ServiceOptions, StoreHost, WriteIntent } from './service-types.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function detectedMediaType(resource: Extract<DomainRecord, { kind: 'resource' }>['value']): string | undefined {
@@ -104,6 +104,8 @@ export interface CanvasSelectionRef { id: string; expectedRevision: number; }
 export interface CanvasSelection { placements: CanvasSelectionRef[]; drawings: CanvasSelectionRef[]; groups: CanvasSelectionRef[]; }
 export interface CanvasResourcePreview { entityId: string; resourceId: string; text: string | null; state: 'ready' | 'too-large' | 'unavailable' | 'binary'; mediaType?: string; bytes?: Uint8Array; }
 export interface MediaGalleryPreview { resourceId: string; mediaType?: string; state: 'binary' | 'remote' | 'too-large' | 'unavailable'; bytes?: Uint8Array; url?: string; }
+export interface MediaConversionSource extends DerivedResourceSource { bytes: Uint8Array; name: string; }
+export interface MediaConversionPrepared { token: string; resourceId: string; path: string; bytes: number; }
 /** Main-process-only read context for the pinned renderer; never expose its absolute paths to the renderer. */
 export interface PlantUmlRenderInput { source: string; sourceHash: string; workingDirectory: string; includeRoots: readonly string[]; styleDirectives?: string; }
 export interface CanvasMermaidImportItem { key: string; kind: string; title: string; action: 'create' | 'update' | 'unchanged' | 'conflict'; }
@@ -330,6 +332,7 @@ export class LocalProjectManager {
   #catalog: Catalog = { version: 1, recents: [], pending: [] };
   #loaded = false;
   #active: ActiveProjectBinding | undefined;
+  #mediaPlans = new Map<string, { sessionId: string; plan: PreparedWrite; preview: MediaConversionPrepared }>();
   #preview: PreviewData | undefined;
   #disposed = false;
   #nameDraft: string | undefined;
@@ -460,6 +463,7 @@ export class LocalProjectManager {
       await this.#persist();
       await previous?.lease.close();
       this.#active = { lease: candidate.value, sessionId: randomUUID(), projectId, name, rootIdentity: await projectIdentity(root) };
+      this.#mediaPlans.clear();
       this.#focusSession = undefined; this.#restoreNotice = undefined;
       this.#viewportDrafts.clear();
       this.#nameDraft = undefined;
@@ -571,7 +575,7 @@ export class LocalProjectManager {
     const resumeId = this.#catalog.resumeId; delete this.#catalog.resumeId;
     try { await this.#persist(); } catch (error) { if (resumeId) this.#catalog.resumeId = resumeId; throw error; }
     this.#focusSession = undefined;
-    await this.#active.lease.close(); this.#active = undefined; this.#preview = undefined; this.#nameDraft = undefined; this.#resetExplorerBindings(); return this.#state();
+    await this.#active.lease.close(); this.#active = undefined; this.#mediaPlans.clear(); this.#preview = undefined; this.#nameDraft = undefined; this.#resetExplorerBindings(); return this.#state();
   }); }
   async #loadFocusSession(active: ActiveProjectBinding): Promise<WorkspaceSession> {
     if (this.#focusSession) return this.#focusSession;
@@ -908,6 +912,42 @@ export class LocalProjectManager {
   }
   loadCanvasWorkspace(sessionId: string, workspaceId: string): Promise<LocalCanvasWorkspace> {
     return this.#queue(async () => { const { active } = this.#canvasContext(sessionId, workspaceId); await this.#canvasHistory(active, workspaceId); return this.#canvasWorkspace(sessionId, workspaceId); });
+  }
+  loadMediaConversionSource(sessionId: string, resourceId: string): Promise<MediaConversionSource> {
+    return this.#queue(async () => {
+      const active = this.#active;
+      demand(active?.sessionId === sessionId, 'STALE_SESSION', 'La conversión pertenece a otra sesión de proyecto.');
+      const source = await active.lease.service.openResource(resourceId, 32 * 1024 * 1024);
+      demand(source.ok, source.diagnostics[0]?.code ?? 'RESOURCE_MISSING', source.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+      return { resourceId: source.value.resourceId, revision: source.value.revision, sha256: source.value.sha256,
+        descriptorHash: source.value.descriptorHash, bytes: source.value.bytes, name: source.value.path.split('/').at(-1) ?? 'imagen' };
+    });
+  }
+  prepareMediaConversionOutput(sessionId: string, source: DerivedResourceSource, bytes: Uint8Array, path: string,
+    mediaType: 'image/png' | 'image/jpeg' | 'image/avif' | 'application/pdf', provenance: JsonValue): Promise<MediaConversionPrepared> {
+    const captured = Uint8Array.from(bytes);
+    return this.#queue(async () => {
+      const active = this.#active;
+      demand(active?.sessionId === sessionId, 'STALE_SESSION', 'El proyecto cambió durante la conversión.');
+      demand(this.#mediaPlans.size < 16, 'MEDIA_QUEUE_FULL', 'Confirma o cancela una conversión preparada antes de crear otra.');
+      const token = randomUUID(), resourceId = randomUUID();
+      const prepared = await active.lease.service.prepareDerivedResource({ operationId: token, source, resourceId, path, bytes: captured, mediaType, provenance });
+      demand(prepared.ok, prepared.diagnostics[0]?.code ?? 'CONVERSION_OUTPUT_REJECTED', prepared.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+      const preview = { token, resourceId, path, bytes: captured.length };
+      this.#mediaPlans.set(token, { sessionId, plan: prepared.value, preview }); return preview;
+    });
+  }
+  commitMediaConversionOutput(sessionId: string, token: string): Promise<MediaConversionPrepared> {
+    return this.#queue(async () => {
+      const active = this.#active, pending = this.#mediaPlans.get(token);
+      demand(active?.sessionId === sessionId && pending?.sessionId === sessionId, 'STALE_SESSION', 'La salida preparada ya no pertenece al proyecto abierto.');
+      const result = await active.lease.service.commit(pending.plan);
+      demand(result.ok, result.diagnostics[0]?.code ?? 'CONVERSION_SAVE_FAILED', result.diagnostics.map((diagnostic) => diagnostic.message).join('\n'));
+      this.#mediaPlans.delete(token); return pending.preview;
+    });
+  }
+  discardMediaConversionOutput(sessionId: string, token: string): Promise<void> {
+    return this.#queue(async () => { if (this.#mediaPlans.get(token)?.sessionId === sessionId) this.#mediaPlans.delete(token); });
   }
   loadMediaGallery(sessionId: string): Promise<MediaGalleryCatalog> {
     return this.#queue(async () => {

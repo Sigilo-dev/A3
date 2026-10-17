@@ -14,7 +14,12 @@ extraFiles:
     to: licenses/react-dom.txt
   - from: ../../node_modules/scheduler/LICENSE
     to: licenses/scheduler.txt
+  - from: resources/image
+    to: licenses/image-conversion
 asar: true
+asarUnpack:
+  - node_modules/sharp/**/*
+  - node_modules/@img/sharp-win32-x64/**/*
 npmRebuild: false
 win:
   target: dir

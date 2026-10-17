@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { IMAGE_CONVERSION_CHANNEL, type ImageConversionRequest } from '../shared/desktop-api';
 import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL, type NavigationRequest, type WorkspaceSessionRequest } from '../shared/desktop-api';
 import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, GALLERY_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type DesktopAPI, type CanvasContentRequest, type CanvasRequest, type CodeRequest, type FileDropNotice, type FileDropStageResult, type FilesRequest, type GalleryRequest, type MarkdownRequest, type ProjectsRequest } from '../shared/desktop-api';
 
@@ -29,6 +30,7 @@ const api: DesktopAPI = Object.freeze({
   navigation: (request: NavigationRequest) => ipcRenderer.invoke(NAVIGATION_CHANNEL, request),
   files: (request: FilesRequest) => ipcRenderer.invoke(FILES_CHANNEL, request),
   gallery: (request: GalleryRequest) => ipcRenderer.invoke(GALLERY_CHANNEL, request),
+  imageConversion: (request: ImageConversionRequest) => ipcRenderer.invoke(IMAGE_CONVERSION_CHANNEL, request),
   canvas: ((request: CanvasRequest | CanvasContentRequest) => ipcRenderer.invoke(CANVAS_CHANNEL, request)) as DesktopAPI['canvas'],
   markdown: (request: MarkdownRequest) => ipcRenderer.invoke(MARKDOWN_CHANNEL, request),
   code: (request: CodeRequest) => ipcRenderer.invoke(CODE_CHANNEL, request),

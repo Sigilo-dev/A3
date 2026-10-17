@@ -4,6 +4,7 @@ import type { CodeEditorTarget } from './CodeEditor';
 import { ContextMenu, menuAt, useMenuPermissions, type MenuState, type ContextAction } from './ContextMenu';
 import { useTextPrompt } from './TextInputDialog';
 import { matchesShortcut, useShortcuts } from './shortcuts';
+import { ImageConversionDialog } from './ImageConversionDialog';
 
 type Crumb = { id: string; name: string };
 export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChanged }: { active: LocalProjectSession | null | undefined; onOpenCode: (target: CodeEditorTarget) => void; contentVersion: number; onChanged?: () => void }): React.JSX.Element {
@@ -17,6 +18,7 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChange
   const [error, setError] = useState<string | null>(null);
   const [opened, setOpened] = useState<LocalExplorerOpen | null>(null);
   const [deleting, setDeleting] = useState<LocalExplorerDeletePreview | null>(null);
+  const [conversionId, setConversionId] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const current = stack.at(-1)!;
   const writable = active?.mode === 'writer';
@@ -76,6 +78,8 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChange
     if (!entry || entry.kind === 'directory') for (const kind of ['file', 'folder'] as const) actions.push({ id: `create-${kind}`, label: kind === 'file' ? 'Crear archivo' : 'Crear carpeta', capability: 'document', reason: unavailable, run: () => {
       void ask(kind === 'file' ? 'Nombre del archivo' : 'Nombre de la carpeta').then((text) => { if (text) void mutate({ action: kind === 'file' ? 'create-file' : 'create-folder', sessionId: active.sessionId, parentId: entry?.id ?? current.id, name: text }); });
     } });
+    if (entry?.kind === 'file' && entry.resourceId) actions.push({ id: 'convert-image', label: 'Convertir imagen… · inspeccionar archivo', capability: 'document', reason: unavailable,
+      run: () => setConversionId(entry.resourceId!) });
     setMenu(menuAt(event, entry?.kind === 'directory' ? 'folder' : entry ? 'file' : 'files', actions));
   }
   async function openEntry(entry: LocalExplorerEntry): Promise<void> {
@@ -138,6 +142,7 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChange
         {selectedEntry && <div className="file-actions" aria-label={`Acciones para ${selectedEntry.name}`}>
           <button className="secondary" data-file-open onClick={() => void openEntry(selectedEntry)} disabled={busy || selectedEntry.kind === 'blocked-link'}>Abrir</button>
           {selectedEntry.kind === 'file' && <button className="secondary" data-file-edit onClick={() => onOpenCode({ sessionId: active.sessionId, title: selectedEntry.name, target: { itemId: selectedEntry.id } })} disabled={busy}>Abrir editor de código</button>}
+          {selectedEntry.kind === 'file' && selectedEntry.resourceId && <button className="secondary" disabled={busy} onClick={() => setConversionId(selectedEntry.resourceId!)}>Convertir imagen…</button>}
           <button className="secondary" data-file-rename disabled={!writable || busy || selectedEntry.kind === 'blocked-link'} onClick={() => {
             void rename(selectedEntry);
           }}>Renombrar</button>
@@ -177,5 +182,7 @@ export function FileExplorerPanel({ active, onOpenCode, contentVersion, onChange
         <button className="secondary" data-cancel-file-delete disabled={busy} onClick={() => active && void mutate({ action: 'cancel-delete', sessionId: active.sessionId, token: deleting.token })}>Cancelar</button></div>
     </section></div>}
     {menu && <ContextMenu menu={menu} permissions={permissions} onClose={() => setMenu(null)} />}{promptDialog}
+    {conversionId && <ImageConversionDialog sessionId={active.sessionId} resourceIds={[conversionId]} onClose={() => setConversionId(null)}
+      onSaved={() => { void load(current.id); onChanged?.(); }} />}
   </section>;
 }

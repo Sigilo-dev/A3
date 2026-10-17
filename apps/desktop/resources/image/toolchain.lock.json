@@ -1,0 +1,26 @@
+{
+  "verifiedAt": "2026-10-16",
+  "platform": "win32-x64",
+  "sharp": {
+    "version": "0.35.5",
+    "vips": "8.18.7",
+    "license": "Apache-2.0",
+    "integrity": "sha512-Ywn4OnzGukp7CDMrp08RQ50YKmuwG47brZgIVPTvBaaAfQlRlygrRqSrxdCiL9M+LlzLBiJ68IR1QqvzHyjC7g=="
+  },
+  "native": {
+    "package": "@img/sharp-win32-x64",
+    "version": "0.35.5",
+    "license": "Apache-2.0 AND LGPL-3.0-or-later",
+    "integrity": "sha512-x76eH0vEiHlcMQu8Y8IenntaACtddpT6W0wmXtWrnKcnKI7ME5DdgqhAD6SEWOEl1v2zDvkZDhFA9KnURwpfqg==",
+    "files": {
+      "libvips-42.dll": "06dab07cc386748513337a31672b1d5269fbc770a14ff403080575665bf0813f",
+      "libvips-cpp-8.18.7.dll": "25001dbd05305a0a29119ab49933622c70b4a20ea12ef1d5d20ca40181db53bf",
+      "sharp-win32-x64-0.35.5.node": "971048779f9c8598df14641dfc03c625885c93f473a788e65ca2deb50d0b083e"
+    }
+  },
+  "pdfLib": {
+    "version": "1.17.1",
+    "license": "MIT",
+    "integrity": "sha512-V/mpyJAoTsN4cnP31vc0wfNA1+p20evqqnap0KLoRUN0Yk/p3wN52DOEsL4oBFcLdb76hlpKPtzJIgo67j/XLw=="
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "synthetic": true,
+  "engine": {
+    "aom": "3.15.1",
+    "archive": "3.8.9",
+    "cairo": "1.18.6",
+    "cgif": "0.5.4",
+    "exif": "0.6.26",
+    "expat": "2.8.5",
+    "ffi": "3.8.0",
+    "fontconfig": "2.18.3",
+    "freetype": "2.14.3",
+    "fribidi": "1.0.17",
+    "glib": "2.90.0",
+    "harfbuzz": "14.5.0",
+    "heif": "1.23.5",
+    "highway": "1.4.0",
+    "imagequant": "2.4.1",
+    "lcms": "2.19.1",
+    "mozjpeg": "0826579",
+    "pango": "1.58.2",
+    "pixman": "0.46.4",
+    "png": "1.6.58",
+    "proxy-libintl": "0.5",
+    "rsvg": "2.63.2",
+    "tiff": "4.7.2",
+    "uhdr": "2.0.2",
+    "vips": "8.18.7",
+    "webp": "1.6.0",
+    "xml2": "2.15.4",
+    "zlib-ng": "2.3.3",
+    "sharp": "0.35.5"
+  },
+  "fixtures": {
+    "alpha.png": {
+      "sha256": "fe708ea66d03852c9e9b5c2a3dd36d7502d40b03c6b1a5e22a6186bb3a53c1b5",
+      "bytes": 2336
+    },
+    "oriented.jpeg": {
+      "sha256": "431d3edb23e8e6234b8a5ee7824784150c34c9a53ae374a13bf838925d365f13",
+      "bytes": 1431
+    },
+    "alpha.avif": {
+      "sha256": "3d574ebac8197a20011e082fd53c7a509e2bcba45835ab3cfb606a33735151e8",
+      "bytes": 944
+    },
+    "animated.gif": {
+      "sha256": "9994903a1b9e01bb3fcfbdcb4e0915a840af82ab5a147f2180e0f60d092ee4d4",
+      "bytes": 3015
+    },
+    "invalid.bin": {
+      "sha256": "7cdc1f0ef096091aca0d4c427c860352ba97ee64c687547956af33533afced3d",
+      "bytes": 28
+    }
+  }
+}

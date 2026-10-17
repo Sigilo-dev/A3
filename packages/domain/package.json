@@ -7,6 +7,7 @@
   "type": "module",
   "files": ["dist"],
   "exports": {
+    "./diagram-style": { "types": "./dist/src/diagram-style.d.ts", "import": "./dist/src/diagram-style.js" },
     "./uml": { "types": "./dist/src/uml.d.ts", "import": "./dist/src/uml.js" },
     "./er": { "types": "./dist/src/er.d.ts", "import": "./dist/src/er.js" },
     "./c4": { "types": "./dist/src/c4.d.ts", "import": "./dist/src/c4.js" },

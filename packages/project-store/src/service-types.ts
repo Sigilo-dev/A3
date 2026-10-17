@@ -86,6 +86,13 @@ export interface ResourceWriteRequest {
   expectedHash: string;
   bytes: Uint8Array;
 }
+/** Host-owned output from a fixed local converter, never accepted as arbitrary renderer bytes. */
+export interface DerivedResourceSource { resourceId: string; revision: number; sha256: string; descriptorHash: string; }
+export interface DerivedResourceRequest {
+  operationId: string; source: DerivedResourceSource; resourceId: string; path: string;
+  mediaType: 'image/png' | 'image/jpeg' | 'image/avif' | 'application/pdf'; bytes: Uint8Array;
+  provenance: import('@a3/domain').JsonValue;
+}
 export interface MountActionRequest {
   action: 'copy' | 'move' | 'reference';
   operationId: string;

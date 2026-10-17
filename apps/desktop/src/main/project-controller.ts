@@ -7,6 +7,7 @@ import { basename, dirname, join, parse, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { CONTENT_NODE_CATALOG, CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_RELATION_KINDS, IOT_CATALOG, resolveSmartPastePayload } from '@a3/domain';
 import { validIotCircuitOperation } from '@a3/domain/iot-circuit';
+import { ImageConversionJobs, runImageWorker } from './image-conversion';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validViewport } from '../shared/world-viewport';
@@ -333,6 +334,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
     confirmClose: (project) => confirm('Cerrar con cambios externos o recuperación pendiente',
       `${project.name}\n${project.root}\nLos archivos y copias de recuperación se conservarán. La sesión del proyecto se cerrará antes de abrir otra.`) });
   const plantumlRenderer = new PlantUmlRenderer({ artifactPath: plantumlArtifactPath, installDirectory: join(stateDirectory, 'diagram-engines', 'plantuml') });
+  const imageConversions = new ImageConversionJobs(manager, join(stateDirectory, 'image-conversion-staging'), runImageWorker(join(__dirname, 'image-worker.cjs')));
   const dropDrafts = new Map<string, StagedDrop>();
   const exportJobs = new Map<string, { sessionId: string; cancel: () => void }>();
   const cancelledExport = (): CanvasExportResult => ({ ok: true, value: { cancelled: true } });
@@ -551,6 +553,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
   };
   return {
     manager,
+    imageConversions,
     async handleCanvas(value: unknown): Promise<CanvasResult | CanvasContentResult | CanvasExportResult | CanvasMermaidImportResult | CanvasPlantUmlImportResult | CanvasPlantUmlResult | CanvasStyleResult | CanvasStructurizrImportResult> {
       if (!validCanvasRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud de lienzo inválida.', recovery: 'Reabre el workspace.' } };
       try {
