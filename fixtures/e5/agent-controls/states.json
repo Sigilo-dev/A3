@@ -1,0 +1,24 @@
+{
+  "limitExhausted": {
+    "providerConnection": "connected",
+    "turnStatus": null,
+    "turnControlsAvailable": false,
+    "diagnostic": "USAGE_LIMIT_EXHAUSTED",
+    "expectedError": "Se agotó el límite reportado por el proveedor. No se adivina cuándo se restablece y no se cambia a facturación de API."
+  },
+  "modelInaccessible": {
+    "providerConnection": "connected",
+    "turnStatus": null,
+    "turnControlsAvailable": false,
+    "diagnostic": "PROVIDER_ACCESS_DENIED",
+    "expectedModelNotice": "El modelo/ruta no fue aceptado por el proveedor; no se muestra como disponible."
+  },
+  "connectionLost": {
+    "providerConnection": "lost",
+    "turnStatus": "running",
+    "turnControlsAvailable": false,
+    "diagnostic": "STREAM_DISCONNECTED",
+    "expectedStreaming": "Flujo perdido · resultado incierto",
+    "expectedError": "Se perdió el flujo del proveedor. El estado del turno puede ser incierto; conserva el resultado local y reconecta antes de continuar."
+  }
+}

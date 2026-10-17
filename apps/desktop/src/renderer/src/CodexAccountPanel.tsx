@@ -25,7 +25,7 @@ const messages: Record<string, string> = {
   PROVIDER_RATE_LIMITED: 'OpenAI rechazó la consulta por un límite temporal. Se conservaron las credenciales.',
   PROVIDER_TEMPORARILY_UNAVAILABLE: 'OpenAI no está disponible temporalmente. Se conservaron las credenciales; inténtalo más tarde.',
   PROVIDER_PERMISSION_REJECTED: 'OpenAI rechazó el contexto de autorización. Revisa la cuenta y los permisos concedidos.',
-  PROVIDER_ACCESS_DENIED: 'OpenAI rechazó el acceso o la ruta para esta consulta. No se cambió el método de pago.',
+  PROVIDER_ACCESS_DENIED: 'OpenAI rechazó el acceso al modelo o la ruta para esta consulta. No se cambió el método de pago ni se ofreció un modelo alternativo.',
   AUTH_REFRESHED_RETRY_REQUEST: 'El token fue renovado por el flujo oficial. Reintenta la consulta original una vez.',
   TOKEN_EXPIRED: 'El token venció. Renueva la sesión OAuth antes de volver a consultar.',
   BROWSER_UNAVAILABLE: 'No se pudo abrir el navegador del sistema.',
@@ -34,14 +34,14 @@ const messages: Record<string, string> = {
   REMOTE_REVOCATION_UNCONFIRMED: 'Credenciales locales eliminadas. No se confirmó la revocación remota; desconecta A3 también en Ajustes de ChatGPT.',
   ACCOUNT_SELECTED: 'Cuenta seleccionada. Sus permisos de proyecto siguen siendo independientes.'
 };
-export function CodexAccountPanel({ onManual }: { onManual(): void }): React.JSX.Element {
+export function CodexAccountPanel({ onManual, onStateChange }: { onManual(): void; onStateChange?: (state: CodexAuthState) => void }): React.JSX.Element {
   const [state, setState] = useState<CodexAuthState | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   async function act(request: CodexAuthRequest): Promise<void> {
     setBusy(true); setError('');
     try {
       const result = await window.a3?.codexAuthorization(request);
       if (!result) throw new Error('Puente no disponible.');
-      if (result.ok) setState(result.value); else setError(result.error.message);
+      if (result.ok) { setState(result.value); onStateChange?.(result.value); } else setError(result.error.message);
     } catch { setError('No se pudo consultar la autorización. Puedes continuar manualmente.'); }
     finally { setBusy(false); }
   }
@@ -49,7 +49,7 @@ export function CodexAccountPanel({ onManual }: { onManual(): void }): React.JSX
     let live = true, polling = false;
     const poll = async (): Promise<void> => {
       if (polling) return; polling = true;
-      try { const result = await window.a3?.codexAuthorization({ action: 'state' }); if (live && result?.ok) setState(result.value); }
+      try { const result = await window.a3?.codexAuthorization({ action: 'state' }); if (live && result?.ok) { setState(result.value); onStateChange?.(result.value); } }
       catch { if (live) setError('No se pudo consultar la conexión.'); } finally { polling = false; }
     };
     void poll(); const timer = setInterval(() => void poll(), 750);
