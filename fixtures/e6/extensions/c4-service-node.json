@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "1.0.0",
+  "manifest": {
+    "schemaVersion": "1.0.0",
+    "id": "community.a3-samples-c4",
+    "name": "A3 sample C4 service type",
+    "version": "1.0.0",
+    "license": "MIT",
+    "a3ApiVersion": "1.0.0",
+    "contributes": { "a3.node-types": { "types": ["community.a3-samples-c4.service@1.0.0"], "collections": ["community.a3-samples-c4.c4-examples"] } },
+    "permissions": [],
+    "extensions": { "community.a3-samples.source": "A3 E6-F2 sample; data only." }
+  },
+  "nodeTypes": [
+    {
+      "name": "community.a3-samples-c4.service",
+      "version": "1.0.0",
+      "packageId": "community.a3-samples-c4",
+      "description": "Example custom service represented as a C4 component category.",
+      "fields": [
+        { "name": "community.a3-samples-c4.service.technology", "valueType": "string", "required": false, "defaultValue": "" },
+        { "name": "community.a3-samples-c4.service.description", "valueType": "string", "required": false, "defaultValue": "" }
+      ],
+      "ports": [ { "id": "community.a3-samples-c4.service.uses", "label": "Uses", "direction": "output", "dataType": "a3.data.reference", "multiplicity": { "min": 0, "max": null } } ],
+      "bindingFields": [],
+      "style": { "icon": "component", "background": "#e8f0f6", "foreground": "#20242b", "borderColor": "#456b8a", "borderStyle": "solid", "width": 280 },
+      "importMappings": [],
+      "exportMappings": [],
+      "extensions": { "a3.c4.category": "component" }
+    }
+  ],
+  "collections": [ { "id": "community.a3-samples-c4.c4-examples", "name": "C4 examples", "typeRefs": [ { "name": "community.a3-samples-c4.service", "version": "1.0.0" } ] } ],
+  "extensions": {}
+}

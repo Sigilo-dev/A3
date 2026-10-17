@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "1.0.0",
+  "manifest": {
+    "id": "community.a3-samples",
+    "name": "A3 declarative extension samples",
+    "author": "A3 project fixtures",
+    "version": "1.0.0",
+    "license": "MIT",
+    "a3ApiVersion": "1.0.0",
+    "origin": { "kind": "local-file", "label": "community-samples.json" },
+    "dependencies": [],
+    "permissions": ["web.manual-navigation"],
+    "obsidianCompatibility": "not-asserted",
+    "extensions": { "community.a3-samples.note": "Declarative fixtures for A3 API 1.0.0; no executable code." }
+  },
+  "contributions": [
+    {
+      "id": "community.a3-samples.paper-theme",
+      "extensionPoint": "a3.theme",
+      "apiVersion": "1.0.0",
+      "payload": { "tokens": { "color.background": "#f7f4ed", "color.foreground": "#20242b", "color.accent": "#456b8a", "color.border": "#c7c1b5", "font.family": "Segoe UI, sans-serif", "font.size": "14px", "radius": "6px", "spacing": "8px" } }
+    },
+    {
+      "id": "community.a3-samples.markdown-callout",
+      "extensionPoint": "a3.markdown",
+      "apiVersion": "1.0.0",
+      "payload": { "syntaxId": "community.a3-samples.callout", "label": "A3 note callout", "open": ":::note", "close": ":::end", "unknownSource": "preserve" }
+    },
+    {
+      "id": "community.a3-samples.language",
+      "extensionPoint": "a3.language",
+      "apiVersion": "1.0.0",
+      "payload": { "languageId": "community.a3-samples.flow", "aliases": ["a3flow"], "rules": [ { "id": "community.a3-samples.flow.keyword", "kind": "keyword", "literals": ["node", "connect", "note"] }, { "id": "community.a3-samples.flow.comment", "kind": "line-comment", "open": "#" } ] }
+    },
+    {
+      "id": "community.a3-samples.gemini-manual",
+      "extensionPoint": "a3.provider",
+      "apiVersion": "1.0.0",
+      "payload": { "kind": "manual-web", "mode": "manual", "origin": "https://gemini.google.com", "authentication": "user-session", "cost": "unspecified", "permissions": ["web.manual-navigation"], "terms": "Manual navigation only. The user signs in and copies prompts and results; plan, region, and service terms determine availability and cost." }
+    },
+    {
+      "id": "community.a3-samples.claude-manual",
+      "extensionPoint": "a3.provider",
+      "apiVersion": "1.0.0",
+      "payload": { "kind": "manual-web", "mode": "manual", "origin": "https://claude.ai", "authentication": "user-session", "cost": "unspecified", "permissions": ["web.manual-navigation"], "terms": "Manual navigation only. The user signs in and copies prompts and results; plan, region, and service terms determine availability and cost." }
+    },
+    {
+      "id": "community.a3-samples.manual-prompt-preview",
+      "extensionPoint": "a3.automation",
+      "apiVersion": "1.0.0",
+      "payload": { "trigger": "manual", "steps": ["prompt.compile"], "permissions": [] }
+    }
+  ],
+  "extensions": {}
+}

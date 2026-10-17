@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "1.0.0",
+  "manifest": {
+    "schemaVersion": "1.0.0",
+    "id": "community.a3-samples-iot",
+    "name": "A3 sample IoT reference card",
+    "version": "1.0.0",
+    "license": "MIT",
+    "a3ApiVersion": "1.0.0",
+    "contributes": { "a3.node-types": { "types": ["community.a3-samples-iot.bme280-reference@1.0.0"], "collections": ["community.a3-samples-iot.reference-components"] } },
+    "permissions": [],
+    "extensions": { "community.a3-samples.source": "A3 E6-F2 sample; reference card only, no electrical model." }
+  },
+  "nodeTypes": [
+    {
+      "name": "community.a3-samples-iot.bme280-reference",
+      "version": "1.0.0",
+      "packageId": "community.a3-samples-iot",
+      "description": "Catalog/reference card for the Bosch Sensortec BME280 IC. Not a breakout module or electrical simulation model.",
+      "fields": [
+        { "name": "community.a3-samples-iot.bme280.manufacturer", "valueType": "string", "required": true, "defaultValue": "Bosch Sensortec" },
+        { "name": "community.a3-samples-iot.bme280.model", "valueType": "string", "required": true, "defaultValue": "BME280 · 8-pin LGA" },
+        { "name": "community.a3-samples-iot.bme280.component-revision", "valueType": "string", "required": true, "defaultValue": "unknown; source identifies document revision, not silicon revision" },
+        { "name": "community.a3-samples-iot.bme280.source", "valueType": "string", "required": true, "defaultValue": "https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bme280-ds002.pdf" },
+        { "name": "community.a3-samples-iot.bme280.known-electrical-limits", "valueType": "string", "required": true, "defaultValue": "not modeled by this reference card; consult the cited datasheet" }
+      ],
+      "ports": [ { "id": "community.a3-samples-iot.bme280.catalog-reference", "label": "Catalog reference (logical; not a pin)", "direction": "output", "dataType": "a3.data.reference", "multiplicity": { "min": 0, "max": null } } ],
+      "bindingFields": [],
+      "style": { "icon": "sensor", "background": "#edf4ec", "foreground": "#20242b", "borderColor": "#69866b", "borderStyle": "dashed", "width": 300 },
+      "importMappings": [],
+      "exportMappings": [],
+      "extensions": { "community.a3-samples-iot.component-kind": "reference-card", "community.a3-samples-iot.canonical-iot-semantics": false }
+    }
+  ],
+  "collections": [ { "id": "community.a3-samples-iot.reference-components", "name": "IoT reference components", "typeRefs": [ { "name": "community.a3-samples-iot.bme280-reference", "version": "1.0.0" } ] } ],
+  "extensions": {}
+}

@@ -2,6 +2,8 @@
 
 Base: A3 §§12.1, 19.1, 24.1 y 24.5; criterios A3-009, A3-026–027 y A3-041–043. El contrato interoperable está en [`versioned-extension-bundle.schema.json`](../../schemas/e6/versioned-extension-bundle.schema.json); la validación semántica pura está en `@a3/domain/extension-points`.
 
+Los ejemplos probados para el siguiente bloque y su matriz de compatibilidad se documentan en [E6-F2 — paquetes de muestra](extension-samples.md).
+
 ## Contrato de API 1.0.0
 
 Cada contribución declara un ID namespaced, un punto A3, una versión SemVer exacta y un payload JSON. El bundle declara identidad/versión/licencia/autor/origen, dependencias fijadas, permisos solicitados y compatibilidad A3. La compatibilidad con Obsidian queda expresamente `not-asserted`; importar Markdown nunca instala código de plugins Obsidian. `a3ApiVersion` y cada API de punto solo aceptan `1.0.0` para activación; un número futuro se conserva como dato, se informa como incompatible y usa fallback. No se adivina compatibilidad por rango.
