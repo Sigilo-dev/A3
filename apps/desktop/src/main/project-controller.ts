@@ -1,5 +1,5 @@
 import { BrowserWindow, clipboard, dialog, type BrowserWindow as BrowserWindowType } from 'electron';
-import { validC4Operation, validUmlOperation, validateDiagramStyleProfile } from '@a3/domain';
+import { validC4Operation, validUmlOperation, validateDeclarativeNodePackage, validateDiagramStyleProfile } from '@a3/domain';
 import { validErOperation } from '@a3/domain/er';
 import { lstat, realpath, readdir, mkdtemp, writeFile, rename, rm, link, unlink, open } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -18,7 +18,7 @@ import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError }
 import { GitProjectController } from './git-controller';
 import { ProjectHistoryController } from './history-controller';
 import { GithubProjectController } from './github-controller';
-import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
+import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, NodePackagesRequest, NodePackagesResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validAgentProfilesRequest, type AgentProfilesResult } from '../shared/agent-profiles';
 import { validViewport } from '../shared/world-viewport';
 import { validCanvasView, validPageView } from '@a3/project-store';
@@ -52,6 +52,16 @@ function validGalleryRequest(value: unknown): value is GalleryRequest {
   return input.action === 'preview' && Object.keys(input).every((key) => ['action', 'sessionId', 'resourceId', 'purpose'].includes(key)) &&
     (Object.keys(input).length === 3 || Object.keys(input).length === 4) && uuid(input.resourceId) &&
     (input.purpose === undefined || input.purpose === 'preview' || input.purpose === 'playback');
+}
+
+function validNodePackagesRequest(value: unknown): value is NodePackagesRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>, uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (typeof input.sessionId !== 'string' || !uuid.test(input.sessionId)) return false;
+  if (input.action === 'load') return Object.keys(input).length === 2 && Object.keys(input).every((key) => ['action', 'sessionId'].includes(key));
+  if (input.action !== 'save' || Object.keys(input).length !== 3 || Object.keys(input).some((key) => !['action', 'sessionId', 'package'].includes(key))) return false;
+  try { return Buffer.byteLength(JSON.stringify(input.package), 'utf8') <= 4 * 1024 * 1024 && validateDeclarativeNodePackage(input.package).length === 0; }
+  catch { return false; }
 }
 
 function validSessionRequest(value: unknown): value is WorkspaceSessionRequest {
@@ -942,6 +952,15 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       } catch (error) {
         const code = error instanceof LocalProjectError ? error.code : error && typeof error === 'object' && 'code' in error ? String(error.code) : 'IO_FAILED';
         return { ok: false, error: { code, message: error instanceof Error ? error.message : 'No se pudo cargar la galería.', recovery: 'Los recursos originales no se modificaron. Revisa los permisos o vuelve a cargar el proyecto.' } };
+      }
+    },
+    async handleNodePackages(value: unknown): Promise<NodePackagesResult> {
+      if (!validNodePackagesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'El manifiesto o la petición del paquete no cumplen el esquema declarativo A3.', recovery: 'Corrige los IDs, campos, puertos, mappings o la versión antes de guardarlo. Los paquetes de nodos no admiten código ejecutable.' } };
+      try {
+        return { ok: true, value: value.action === 'load' ? await manager.loadNodePackages(value.sessionId) : await manager.saveNodePackage(value.sessionId, value.package) };
+      } catch (error) {
+        const code = error instanceof LocalProjectError ? error.code : error && typeof error === 'object' && 'code' in error ? String(error.code) : 'NODE_PACKAGE_FAILED';
+        return { ok: false, error: { code, message: error instanceof Error ? error.message : 'No se pudo cargar el catálogo de nodos.', recovery: 'Revisa permisos, versión y diagnóstico del paquete. A3 conserva los archivos anteriores.' } };
       }
     }
   };

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigilo-dev.github.io/A3/schemas/e1/node-mappings.schema.json",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "format": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace" },
+      "targetType": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace" },
+      "fields": { "type": "object", "propertyNames": { "minLength": 1 }, "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 256 } },
+      "ports": { "type": "object", "propertyNames": { "minLength": 1 }, "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 256 } }
+    },
+    "required": ["format"],
+    "additionalProperties": true
+  }
+}

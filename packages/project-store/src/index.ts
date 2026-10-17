@@ -6,6 +6,8 @@ export { decodeDocument, encodeDocument, serializeRecord, supportedVersion, sha2
 export { decodeCodeText, encodeCodeText, codeLineEnding } from './code-text.js';
 export type { CodeDocument, CodeOpenTarget, CodeEncoding, CodeLineEnding, DecodedCodeText } from './code-text.js';
 export type * from './service-types.js';
+export { readDeclarativeNodePackages, nodePackagePath } from './node-packages.js';
+export type { DeclarativeNodePackageCatalog } from './node-packages.js';
 export { A3_TOOL_SCHEMAS, ProjectAgentTools, bindProjectAgentTools, describeA3Tools } from './agent-tools.js';
 export type { A3ToolCall, A3ToolErrorCode, A3ToolName, A3ToolResult, A3ToolScope, A3ToolSelection, ProjectAgentToolOptions } from './agent-tools.js';
 export type { ProjectVariablesState, SetProjectVariables, VariablesQuery } from './variables.js';
@@ -36,4 +38,4 @@ export type { MenuPermissions } from './projects.js';
 export type { WorkspaceSession, WorkspaceSessionAction, FocusTab, PageViewState, CanvasViewState, PageReference } from './workspace-session.js';
 export { validPageView, validCanvasView } from './workspace-session.js';
 export type { CanvasEntityChoice, CanvasEntitySummary, CanvasResourceDescriptor, CanvasResourceChoice, CanvasContentNodeInput, CanvasPlacementView, CanvasPlacementMove, CanvasPlacementViewPatch, CanvasSelection, CanvasSelectionRef, CanvasVisualEdgePatch, CanvasVisualEdgeView, CanvasConceptualRelationView, CanvasDrawingView, CanvasDrawingPatch, CanvasGroupView, CanvasResourcePreview, MediaGalleryPreview, CanvasMermaidImportPreview, CanvasPlantUmlImportPreview, CanvasStructurizrImportPreview, CanvasStructurizrImportView, CanvasMermaidImportItem, PlantUmlRenderInput, MarkdownDocument, MarkdownAsset, LocalCanvasWorkspace, WorkspaceViewport, DiagramStyleState } from './projects.js';
-export type { LocalProjectSession, LocalProjectsState, LocalProjectsOptions, LocalExplorerEntry, LocalExplorerMount, LocalExplorerListing, LocalExplorerOpen, LocalExplorerDeletePreview, LocalGitMount, ProjectInitializationPreview, RecentProject, LocalHistoryDiff, LocalHistoryRestorePreview } from './projects.js';
+export type { LocalProjectSession, LocalProjectsState, LocalProjectsOptions, ProjectNodePackagesState, LocalExplorerEntry, LocalExplorerMount, LocalExplorerListing, LocalExplorerOpen, LocalExplorerDeletePreview, LocalGitMount, ProjectInitializationPreview, RecentProject, LocalHistoryDiff, LocalHistoryRestorePreview } from './projects.js';

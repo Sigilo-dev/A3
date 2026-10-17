@@ -21,7 +21,7 @@ import { adaptDiagramStyle, diagramStyleLayer, DIAGRAM_STYLE_EXTENSION, defaultD
 import { projectErCanvas, type CanvasErState } from './er-canvas.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
-import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, isIotComponent, iotCatalogEntry, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type JsonValue, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
+import { CONTENT_NODE_CATALOG, contentNodeDefinition, conceptualNodeKind, conceptualRelationData, isConceptualRelation, isIotComponent, iotCatalogEntry, defaultRegistry, inspectMarkdownParse, inspectMarkdownSource, isBuiltinContentNodeType, refKey, refOf, revisionsOf, validateSnapshot, type ConceptualNodeKind, type ConceptualRelationKind, type ContentNodeKind, type ContentEffect, type CreateContentNodeSource, type DeclarativeNodePackage, type DocumentRef, type DomainCommand, type DomainRecord, type Drawing, type DrawingParameters, type DrawingPoint, type DuplicateSelection, type Entity, type ExtensionMap, type Group, type GroupMember, type JsonValue, type NodeType, type Placement, type Project, type RecordChange, type ReversibleCanvasCommand, type TypeRegistry, type VisualEdge, type Workspace } from '@a3/domain';
 import { decodeDocument, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText, codeLineEnding, type CodeDocument, type CodeOpenTarget } from './code-text.js';
 import { initialPageView, insertFocusTab, readWorkspaceSession, writeWorkspaceSession, validCanvasView, validPageView, type WorkspaceSession, type WorkspaceSessionAction, type PageReference } from './workspace-session.js';
@@ -37,6 +37,7 @@ import { recoverTransactions } from './recovery.js';
 import { openProjectService, type ProjectLease } from './service.js';
 import type { SnapshotSummary } from './snapshots.js';
 import { inspectLocalMountFile, readLocalMountFile, validateMountRelativePath } from './mounts.js';
+import { readDeclarativeNodePackages, type DeclarativeNodePackageCatalog } from './node-packages.js';
 import { buildMediaGalleryCatalog, mediaGalleryKind, type MediaGalleryAvailability, type MediaGalleryCatalog } from './media-gallery.js';
 import { buildPromptContext, compilePromptTemplate, findNodeType, resolveEntityField, resolveVariableText, validateVariable, type PromptContextBase, type PromptContextCategory, type PromptContextDocument, type PromptContextUnavailable, type PromptTemplateCompilationResult, type VariableBinding, type VariableTextResolution } from '@a3/domain';
 import { projectVariablesState, type ProjectVariablesState, type SetProjectVariables, type VariablesQuery } from './variables.js';
@@ -105,6 +106,9 @@ export interface LocalProjectsState {
   preview: ProjectInitializationPreview | null;
   restoreNotice?: string;
 }
+export interface ProjectNodePackagesState {
+  projectId: string; packages: readonly DeclarativeNodePackage[]; diagnostics: readonly import('./types.js').StoreDiagnostic[]; canWrite: boolean;
+}
 export interface LocalHistoryDiff { path: string; beforeHash: string | null; afterHash: string | null; beforeBytes: number; afterBytes: number; diff: string | null; detail?: string; }
 export interface LocalHistoryRestorePreview { token: string; snapshot: SnapshotSummary; changes: readonly LocalHistoryDiff[]; atomic: false; }
 interface LocalHistoryRestoreBinding { sessionId: string; plan: PreparedWrite; preview: LocalHistoryRestorePreview; expiresAt: number; }
@@ -112,6 +116,7 @@ export interface WorkspaceViewport { x: number; y: number; zoom: number; }
 export interface DiagramStyleState { projectRevision: number; profile: DiagramStyleProfile; canWrite: boolean; diagnostics: readonly string[]; }
 export interface CanvasEntitySummary {
   displayTitle?: string; displayDiagnostics?: string[]; displayProperties?: Entity['properties']; exportTitle?: string; exportBody?: string;
+  nodeType?: NodeType;
   c4Category?: C4Category;
   id: string; revision: number; type: string; typeVersion: string; title: string; properties: Entity['properties']; ports: Entity['ports'];
   contentResourceId?: string; contentResource?: CanvasResourceDescriptor; typeAvailable: boolean;
@@ -918,6 +923,26 @@ export class LocalProjectManager {
     if (this.#explorerSessionId !== this.#active.sessionId) { this.#resetExplorerBindings(); this.#explorerSessionId = this.#active.sessionId; }
     return this.#active;
   }
+  async #nodePackagesState(active: ActiveProjectBinding): Promise<ProjectNodePackagesState> {
+    const project = active.lease.service.state.project.snapshot.records.find((record) => record.kind === 'project');
+    demand(project?.kind === 'project', 'PROJECT_MISSING', 'No se pudo leer el manifiesto del proyecto.');
+    const catalog: DeclarativeNodePackageCatalog = await readDeclarativeNodePackages(active.lease.service.root, project.value.catalogRoot, defaultRegistry());
+    let allowed = false;
+    try { allowed = this.options.host.capabilities.authorizeAccess({ actor: this.options.host.authenticatedActor, root: active.lease.service.root,
+        projectId: active.projectId, operation: 'write', paths: [], refs: [{ kind: 'project', id: active.projectId }], resources: [], requiredCapabilities: ['document.edit'], stage: 'prepare' }).allowed; }
+    catch { /* Fail closed if the host broker is unavailable. */ }
+    return { projectId: active.projectId, packages: catalog.packages, diagnostics: catalog.diagnostics,
+      canWrite: active.lease.service.state.mode === 'writer' && !active.lease.service.state.externalConflict && allowed };
+  }
+  loadNodePackages(sessionId: string): Promise<ProjectNodePackagesState> { return this.#queue(async () => this.#nodePackagesState(this.#explorerContext(sessionId))); }
+  saveNodePackage(sessionId: string, value: unknown): Promise<ProjectNodePackagesState> { return this.#queue(async () => {
+    const active = this.#explorerContext(sessionId);
+    const prepared = await active.lease.service.prepareNodePackage(randomUUID(), value);
+    demand(prepared.ok, prepared.diagnostics[0]?.detail ?? 'NODE_PACKAGE_INVALID', prepared.diagnostics.map((item) => item.message).join('\n'));
+    const committed = await active.lease.service.commit(prepared.value);
+    demand(committed.ok, committed.diagnostics[0]?.detail ?? 'NODE_PACKAGE_SAVE_FAILED', committed.diagnostics.map((item) => item.message).join('\n'));
+    return this.#nodePackagesState(active);
+  }); }
   async #commitExplorer(active: ActiveProjectBinding, action: 'create-file' | 'create-folder' | 'rename' | 'duplicate' | 'trash', input: { sourcePath?: string; targetPath?: string; identity?: string; parentIdentity?: string; content?: string; cleanupDirectory?: boolean }): Promise<void> {
     const prepared = await active.lease.service.prepareExplorerOperation({ operationId: randomUUID(), action,
       ...(input.sourcePath ? { sourcePath: input.sourcePath } : {}), ...(input.targetPath ? { targetPath: input.targetPath } : {}),
@@ -1002,10 +1027,10 @@ export class LocalProjectManager {
         ...(hasTitleBinding || value.title.includes('{{') ? { displayTitle: displayResolution.text, exportTitle: displayResolution.text } : {}),
         ...(propertyDiagnostics.length || ['a3.content.description', 'description', 'body'].some((key) => displayProperties[key] !== value.properties[key]) ? { displayProperties } : {}),
         ...(displayDiagnostics.length ? { displayDiagnostics } : {}),
-        title: value.title, properties: value.properties, ports: value.ports, ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
+        title: value.title, properties: value.properties, ports: value.ports, ...(definition ? { nodeType: definition } : {}), ...(value.contentResourceId ? { contentResourceId: value.contentResourceId,
           ...(resources.get(value.contentResourceId.toLowerCase()) ? { contentResource: resourceDescriptor(resources.get(value.contentResourceId.toLowerCase())!) } : {}) } : {}),
         ...(c4Category(value, registry) ? { c4Category: c4Category(value, registry)! } : {}),
-        typeAvailable: planningKind(value) !== undefined && planningData(value) !== undefined || isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined || erTable(value) && erData(value) !== undefined || isIotComponent(value) || isIotCircuit(value) };
+        typeAvailable: !!definition || planningKind(value) !== undefined && planningData(value) !== undefined || isBuiltinContentNodeType(value.type) || conceptualNodeKind(value.type, value.typeVersion) !== undefined || c4Category(value, registry) !== undefined || umlKind(value) !== undefined && umlData(value) !== undefined || erTable(value) && erData(value) !== undefined || isIotComponent(value) || isIotCircuit(value) };
       });
     const entityChoices = choices.filter(({ value }) => !isC4Diagram(value)).map(({ value }) => ({ id: value.id, type: value.type, typeVersion: value.typeVersion, title: value.title }));
     const resourceChoices = resourceRecords.map((record) => resourceDescriptor(record));

@@ -21,6 +21,7 @@ export { CONCEPTUAL_NODE_CATALOG, CONCEPTUAL_NODE_VERSION, CONCEPTUAL_RELATION_K
   conceptualNodeDefinition, conceptualNodeKind, conceptualRelationData, conceptualRelationType, isConceptualEntity, isConceptualRelation, isConceptualNodeKind, isConceptualRelationKind } from './conceptual-diagrams.js';
 export type { ConceptualNodeKind, ConceptualNodeType, ConceptualEntity, ConceptualRelationKind, ConceptualRelationData } from './conceptual-diagrams.js';
 export { validateRecord, validateDefinition, validateRegistry, validateSnapshot, defaultRegistry, findNodeType } from './validation.js';
+export { validateDeclarativeNodePackage, createDeclarativeNodePackage, addDeclarativeNodePackage, declarativeNodePackageFileName } from './node-packages.js';
 export { resolveVariable, resolveEffectiveVariable, resolveEntityField, resolveVariableText, validateVariable, validValueSpec, validVariableBinding, validVariableScope, matchesTypedValue, type VariableContext, type EffectiveVariable, type EffectiveField, type VariableTextIssue, type VariableTextResolution } from './variables.js';
 export { parsePromptTemplate, serializePromptTemplate, compilePromptTemplate, defaultPromptHelperRegistry, buildPromptHelperRegistry, BUILTIN_PROMPT_TEMPLATES, serializeBuiltinPromptTemplate,
   type PromptInputType, type PromptContextSource, type PromptOutputFormat, type PromptTemplateInput, type PromptContextRule, type PromptTemplate, type PromptTemplateIssue, type PromptTemplateParseResult,

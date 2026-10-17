@@ -99,8 +99,10 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
   }
   const accent = data.placement.style['a3.ui.accent'];
   const borderColor = typeof accent === 'string' && /^#[\da-f]{6}$/i.test(accent) ? accent : undefined;
+  const nodeBase = data.entity.nodeType?.style;
   const style = adaptDiagramStyle({ ...data.diagramStyle, engine: 'a3-native' }, {
-    typeBase: { borders: { width: 1, radius: 8 } },
+    typeBase: { colors: { ...(nodeBase?.background ? { background: nodeBase.background } : {}), ...(nodeBase?.foreground ? { text: nodeBase.foreground } : {}) },
+      borders: { width: 1, radius: 8, ...(nodeBase?.borderColor ? { color: nodeBase.borderColor } : {}) } },
     entity: diagramStyleLayer(data.entity.properties[DIAGRAM_STYLE_EXTENSION]),
     view: diagramStyleLayer(data.placement.style[DIAGRAM_STYLE_EXTENSION])
   });
@@ -114,6 +116,7 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
     ...(applied.fonts?.family ? { fontFamily: applied.fonts.family } : {}),
     ...(applied.fonts?.size !== undefined ? { fontSize: `${applied.fonts.size}px` } : {})
   };
+  if (nodeBase?.borderStyle) diagramCss.borderStyle = nodeBase.borderStyle;
   const properties = Object.keys(data.entity.properties).length > 0 ? JSON.stringify(data.entity.properties, null, 2) : '';
   return <article ref={nodeRef} className="canvas-entity-node" data-placement-id={data.placement.id} data-entity-id={data.entity.id} data-node-type={data.entity.type}
     data-node-fallback={!data.entity.typeAvailable} data-style-engine={style.engine} style={Object.keys(diagramCss).length ? diagramCss : undefined}>
@@ -121,14 +124,18 @@ const nodeTypes = { a3Entity: memo(function CanvasEntityNode({ data, selected }:
     <Handle id="visual-source" type="source" position={Position.Right} isConnectable={data.canWrite && data.tool === 'connect'} aria-label="Origen de línea visual" />
     <NodeResizer isVisible={selected && data.canWrite && data.tool === 'select' && data.placement.style['a3.ui.locked'] !== true} minWidth={180} minHeight={130} color="#c3ed82"
       onResizeEnd={(_, size) => data.onResizeEnd(data.placement.id, { x: size.x, y: size.y }, { width: size.width, height: size.height })} />
-    <header className="canvas-entity-header"><strong>{data.entity.displayTitle ?? (data.entity.title || data.entity.type)}{data.placement.style['a3.ui.locked'] === true ? ' · Bloqueado' : ''}</strong><small>{data.entity.type}@{data.entity.typeVersion}</small></header>
+    <header className="canvas-entity-header"><strong>{nodeBase?.icon ? `${nodeBase.icon} ` : ''}{data.entity.displayTitle ?? (data.entity.title || data.entity.type)}{data.placement.style['a3.ui.locked'] === true ? ' · Bloqueado' : ''}</strong><small>{data.entity.type}@{data.entity.typeVersion}</small></header>
     {data.entity.displayDiagnostics && data.entity.displayDiagnostics.length > 0 && <p className="canvas-variable-warning" role="status" title={data.entity.displayDiagnostics.join('\n')}>Variable sin resolver · abre Variables para revisar</p>}
     {!data.entity.typeAvailable && <p className="canvas-fallback-label">Tipo o paquete no instalado · propiedades conservadas</p>}
     <div className="canvas-entity-body nodrag nopan nowheel">
       <UmlNodeBody entity={data.entity} />
       <ErNodeBody entity={data.entity} />
       <IotNodeBody entity={data.entity} />
-      {data.entity.ports.length > 0 && <div className="canvas-ports" aria-label="Puertos">{data.entity.ports.map((port) => <span key={port.id} title={port.id}>{port.label || port.id}</span>)}</div>}
+      {(data.entity.nodeType?.ports.length || data.entity.ports.length) > 0 && <div className="canvas-ports" aria-label="Puertos">{data.entity.nodeType?.ports.length
+        ? data.entity.nodeType.ports.map((port) => <span key={port.id} title={`${port.id} · ${port.direction}${port.dataType ? ` · ${port.dataType}` : ''}`}>{port.direction} · {port.label || port.id}</span>)
+        : data.entity.ports.map((port) => <span key={port.id} title={port.id}>{port.label || port.id}</span>)}</div>}
+      {data.entity.nodeType?.fields.length ? <details className="canvas-custom-fields"><summary>Campos del tipo ({data.entity.nodeType.fields.length})</summary><dl>{data.entity.nodeType.fields.map((field) => <div key={field.name}><dt>{field.name} · {field.valueType}{field.required ? ' · obligatorio' : ''}</dt>
+        <dd>{JSON.stringify(data.entity.displayProperties?.[field.name] ?? data.entity.properties[field.name] ?? field.defaultValue ?? null)}</dd></div>)}</dl></details> : null}
       {properties && <details><summary>Propiedades</summary><pre>{properties}</pre></details>}
       {data.entity.c4Category && <section className={`c4-node c4-node-${data.entity.c4Category}`} data-c4-category={data.entity.c4Category} data-c4-parent={c4Data(data.entity)?.parentId}>
         <small>{C4_CATALOG.find((entry) => entry.category === data.entity.c4Category)?.label}{c4Data(data.entity)?.external ? ' · Externo' : ''}</small>

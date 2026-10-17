@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "1.0.0",
+  "manifest": {
+    "schemaVersion": "1.0.0",
+    "id": "community.example-nodes",
+    "name": "Example nodes",
+    "version": "1.0.0",
+    "license": "MIT",
+    "a3ApiVersion": "1.0.0",
+    "contributes": {
+      "a3.node-types": {
+        "types": ["community.example-nodes.sensor@1.0.0"],
+        "collections": ["community.example-nodes.iot"]
+      }
+    },
+    "permissions": [],
+    "extensions": {}
+  },
+  "nodeTypes": [
+    {
+      "name": "community.example-nodes.sensor",
+      "version": "1.0.0",
+      "packageId": "community.example-nodes",
+      "description": "Fixture for a declarative sensor node.",
+      "fields": [
+        { "name": "community.example-nodes.sensor.model", "valueType": "string", "required": true, "defaultValue": "S-1" },
+        { "name": "community.example-nodes.sensor.enabled", "valueType": "boolean", "required": false, "defaultValue": true }
+      ],
+      "ports": [
+        { "id": "community.example-nodes.sensor.signal", "label": "Signal", "direction": "output", "dataType": "a3.data.analog", "multiplicity": { "min": 0, "max": null } }
+      ],
+      "bindingFields": [],
+      "style": { "icon": "sensor", "background": "#26343c", "foreground": "#e8edf0", "borderColor": "#718896", "borderStyle": "dashed", "width": 260 },
+      "importMappings": [{ "format": "mermaid.class", "targetType": "community.example-nodes.sensor", "fields": { "name": "community.example-nodes.sensor.model" } }],
+      "exportMappings": [{ "format": "plantuml.class", "targetType": "community.example-nodes.sensor", "ports": { "community.example-nodes.sensor.signal": "signal" } }],
+      "extensions": {}
+    }
+  ],
+  "collections": [
+    { "id": "community.example-nodes.iot", "name": "Example IoT nodes", "typeRefs": [{ "name": "community.example-nodes.sensor", "version": "1.0.0" }] }
+  ],
+  "extensions": {}
+}

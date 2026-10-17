@@ -11,7 +11,7 @@ import { AGENT_PROFILES_CHANNEL, type AgentProfilesRequest } from '../shared/age
 import type { VariablesRequest } from '../shared/variables';
 import { AV_CONVERSION_CHANNEL, IMAGE_CONVERSION_CHANNEL, type AvRequest, type ImageConversionRequest } from '../shared/desktop-api';
 import { WORKSPACE_SESSION_CHANNEL, NAVIGATION_CHANNEL, type NavigationRequest, type WorkspaceSessionRequest } from '../shared/desktop-api';
-import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, GALLERY_CHANNEL, MARKDOWN_CHANNEL, PROJECTS_CHANNEL, type DesktopAPI, type CanvasContentRequest, type CanvasRequest, type CodeRequest, type FileDropNotice, type FileDropStageResult, type FilesRequest, type GalleryRequest, type MarkdownRequest, type ProjectsRequest } from '../shared/desktop-api';
+import { APP_INFO_CHANNEL, CANVAS_CHANNEL, CODE_CHANNEL, DROP_STAGE_CHANNEL, FILES_CHANNEL, GALLERY_CHANNEL, MARKDOWN_CHANNEL, NODE_PACKAGES_CHANNEL, PROJECTS_CHANNEL, type DesktopAPI, type CanvasContentRequest, type CanvasRequest, type CodeRequest, type FileDropNotice, type FileDropStageResult, type FilesRequest, type GalleryRequest, type MarkdownRequest, type NodePackagesRequest, type ProjectsRequest } from '../shared/desktop-api';
 
 const dropListeners = new Set<(notice: FileDropNotice) => void>();
 window.addEventListener('dragover', (event) => {
@@ -44,6 +44,7 @@ const api: DesktopAPI = Object.freeze({
   memorySearch: (request: MemorySearchRequest) => ipcRenderer.invoke(MEMORY_SEARCH_CHANNEL, request),
   planning: (request: PlanningRequest) => ipcRenderer.invoke(PLANNING_CHANNEL, request),
   variables: (request: VariablesRequest) => ipcRenderer.invoke(VARIABLES_CHANNEL, request),
+  nodePackages: (request: NodePackagesRequest) => ipcRenderer.invoke(NODE_PACKAGES_CHANNEL, request),
   getAppInfo: () => ipcRenderer.invoke(APP_INFO_CHANNEL),
   projects: (request: ProjectsRequest) => ipcRenderer.invoke(PROJECTS_CHANNEL, request),
   workspaceSession: (request: WorkspaceSessionRequest) => ipcRenderer.invoke(WORKSPACE_SESSION_CHANNEL, request),

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigilo-dev.github.io/A3/schemas/e1/declarative-node-package.schema.json",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "manifest": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/package-manifest.schema.json" },
+    "nodeTypes": { "type": "array", "minItems": 1, "items": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e1/node-type.schema.json" } },
+    "collections": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "typeRefs": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": {
+              "type": "object", "properties": {
+                "name": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace" },
+                "version": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/version" }
+              }, "required": ["name", "version"], "additionalProperties": true
+            }
+          }
+        }, "required": ["id", "name", "typeRefs"], "additionalProperties": true
+      }
+    },
+    "extensions": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions" }
+  },
+  "required": ["schemaVersion", "manifest", "nodeTypes", "collections", "extensions"],
+  "additionalProperties": false
+}

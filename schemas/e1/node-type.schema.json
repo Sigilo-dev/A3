@@ -12,6 +12,7 @@
     "packageId": {
       "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace"
     },
+    "description": { "type": "string", "maxLength": 2000 },
     "fields": {
       "type": "array",
       "items": {
@@ -36,7 +37,8 @@
           },
           "acceptsBinding": {
             "type": "boolean"
-          }
+          },
+          "defaultValue": {}
         },
         "required": [
           "name",
@@ -56,16 +58,17 @@
       "items": {
         "type": "object",
         "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
+          "id": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "label": { "type": "string", "maxLength": 120 },
           "direction": {
             "enum": [
-              "input",
-              "output",
-              "inout"
+              "input", "output"
             ]
+          },
+          "dataType": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/namespace" },
+          "multiplicity": {
+            "type": "object", "properties": { "min": { "type": "integer", "minimum": 0 }, "max": { "type": ["integer", "null"], "minimum": 0 } },
+            "required": ["min", "max"], "additionalProperties": true
           }
         },
         "required": [
@@ -82,6 +85,20 @@
       },
       "uniqueItems": true
     },
+    "style": {
+      "type": "object",
+      "properties": {
+        "icon": { "type": "string", "maxLength": 64 },
+        "background": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "foreground": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "borderColor": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "borderStyle": { "enum": ["solid", "dashed", "dotted"] },
+        "width": { "type": "number", "minimum": 120, "maximum": 800 }
+      },
+      "additionalProperties": false
+    },
+    "importMappings": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e1/node-mappings.schema.json" },
+    "exportMappings": { "$ref": "https://sigilo-dev.github.io/A3/schemas/e1/node-mappings.schema.json" },
     "extensions": {
       "$ref": "https://sigilo-dev.github.io/A3/schemas/e0/common.schema.json#/$defs/extensions"
     }

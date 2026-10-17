@@ -2,7 +2,7 @@ import { watch, type FSWatcher } from 'node:fs';
 import { lstat, mkdir, readdir, realpath, rename, stat, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import { defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePlan, reversibleCanvasCommand, validateSnapshot, type CommandContext, type Diagnostic, type DomainRecord, type JsonValue, type PreparedPlan, type Resource, type TypeRegistry } from '@a3/domain';
+import { addDeclarativeNodePackage, defaultRegistry, getRecord, prepareCommand, refKey, refOf, revalidatePlan, reversibleCanvasCommand, validateDeclarativeNodePackage, validateSnapshot, type CommandContext, type DeclarativeNodePackage, type Diagnostic, type DomainRecord, type JsonValue, type PreparedPlan, type Resource, type TypeRegistry } from '@a3/domain';
 import { decodeDocument, encodeDocument, issue, serializeRecord, sha256 } from './codec.js';
 import { decodeCodeText, encodeCodeText } from './code-text.js';
 import { MEMORY_DEFAULTS, type MemoryDocumentInput } from './search-index.js';
@@ -16,6 +16,7 @@ import { checkedPath, fileBytes, ioIssue, PathError, readProject, readProjectRes
 import { absentPath, ensureDirectories, installExclusive, writeExclusive } from './write-io.js';
 import { createSnapshot, listSnapshots, readSnapshot, snapshotPathAllowed, type SnapshotReason } from './snapshots.js';
 import { applyMigrationChain, migrationChain, type MigrationScope } from './migrations.js';
+import { nodePackagePath, readDeclarativeNodePackages } from './node-packages.js';
 import { completeMigration, loadPreparedMigration, prepareMigration, verifyAppliedMigration, type LoadedMigration } from './migration-store.js';
 import type { DocumentLocation, JsonEdit, ProjectReadResult, StoreDiagnostic } from './types.js';
 import type { AccessRequest, DerivedResourceRequest, ExplorerDeletePreview, ExplorerDirectoryPage, ExplorerFileEntry, ExplorerMountEntry, ExplorerOpenResult, ExplorerOperationRequest, FaultPhase, IntentEntry, MigrationReceipt, MountActionRequest, OpenResource, PreparedWrite, ResourceWriteRequest, ServiceEvent, ServiceOptions, ServiceState, SnapshotReceipt, StoreResult, WriteIntent, WriteReceipt } from './service-types.js';
@@ -41,6 +42,7 @@ interface PlanData {
   externalPaths?: readonly string[];
   externalDirectories?: readonly DirectoryObservation[];
   proposalPreview?: boolean;
+  registryAfter?: TypeRegistry;
 }
 const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const approvalSecretLine = /^(\s*(?:[\w.-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|authorization|private[_-]?key)[\w.-]*\s*[:=]\s*).+)$/i;
@@ -351,7 +353,7 @@ export class ProjectService {
     const migrationSteps = this.options.migrationSteps ?? [];
     const knownReadOnlyManifestSources = [...new Set(migrationSteps.filter((step) => step.scope === 'project' || step.scope === '*').map((step) => step.fromVersion))]
       .filter((version) => migrationChain('project', version, '1.0.0', migrationSteps).ok);
-    const project = await readProject(this.root, { registry: this.#registry, knownReadOnlyManifestSources });
+    let project = await readProject(this.root, { registry: this.#registry, knownReadOnlyManifestSources });
     const manifestRecord = project.snapshot.records.find((record) => record.kind === 'project');
     const manifestValue = manifestRecord?.kind === 'project' ? manifestRecord.value : project.documents.find((document) => document.location.kind === 'project')?.value;
     const observedProjectId = manifestValue && typeof manifestValue === 'object' && !Array.isArray(manifestValue) && typeof manifestValue.projectId === 'string' && uuid.test(manifestValue.projectId)
@@ -361,6 +363,12 @@ export class ProjectService {
     }
     const files = new Map<string, Observation>();
     const diagnostics: StoreDiagnostic[] = [...project.diagnostics];
+    const catalogRoot = manifestValue && typeof manifestValue === 'object' && !Array.isArray(manifestValue) && typeof manifestValue.catalogRoot === 'string'
+      ? manifestValue.catalogRoot : this.#catalog;
+    const packageCatalog = await readDeclarativeNodePackages(this.root, catalogRoot, defaultRegistry());
+    diagnostics.push(...packageCatalog.diagnostics);
+    project = { ...project, diagnostics: [...project.diagnostics, ...packageCatalog.diagnostics] };
+    for (const path of packageCatalog.paths) files.set(path, await this.#observe(path, force, this.#observed?.files.get(path)));
     for (const document of project.documents) {
       const observation = await this.#observe(document.location.path, false);
       if (observation.hash !== document.sha256) diagnostics.push(conflict(document.location.path, 'changed-during-catalog-read'));
@@ -1399,6 +1407,31 @@ export class ProjectService {
       } catch (error) { return failure([this.#operationError('memory', error)]); }
     });
   }
+  /** Save one immutable, data-only node package through the same journal and capability broker as project documents. */
+  prepareNodePackage(operationId: string, value: unknown): Promise<StoreResult<PreparedWrite>> {
+    const captured = JSON.parse(JSON.stringify(value)) as unknown;
+    return this.#queue(async () => {
+      try {
+        const current = await this.#currentForWrite(); if (!current.ok) return current;
+        const problems = validateDeclarativeNodePackage(captured);
+        if (problems.length) return failure(problems.map((problem) => issue('node-package', 'schema', problem.detail, problem.message)));
+        const pkg = captured as DeclarativeNodePackage;
+        const added = addDeclarativeNodePackage(this.#registry, pkg);
+        if (added.diagnostics.length) return failure(added.diagnostics.map((problem) => issue('node-package', 'schema', problem.detail, problem.message)));
+        const path = nodePackagePath(this.#catalog, pkg);
+        const scan = await this.#withExtraPaths(current.value, [path]);
+        const destination = scan.files.get(path);
+        if (destination?.problem || destination?.hash !== null && destination?.hash !== undefined) return failure([conflict(path, 'node-package-destination-exists')]);
+        const bytes = Buffer.from(canonicalJson(pkg as unknown as JsonValue) + '\n', 'utf8');
+        const operation = { operationId, path, hash: sha256(bytes), actor: this.options.host.authenticatedActor };
+        return this.#makePlan(scan, operationId, [{ path, bytes }], scan.project.snapshot.records, [], sha256(jsonBytes(operation)), {
+          // This operation persists inert project data. package.install remains unavailable
+          // until an actual installation/runtime boundary is verified.
+          externalPaths: [path], requiredCapabilities: ['document.edit'], registryAfter: added.registry
+        });
+      } catch (error) { return failure([this.#operationError('node-package', error)]); }
+    });
+  }
   prepareResourceWrite(input: ResourceWriteRequest): Promise<StoreResult<PreparedWrite>> {
     // Capture caller bytes immediately, before an asynchronous queue boundary.
     const request = { ...input, bytes: Uint8Array.from(input.bytes) };
@@ -1857,6 +1890,7 @@ export class ProjectService {
       }
       await log.append('verified'); await log.append('committed');
       this.#accepted = this.#observed = final; this.#external = false; this.#own.clear();
+      if (data.registryAfter) this.#registry = freeze(JSON.parse(JSON.stringify(data.registryAfter)) as TypeRegistry);
       this.#reason = data.maintenance && (final.project.mode !== 'ready' || final.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) ? 'project-not-writable' : undefined;
       const receipt: WriteReceipt = freeze({ status: 'committed', operationId: plan.operationId, atomic: false, paths: entries.map((e) => e.path), transactionPath: folder,
         ...(snapshotId ? { snapshotId } : {}) });
@@ -1913,6 +1947,10 @@ async function openService(path: string, options: ServiceOptions): Promise<Store
     const projectId = rawManifest && typeof rawManifest === 'object' && !Array.isArray(rawManifest) && typeof rawManifest.projectId === 'string' && uuid.test(rawManifest.projectId)
       ? rawManifest.projectId : undefined;
     if (!projectId) return failure([issue('a3.project.json', 'compatibility', 'project-id-unavailable', 'No se pudo leer un UUID de proyecto para verificar la concesión local.', { code: 'PERMISSION_DENIED', missingCapability: 'project.read' })]);
+    const baseRegistry = options.registry ?? defaultRegistry();
+    const catalogRoot = manifest.status === 'valid' && manifest.record?.kind === 'project' ? manifest.record.value.catalogRoot : undefined;
+    const packageCatalog = catalogRoot ? await readDeclarativeNodePackages(root, catalogRoot, baseRegistry) : undefined;
+    const effectiveOptions = { ...options, registry: packageCatalog?.registry ?? baseRegistry };
     let openDecision: CapabilityDecision | undefined;
     try { openDecision = options.host.capabilities.authorizeAccess({ actor: options.host.authenticatedActor, root, projectId, operation: 'open-project', paths: ['a3.project.json'], refs: [], resources: [] }); } catch { /* Fail closed. */ }
     if (!openDecision?.allowed) return failure([issue('a3.project.json', 'io', 'permission-denied', 'El broker del host no autoriza abrir el proyecto.', {
@@ -1927,7 +1965,7 @@ async function openService(path: string, options: ServiceOptions): Promise<Store
       } }, diagnostics: [] };
     }
     ownership = await acquireOwnership(identity);
-    const service = await ProjectService.create(root, projectId, options, identity, ownership, !ownership ? process.platform === 'win32' ? 'writer-busy' : 'windows-writer-required' : undefined);
+    const service = await ProjectService.create(root, projectId, effectiveOptions, identity, ownership, !ownership ? process.platform === 'win32' ? 'writer-busy' : 'windows-writer-required' : undefined);
     const entry = { service, host: options.host, leases: 1 };
     if (ownership) pool.set(identity, entry);
     let closed = false;

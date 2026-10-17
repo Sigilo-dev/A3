@@ -27,7 +27,7 @@ ajv.addFormat('absolute-url', (value: string) => {
 });
 for (const schema of Object.values(schemas)) ajv.addSchema(schema as AnySchemaObject);
 const scopedKinds = new Set(['placement', 'visual-edge', 'relation-view', 'group', 'drawing']);
-const e1Kinds = new Set(['group', 'collection', 'variable-set', 'node-type', 'relation-type']);
+const e1Kinds = new Set(['group', 'collection', 'variable-set', 'node-type', 'relation-type', 'declarative-node-package']);
 const e2Kinds = new Set(['drawing']);
 const recordKinds = new Set(['project', 'workspace', 'entity', 'resource', 'relation', 'placement', 'visual-edge', 'relation-view', 'group', 'collection', 'variable-set', 'drawing']);
 
@@ -44,6 +44,15 @@ export function validateDefinition(kind: 'node-type' | 'relation-type', value: u
     if (new Set(definition.fields.map((f) => f.name)).size !== definition.fields.length ||
         new Set(definition.ports.map((p) => p.id)).size !== definition.ports.length) {
       diagnostics.push(diagnostic('duplicate-definition-member', 'Los campos y puertos deben tener identidades únicas.'));
+    }
+    for (const field of definition.fields) if (field.defaultValue !== undefined && !matchesTypedValue(field.defaultValue, field)) {
+      diagnostics.push(diagnostic('node-default-value-invalid', `El valor predeterminado de ${field.name} no coincide con su tipo.`));
+    }
+    for (const port of definition.ports) if (port.multiplicity && port.multiplicity.max !== null && port.multiplicity.min > port.multiplicity.max) {
+      diagnostics.push(diagnostic('node-port-multiplicity-invalid', `La multiplicidad del puerto ${port.id} es imposible.`));
+    }
+    for (const mappings of [definition.importMappings ?? [], definition.exportMappings ?? []]) {
+      if (new Set(mappings.map((item) => item.format)).size !== mappings.length) diagnostics.push(diagnostic('node-mapping-duplicate-format', 'Un formato solo puede tener un mapping por dirección.'));
     }
   } else {
     const definition = value as RelationType;
@@ -91,6 +100,9 @@ function validateShape(kind: string, value: unknown): Diagnostic[] {
     instancePath: error.instancePath
   }));
 }
+
+/** Schema-only validation used before semantic package checks. */
+export function validateNodePackageShape(value: unknown): Diagnostic[] { return validateShape('declarative-node-package', value); }
 
 export function validateRecord(record: unknown): Diagnostic[] {
   if (!isJson(record) || !isObject(record) || typeof record.kind !== 'string' || !recordKinds.has(record.kind)) {

@@ -72,12 +72,28 @@ export interface Variable extends ValueSpec {
 export interface VariableScope extends OpenData { kind: 'project' | 'workspace' | 'entity'; ownerId: UUID; }
 export interface VariableSet extends Revisioned { scope: VariableScope; variables: Variable[]; }
 export type PortDirection = 'input' | 'output' | 'inout';
-export interface FieldRule extends ValueSpec { name: Namespace; required: boolean; acceptsBinding?: boolean; }
+export interface FieldRule extends ValueSpec { name: Namespace; required: boolean; acceptsBinding?: boolean; defaultValue?: JsonValue; }
+export interface NodeTypeStyle extends OpenData {
+  icon?: string; background?: string; foreground?: string; borderColor?: string; borderStyle?: 'solid' | 'dashed' | 'dotted'; width?: number;
+}
+export interface NodeTypeMapping extends OpenData {
+  format: Namespace; targetType?: Namespace; fields?: Record<Namespace, string>; ports?: Record<Namespace, string>;
+}
 // Immutable, versioned package definitions. They are not Entity documents.
 export interface NodeType extends OpenData {
-  name: Namespace; version: string; packageId: Namespace; fields: FieldRule[];
-  ports: (OpenData & { id: string; direction: PortDirection })[];
-  bindingFields: Namespace[]; extensions: ExtensionMap;
+  name: Namespace; version: string; packageId: Namespace; description?: string; fields: FieldRule[];
+  ports: (OpenData & { id: string; label?: string; direction: Exclude<PortDirection, 'inout'>; dataType?: Namespace;
+    multiplicity?: { min: number; max: number | null } })[];
+  bindingFields: Namespace[]; style?: NodeTypeStyle; importMappings?: NodeTypeMapping[]; exportMappings?: NodeTypeMapping[]; extensions: ExtensionMap;
+}
+export interface NodePackageManifest extends OpenData {
+  schemaVersion: '1.0.0'; id: Namespace; name: string; version: string; license: string; a3ApiVersion: string;
+  contributes: ExtensionMap; permissions: Namespace[]; extensions: ExtensionMap;
+}
+export interface NodeTypeCollection extends OpenData { id: Namespace; name: string; typeRefs: { name: Namespace; version: string }[]; }
+/** A3-authored, data-only node package; it cannot contain executable entry points. */
+export interface DeclarativeNodePackage extends OpenData {
+  schemaVersion: '1.0.0'; manifest: NodePackageManifest; nodeTypes: NodeType[]; collections: NodeTypeCollection[]; extensions: ExtensionMap;
 }
 export interface EndpointRule extends OpenData {
   entityTypes: '*' | Namespace[]; requirePort: boolean; portDirections?: PortDirection[];
