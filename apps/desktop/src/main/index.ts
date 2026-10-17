@@ -17,6 +17,8 @@ import { CODEX_AUTH_CHANNEL } from '../shared/codex-auth';
 import { CodexAuthorization } from './codex-authorization';
 import { SystemCredentialVault } from './codex-credential-vault';
 import { CodexAppServerProvider } from './codex-app-server';
+import { CodexTurnHost } from './codex-turns';
+import { digest as turnBindingHash } from './codex-turn-state';
 
 const APP_URL = 'a3://desktop/index.html';
 const editorStyleNonce = randomBytes(24).toString('base64');
@@ -30,7 +32,7 @@ let projects: ReturnType<typeof createProjectController> | undefined;
 let closing = false;
 let manualChat: ManualChatController | undefined;
 let codexAuthorization: CodexAuthorization | undefined;
-let codexAppServer: CodexAppServerProvider | undefined;
+let codexTurns: CodexTurnHost | undefined;
 
 async function finishQuit(): Promise<void> {
   if (closing || quitting) return;
@@ -50,8 +52,8 @@ async function finishQuit(): Promise<void> {
     if (manualChat && !await manualChat.confirmQuit()) return;
     await projects?.imageConversions.cancelAll();
     await projects?.avConversions.cancelAll();
+    await codexTurns?.shutdown();
     await projects?.manager.shutdown();
-    await codexAppServer?.stop().catch(() => undefined);
     await codexAuthorization?.shutdown();
     manualChat?.dispose();
     quitting = true; clearTimeout(bootTimer); app.quit();
@@ -122,7 +124,9 @@ async function startDesktop(): Promise<void> {
   codexAuthorization = new CodexAuthorization({ vault: new SystemCredentialVault(app.getPath('userData'), safeStorage), openBrowser: (url) => shell.openExternal(url) });
   // The app-server adapter is host-only and starts only after an explicit provider action.
   // No CLI is bundled or auto-discovered until A3 approves a version, hash and distribution license.
-  codexAppServer = new CodexAppServerProvider({ userDataDirectory: app.getPath('userData'), clientVersion: app.getVersion() });
+  codexTurns = new CodexTurnHost(app.getPath('userData'), (binding) => new CodexAppServerProvider({
+    userDataDirectory: join(app.getPath('userData'), 'codex-profiles', turnBindingHash(binding)), clientVersion: app.getVersion()
+  }));
 
   const shellSession = session.fromPartition('persist:a3-shell');
   shellSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

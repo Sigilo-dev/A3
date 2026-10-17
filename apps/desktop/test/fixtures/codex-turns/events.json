@@ -1,0 +1,6 @@
+[
+  { "method": "turn/started", "params": { "threadId": "thread_fixture", "turn": { "id": "turn_fixture", "status": "inProgress" } } },
+  { "method": "item/agentMessage/delta", "params": { "threadId": "thread_fixture", "turnId": "turn_fixture", "itemId": "message_fixture", "delta": "Listo" } },
+  { "method": "item/completed", "params": { "threadId": "thread_fixture", "turnId": "turn_fixture", "item": { "type": "agentMessage", "id": "message_fixture", "text": "Listo." } } },
+  { "method": "turn/completed", "params": { "threadId": "thread_fixture", "turn": { "id": "turn_fixture", "status": "interrupted" } } }
+]

@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { lstat, mkdir, realpath } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -9,7 +9,7 @@ export type CodexProviderErrorCode =
   | 'VERSION_CHECK_FAILED' | 'VERSION_MISMATCH' | 'SPAWN_FAILED' | 'HANDSHAKE_TIMEOUT'
   | 'HANDSHAKE_REJECTED' | 'UNEXPECTED_HANDSHAKE_MESSAGE' | 'MALFORMED_MESSAGE'
   | 'TRUNCATED_MESSAGE' | 'MESSAGE_TOO_LARGE' | 'PROCESS_EXITED' | 'START_CANCELLED'
-  | 'PROCESS_STOP_TIMEOUT';
+  | 'PROCESS_STOP_TIMEOUT' | 'NOT_READY' | 'REQUEST_TIMEOUT' | 'REQUEST_REJECTED' | 'INVALID_RESPONSE';
 
 const ERROR_MESSAGES: Record<CodexProviderErrorCode, string> = {
   BINARY_NOT_CONFIGURED: 'Codex app-server no está configurado en esta instalación.',
@@ -27,7 +27,11 @@ const ERROR_MESSAGES: Record<CodexProviderErrorCode, string> = {
   MESSAGE_TOO_LARGE: 'Codex envió un mensaje mayor que el límite permitido.',
   PROCESS_EXITED: 'El proceso de Codex terminó durante la inicialización.',
   START_CANCELLED: 'El inicio de Codex se canceló antes de completar la inicialización.',
-  PROCESS_STOP_TIMEOUT: 'El proceso de Codex no terminó dentro del tiempo permitido.'
+  PROCESS_STOP_TIMEOUT: 'El proceso de Codex no terminó dentro del tiempo permitido.',
+  NOT_READY: 'La conexión local de Codex no está inicializada.',
+  REQUEST_TIMEOUT: 'La respuesta de Codex no llegó; el resultado queda incierto.',
+  REQUEST_REJECTED: 'Codex rechazó la solicitud.',
+  INVALID_RESPONSE: 'Codex envió una respuesta no válida.'
 };
 
 export class CodexProviderError extends Error {
@@ -155,6 +159,13 @@ export interface A3AgentProvider {
 
 export type CodexAppServerState = 'not-configured' | 'stopped' | 'starting' | 'ready' | 'stopping';
 
+export type CodexSessionRequest =
+  | { method: 'thread/resume'; params: { threadId: string; excludeTurns: true } }
+  | { method: 'turn/interrupt'; params: { threadId: string; turnId: string } };
+export type CodexSessionEvent =
+  | { type: 'notification'; connectionId: string; sequence: number; message: Record<string, unknown> }
+  | { type: 'disconnected'; code: CodexProviderErrorCode };
+
 export interface CodexAppServerOptions {
   /** Application-owned userData directory, never a project path. */
   userDataDirectory: string;
@@ -219,6 +230,60 @@ export class CodexAppServerProvider implements A3AgentProvider {
   private starting?: Promise<A3AgentProviderSession>;
   private closeWaiters = new WeakSet<object>();
   private stopRequested = false;
+  private readonly listeners = new Set<(event: CodexSessionEvent) => void>();
+  private readonly pending = new Map<number, { resolve(value: Record<string, unknown>): void; reject(error: CodexProviderError): void; timer: ReturnType<typeof setTimeout> }>();
+  private nextRequestId = 1;
+  private notificationSequence = 0;
+
+  /** Host-only subscription: remote web contents and renderer IPC do not receive this stream. */
+  subscribe(listener: (event: CodexSessionEvent) => void): () => void {
+    this.listeners.add(listener); return () => { this.listeners.delete(listener); };
+  }
+  private publish(event: CodexSessionEvent): void {
+    for (const listener of this.listeners) { try { listener(event); } catch { /* subscriber failure cannot corrupt framing */ } }
+  }
+  private disconnected(code: CodexProviderErrorCode): void {
+    if (this.stateValue === 'ready') this.stateValue = 'stopping';
+    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new CodexProviderError(code)); }
+    this.pending.clear(); this.publish({ type: 'disconnected', code });
+  }
+  request(request: CodexSessionRequest, timeoutMs = 10000): Promise<Record<string, unknown>> {
+    if (this.stateValue !== 'ready' || !this.child?.stdin) return Promise.reject(new CodexProviderError('NOT_READY'));
+    if (!request || !isObject(request.params) || Object.keys(request).sort().join(',') !== 'method,params') return Promise.reject(new CodexProviderError('INVALID_RESPONSE'));
+    // No generic RPC escape hatch: only documented recovery/cancellation methods are exposed.
+    const keys = request?.params && Object.keys(request.params).sort().join(',');
+    if (!(request?.method === 'thread/resume' && request.params.excludeTurns === true && keys === 'excludeTurns,threadId' ||
+          request?.method === 'turn/interrupt' && keys === 'threadId,turnId') ||
+        !/^[\w-]{1,256}$/.test(request.params.threadId) ||
+        request.method === 'turn/interrupt' && !/^[\w-]{1,256}$/.test(request.params.turnId)) return Promise.reject(new CodexProviderError('INVALID_RESPONSE'));
+    const id = this.nextRequestId++;
+    return new Promise((resolvePromise, reject) => {
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new CodexProviderError('REQUEST_TIMEOUT')); }, timeoutMs);
+      this.pending.set(id, { resolve: resolvePromise, reject, timer });
+      this.child!.stdin!.write(JSON.stringify({ ...request, id }) + '\n', (error?: Error | null) => {
+        if (!error) return;
+        const pending = this.pending.get(id); this.pending.delete(id);
+        if (pending) { clearTimeout(timer); pending.reject(new CodexProviderError('PROCESS_EXITED')); }
+      });
+    });
+  }
+  private receiveProtocol(value: unknown, connectionId: string): void {
+    if (!isObject(value) || typeof value.method === 'string' && 'id' in value) {
+      this.disconnected('INVALID_RESPONSE'); void this.stop().catch(() => undefined); return;
+    }
+    if (typeof value.method === 'string' && !('id' in value)) {
+      this.publish({ type: 'notification', connectionId, sequence: ++this.notificationSequence, message: value }); return;
+    }
+    if (typeof value.id !== 'number' || !Number.isSafeInteger(value.id) || ('result' in value) === ('error' in value)) {
+      this.disconnected('INVALID_RESPONSE'); void this.stop().catch(() => undefined); return;
+    }
+    const pending = typeof value.id === 'number' ? this.pending.get(value.id) : undefined;
+    if (!pending) return; // late responses to timed-out requests cannot initiate another operation
+    this.pending.delete(Number(value.id)); clearTimeout(pending.timer);
+    if ('error' in value) pending.reject(new CodexProviderError('REQUEST_REJECTED'));
+    else if (!isObject(value.result)) pending.reject(new CodexProviderError('INVALID_RESPONSE'));
+    else pending.resolve(value.result);
+  }
 
   constructor(private readonly options: CodexAppServerOptions) {
     if (!isAbsolute(options.userDataDirectory) || !options.clientVersion || options.clientVersion.length > 64) throw new CodexProviderError('BINARY_UNVERIFIED');
@@ -237,6 +302,7 @@ export class CodexAppServerProvider implements A3AgentProvider {
     if (!verifiedBinaries.has(this.options.binary)) return Promise.reject(new CodexProviderError('BINARY_UNVERIFIED'));
     if (this.stateValue === 'ready') return Promise.resolve({ providerId: this.providerId, protocolInitialized: true, artifactVersion: this.options.binary.version });
     if (this.starting) return this.starting;
+    if (this.stateValue === 'stopping' || this.child) return Promise.reject(new CodexProviderError('NOT_READY'));
     this.stopRequested = false;
     const task = this.launch();
     this.starting = task;
@@ -270,18 +336,24 @@ export class CodexAppServerProvider implements A3AgentProvider {
       throw error instanceof CodexProviderError ? error : new CodexProviderError('SPAWN_FAILED');
     }
     this.child = child;
+    const connectionId = randomUUID(); this.notificationSequence = 0;
 
     let closed = false;
     child.once('close', () => {
       closed = true;
       this.closeWaiters.add(child);
-      if (this.child === child) this.child = undefined;
-      if (this.stateValue === 'ready') this.stateValue = 'stopped';
+      if (this.child === child) {
+        this.child = undefined; this.disconnected('PROCESS_EXITED');
+        if (this.stateValue === 'ready' || this.stateValue === 'stopping') this.stateValue = 'stopped';
+      }
     });
     child.stderr?.on('data', () => { /* drain diagnostics without exposing provider text or secrets */ });
 
     try {
-      const reader = new JsonLineReader(this.maxMessageBytes, (message) => receive(message), (error) => rejectHandshake(error));
+      const reader = new JsonLineReader(this.maxMessageBytes, (message) => receive(message), (error) => {
+        finishHandshake(error); this.disconnected(error.code);
+        void this.stop().catch(() => undefined);
+      });
       child.stdout?.on('data', (chunk: Buffer) => reader.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       child.stdout?.once('end', () => reader.finish());
 
@@ -289,6 +361,7 @@ export class CodexAppServerProvider implements A3AgentProvider {
       let rejectHandshake!: (error: CodexProviderError) => void;
       let handshakeSettled = false;
       const handshake = new Promise<JsonObject>((resolvePromise, rejectPromise) => { resolveHandshake = resolvePromise; rejectHandshake = rejectPromise; });
+      void handshake.catch(() => undefined); // a malformed frame may arrive before the stdin write callback
       const finishHandshake = (error?: CodexProviderError, value?: JsonObject): void => {
         if (handshakeSettled) return;
         handshakeSettled = true;
@@ -297,6 +370,7 @@ export class CodexAppServerProvider implements A3AgentProvider {
       };
       const timer = setTimeout(() => finishHandshake(new CodexProviderError('HANDSHAKE_TIMEOUT')), this.handshakeTimeoutMs);
       const receive = (value: unknown): void => {
+        if (handshakeSettled) { this.receiveProtocol(value, connectionId); return; }
         if (!isObject(value)) { finishHandshake(new CodexProviderError('UNEXPECTED_HANDSHAKE_MESSAGE')); return; }
         if (value.id !== 0 || ('method' in value) || (!('result' in value) && !('error' in value))) {
           finishHandshake(new CodexProviderError('UNEXPECTED_HANDSHAKE_MESSAGE')); return;
@@ -328,7 +402,8 @@ export class CodexAppServerProvider implements A3AgentProvider {
       return { providerId: this.providerId, protocolInitialized: true, artifactVersion: binary.version };
     } catch (error) {
       this.stateValue = 'stopping';
-      await this.terminate(child).catch(() => undefined);
+      try { await this.terminate(child); }
+      catch { throw new CodexProviderError('PROCESS_STOP_TIMEOUT'); }
       if (this.child === child) this.child = undefined;
       this.stateValue = 'stopped';
       throw error instanceof CodexProviderError ? error : new CodexProviderError('SPAWN_FAILED');

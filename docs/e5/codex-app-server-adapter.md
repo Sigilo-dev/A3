@@ -1,5 +1,7 @@
 # E5-C1 · Codex app-server session adapter
 
+Evidencia histórica de E5-C1 (`dfef97c`). Continuación del transporte y las sesiones: [E5-C2](resumable-turns.md) y [ADR 0022](../adr/0022-resumable-codex-turns.md).
+
 ## Contrato aplicado
 
 La implementación usa el contrato oficial de app-server: JSON-RPC 2.0 sobre JSONL por `stdio`, con la cabecera `jsonrpc` omitida en el transporte. Cada petición incluye `method`, `params` e `id`; la respuesta correlaciona el ID. El cliente manda un único `initialize` por conexión y, solo si recibe un resultado válido, responde con la notificación `initialized`. A3 no envía `thread/start`, `turn/start` ni solicitudes de herramientas en este bloque. La documentación oficial indica que los esquemas generados son específicos de la versión exacta de Codex ejecutada y no publica una versión independiente del protocolo.
