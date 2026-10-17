@@ -161,6 +161,7 @@ export type ShellResult<T> =
   | { ok: false; error: { code: 'PERMISSION_DENIED' | 'IO_FAILED'; message: string; recovery: string } };
 
 export interface DesktopAPI {
+  github(request: import('./github-publishing').GithubRequest): Promise<import('./github-publishing').GithubResult>;
   git(request: import('./git-operations').GitRequest): Promise<import('./git-operations').GitResult>;
   agentProfiles(request: import('./agent-profiles').AgentProfilesRequest): Promise<import('./agent-profiles').AgentProfilesResult>;
   codexAuthorization(request: import('./codex-auth').CodexAuthRequest): Promise<import('./codex-auth').CodexAuthResult>;

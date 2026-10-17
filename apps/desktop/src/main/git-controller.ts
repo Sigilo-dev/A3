@@ -8,6 +8,12 @@ import { LocalGitVersions } from './git-versions.ts';
 export class GitProjectController {
   private active?: { sessionId: string; service: Promise<LocalGitVersions> };
   constructor(private readonly manager: LocalProjectManager, private readonly broker: ProjectCapabilityBroker, private readonly actor: Actor, private readonly getWindow: () => BrowserWindow | null) {}
+  async publishingSource(sessionId: string): Promise<{ snapshot(): ReturnType<LocalGitVersions['publishingSnapshot']>; pack(head: string): Promise<Buffer> }> {
+    const loaded = await this.handle({ action: 'load', sessionId }); if (!loaded.ok) throw new GitStatusError(loaded.error.code);
+    const active = this.active; if (!active || active.sessionId !== sessionId) throw new GitStatusError('stale-session');
+    const service = await active.service;
+    return { snapshot: () => service.publishingSnapshot(), pack: (head) => service.publishingPack(head) };
+  }
   async handle(input: unknown): Promise<GitResult> {
     if (!validGitRequest(input)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Solicitud Git inválida.' } };
     try {

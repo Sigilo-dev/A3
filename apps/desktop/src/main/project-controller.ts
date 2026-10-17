@@ -16,6 +16,7 @@ import { validPlanningRequest, type PlanningResult } from '../shared/planning';
 import { validMemorySearchRequest, type MemorySearchResult } from '../shared/memory-search';
 import { createProjectCapabilityBroker, LocalProjectManager, LocalProjectError } from '@a3/project-store';
 import { GitProjectController } from './git-controller';
+import { GithubProjectController } from './github-controller';
 import type { CanvasContentRequest, CanvasContentResult, CanvasExportRequest, CanvasExportResult, CanvasMermaidImportResult, CanvasPlantUmlImportResult, CanvasPlantUmlResult, CanvasStyleResult, CanvasStructurizrImportResult, CanvasRequest, CanvasResult, CodeRequest, CodeResult, FileDropStageResult, FilesRequest, FilesResult, GalleryRequest, GalleryResult, MarkdownRequest, MarkdownResult, ProjectsRequest, ProjectsResult } from '../shared/desktop-api';
 import { validAgentProfilesRequest, type AgentProfilesResult } from '../shared/agent-profiles';
 import { validViewport } from '../shared/world-viewport';
@@ -587,10 +588,12 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
         message: error instanceof Error ? error.message : 'No se pudo pegar el contenido.', recovery: 'El portapapeles no se modificó y el lienzo permanece intacto.' } };
     }
   };
+  const git = new GitProjectController(manager, capabilities, authenticatedActor, getWindow);
+  const github = new GithubProjectController(stateDirectory, manager, capabilities, authenticatedActor, getWindow, git);
   return {
     manager,
     capabilities,
-    git: new GitProjectController(manager, capabilities, authenticatedActor, getWindow),
+    git, github,
     async handleAgentProfiles(value: unknown): Promise<AgentProfilesResult> {
       if (!validAgentProfilesRequest(value)) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'La solicitud de perfil de agente no es válida.', recovery: 'Vuelve a cargar Preferencias del proyecto.' } };
       try {
@@ -798,7 +801,7 @@ export function createProjectController(stateDirectory: string, getWindow: () =>
       const switching = ['restore', 'open', 'recent', 'relocate', 'confirm', 'close'].includes(value.action);
       if (switching) mediaProjectTransitions++;
       try {
-        if (switching) await avConversions.cancelAll();
+        if (switching) { github.cancelAll(); await avConversions.cancelAll(); }
         switch (value.action) {
           case 'list': return { ok: true, value: await manager.getState() };
           case 'restore': return { ok: true, value: await manager.restoreLastProject() };

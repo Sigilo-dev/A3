@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { lstat, readFile, realpath, readdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { GIT_STATUS_EXCLUSIONS } from './git-status-policy.ts';
 import { protectedGitPath, validGitRelativePath } from './git-status-policy.ts';
+import { githubDestination } from './github-api.ts';
 
 /** Verified system installation only; A3 neither downloads nor redistributes Git in E6-A1. */
 export const GIT_STATUS_ENGINE = Object.freeze({
@@ -36,22 +37,30 @@ export function gitEnvironment(cwd: string): NodeJS.ProcessEnv {
 }
 
 /** Private fixed-command runner, never an IPC method or a generic command API. */
-async function run(executable: string, args: readonly string[], cwd: string, signal?: AbortSignal, options: { indexFile?: string; input?: Uint8Array } = {}): Promise<Buffer> {
+async function run(executable: string, args: readonly string[], cwd: string, signal?: AbortSignal, options: { indexFile?: string; input?: Uint8Array; publishing?: boolean; token?: string } = {}): Promise<Buffer> {
   if (signal?.aborted) throw new GitStatusError('cancelled');
   return new Promise((accept, reject) => {
     const env = gitEnvironment(cwd); if (options.indexFile) env.GIT_INDEX_FILE = options.indexFile;
+    if (options.token) {
+      env.GIT_CONFIG_COUNT = '1'; env.GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraHeader';
+      env.GIT_CONFIG_VALUE_0 = 'Authorization: Basic ' + Buffer.from('x-access-token:' + options.token).toString('base64');
+    }
     const child = spawn(executable, [...args], { cwd, shell: false, windowsHide: true, env, stdio: ['pipe', 'pipe', 'pipe'] });
     child.stdin.on('error', () => undefined); child.stdin.end(options.input);
     let total = 0, failure: GitStatusError | undefined;
     const chunks: Buffer[] = [];
-    const stop = (code: string): void => { failure ??= new GitStatusError(code); child.kill(); };
+    const stop = (code: string): void => { if (failure) return; failure = new GitStatusError(code);
+      if (options.publishing && process.platform === 'win32' && child.pid) {
+        const killer = spawn(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, shell: false, stdio: 'ignore' }); killer.on('error', () => child.kill()); killer.on('close', (result) => { if (result !== 0) child.kill(); });
+      } else child.kill();
+    };
     const abort = (): void => stop('cancelled');
-    const timer = setTimeout(() => stop('timeout'), 10_000);
+    const timer = setTimeout(() => stop('timeout'), options.publishing ? 60000 : 10_000);
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
-    child.stdout.on('data', (chunk: Buffer) => { total += chunk.length; if (total > 8 * 1024 * 1024) stop('output-limit'); else chunks.push(chunk); });
+    child.stdout.on('data', (chunk: Buffer) => { total += chunk.length; if (total > (options.publishing ? 64 : 8) * 1024 * 1024) stop('output-limit'); else chunks.push(chunk); });
     // Provider diagnostics/configuration may contain credentials. Never return or log stderr.
-    child.stderr.on('data', (chunk: Buffer) => { total += chunk.length; if (total > 8 * 1024 * 1024) stop('output-limit'); });
+    child.stderr.on('data', (chunk: Buffer) => { total += chunk.length; if (total > (options.publishing ? 64 : 8) * 1024 * 1024) stop('output-limit'); });
     child.once('error', (error: NodeJS.ErrnoException) => { failure ??= new GitStatusError(error.code === 'ENOENT' ? 'not-installed' : 'failed'); });
     child.once('close', (code) => {
       clearTimeout(timer); signal?.removeEventListener('abort', abort);
@@ -71,9 +80,11 @@ export type GitVersionCommand =
   | { kind: 'commit-object'; tree: string; parent: string | null; message: string; name: string; email: string; indexFile: string }
   | { kind: 'publish'; branch: string; previous: string | null; next: string }
   | { kind: 'branch'; branch: string; current: string; head: string }
+  | { kind: 'objects' | 'pack'; oid: string }
+  | { kind: 'object-batch'; oids: readonly string[] }
   | { kind: 'branches' | 'log' };
 export function validGitBranch(branch: string): boolean {
-  return typeof branch === 'string' && /^(?![-/])(?!.*(?:\.\.|\/\/|@\{|\.lock(?:\/|$)))[\p{L}\p{N}_./-]{1,120}$/u.test(branch) && branch.split('/').every((part) => !part.startsWith('.') && !part.endsWith('.'));
+  return typeof branch === 'string' && /^(?![-/])(?!.*(?:\.\.|\/\/|@\{|\.lock(?:\/|$)))[\p{L}\p{N}_./-]{1,120}$/u.test(branch) && branch.split('/').every((part) => !!part && !part.startsWith('.') && !part.endsWith('.'));
 }
 export function secretLike(text: string): boolean {
   return /(?:-----BEGIN (?:[\w ]+ )?PRIVATE KEY-----|\b(?:sk-[\w-]{16,}|gh[pousr]_[\w]{20,}|github_pat_[\w]{20,})\b|(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|authorization)\s*[:=]\s*["']?[^\s"']{4,})/i.test(text);
@@ -87,7 +98,7 @@ export async function runGitVersionCommand(binary: VerifiedGitBinary, cwd: strin
   const path = (value: string): string => { if (!validGitRelativePath(value) || protectedGitPath(value)) throw new GitStatusError('protected-path'); return value; };
   const oid = (value: string): string => { if (!/^[a-f0-9]{40}$/.test(value)) throw new GitStatusError('invalid-object'); return value; };
   const ref = (value: string): string => { if (!validGitBranch(value)) throw new GitStatusError('invalid-branch'); return `refs/heads/${value}`; };
-  const options: { indexFile?: string; input?: Uint8Array } = {};
+  const options: { indexFile?: string; input?: Uint8Array; publishing?: boolean } = {};
   if ('indexFile' in command) {
     if (!isAbsolute(command.indexFile) || dirname(command.indexFile) !== join(cwd, '.git') || !/^a3-index-[a-f0-9-]{36}$/.test(command.indexFile.split(/[\\/]/).at(-1)!)) throw new GitStatusError('invalid-index');
     options.indexFile = command.indexFile;
@@ -110,9 +121,40 @@ export async function runGitVersionCommand(binary: VerifiedGitBinary, cwd: strin
     case 'branch': args = ['update-ref', '--no-deref', '--stdin']; options.input = Buffer.from(`start\nverify ${ref(command.current)} ${oid(command.head)}\ncreate ${ref(command.branch)} ${oid(command.head)}\nprepare\ncommit\n`); break;
     case 'branches': args = ['for-each-ref', '--format=%(refname:short)%00%(objectname)', 'refs/heads/']; break;
     case 'log': args = ['log', '-30', '--format=%H%x00%s', '--no-decorate']; break;
+    case 'objects': args = ['rev-list', '--objects', '--no-object-names', oid(command.oid)]; break;
+    case 'object-batch':
+      if (!command.oids.length || command.oids.length > 5000) throw new GitStatusError('output-limit');
+      args = ['cat-file', '--batch']; options.input = Buffer.from(command.oids.map(oid).join('\n') + '\n'); options.publishing = true; break;
+    case 'pack': args = ['pack-objects', '--stdout', '--revs']; options.input = Buffer.from(oid(command.oid) + '\n'); options.publishing = true; break;
   }
   return run(binary.path, [...safe, ...args], cwd, undefined, options);
 }
+
+export const GITHUB_HTTPS_HELPER = Object.freeze({ bytes: 2589600, sha256: '937b7b8f2f9c0b37a47c141714abf249f9a497127880cffd4182ca7813c4b57d' });
+const githubStaging = new Map<string, { identity: string; config: string }>();
+/** Only a newly generated, host-owned bare repository is used for remote transport. */
+export async function runGithubStaging(binary: VerifiedGitBinary, staging: string, operation: { kind: 'init' } | { kind: 'unpack'; pack: Uint8Array } | { kind: 'push'; url: string; oid: string; branch: string; token: string }, signal?: AbortSignal): Promise<void> {
+  await validateGitBinary(binary);
+  const stat = await lstat(staging);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !samePath(await realpath(staging), resolve(staging))) throw new GitStatusError('invalid-staging');
+  const identity = `${stat.dev}:${stat.ino}`;
+  if (operation.kind === 'init') {
+    if ((await readdir(staging)).length) throw new GitStatusError('invalid-staging');
+    await run(binary.path, ['init', '--bare', '--template='], staging, signal);
+    githubStaging.set(staging, { identity, config: sha256(await readFile(join(staging, 'config'))) }); return;
+  }
+  const registered = githubStaging.get(staging);
+  if (!registered || registered.identity !== identity || registered.config !== sha256(await readFile(join(staging, 'config')))) throw new GitStatusError('invalid-staging');
+  const args = ['--no-pager', '-c', 'core.hooksPath=/dev/null', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false'];
+  if (operation.kind === 'unpack') { await run(binary.path, [...args, 'unpack-objects', '--strict'], staging, signal, { input: operation.pack, publishing: true }); return; }
+  const destination = githubDestination(operation.url);
+  if (!validGitBranch(operation.branch) || !/^[a-f0-9]{40}$/.test(operation.oid) || !/^[A-Za-z0-9_]{20,256}$/.test(operation.token)) throw new GitStatusError('invalid-destination');
+  const helper = join(dirname(binary.path), '../libexec/git-core/git-remote-https.exe'), helperStat = await lstat(helper);
+  if (!helperStat.isFile() || helperStat.isSymbolicLink() || helperStat.size !== GITHUB_HTTPS_HELPER.bytes || sha256(await readFile(helper)) !== GITHUB_HTTPS_HELPER.sha256) throw new GitStatusError('unverified-https-helper');
+  await run(binary.path, [...args, '-c', 'credential.helper=', '-c', 'http.followRedirects=false', '-c', 'http.proxy=', '-c', 'http.sslVerify=true', '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
+    'push', '--porcelain', '--no-verify', '--no-follow-tags', '--recurse-submodules=no', destination.url, `${operation.oid}:refs/heads/${operation.branch}`], staging, signal, { token: operation.token, publishing: true });
+}
+export function forgetGithubStaging(root: string): void { githubStaging.delete(root); }
 
 export async function validateGitBinary(binary: VerifiedGitBinary): Promise<void> {
   if (!verified.has(binary)) throw new GitStatusError('unverified-binary');

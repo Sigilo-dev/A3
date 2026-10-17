@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { LocalProjectSession } from '../../shared/desktop-api';
 import type { GitApplied, GitProjectView, GitRequest, GitReviewInput, GitReviewView } from '../../shared/git-operations';
+import { GithubPublishingPanel } from './GithubPublishingPanel';
 
 export function GitPanel({ active, onChanged }: { active: LocalProjectSession | null; onChanged(): void }): React.JSX.Element {
   const [view, setView] = useState<GitProjectView | null>(null), [review, setReview] = useState<GitReviewView | null>(null);
@@ -81,5 +82,6 @@ export function GitPanel({ active, onChanged }: { active: LocalProjectSession | 
       {receipt?.snapshotId && <p role="status">Punto de retorno: <code data-git-snapshot>{receipt.snapshotId}</code> <button type="button" disabled={busy || !!review} onClick={() => prepare({ kind: 'undo-restore', undoToken: receipt.undoToken })}>Revisar retorno</button></p>}
     </>}
     {notice && <p role="status" data-git-notice>{notice}</p>}{error && <p role="alert" data-git-error>{error}</p>}
+    {active && <GithubPublishingPanel key={active.sessionId} active={active} />}
   </section>;
 }

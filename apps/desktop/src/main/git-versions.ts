@@ -5,6 +5,7 @@ import type { GitApplied, GitProjectView, GitReviewInput, GitReviewView, GitDiff
 import { GitStatusError, runGitVersionCommand, secretLike, validGitBranch, type GitInstallation, type GitVersionCommand, type VerifiedGitBinary } from './git-process.ts';
 import { LocalGitStatusAdapter, type HostGitRepository } from './git-status.ts';
 import { protectedGitPath, validGitRelativePath } from './git-status-policy.ts';
+import { inspectPublishingHistory } from './github-history.ts';
 
 export type LocalGitCapability = 'git.status' | 'git.diff' | 'git.stage' | 'git.commit' | 'git.restore' | 'git.branch';
 export interface GitRestoreFile { path: string; bytes: Uint8Array | null; expectedHash: string | null; }
@@ -104,6 +105,18 @@ export class LocalGitVersions {
     return { root: this.repository.root, status, branches, log };
   }); }
   cancel(token: string): void { this.reviews.delete(token); }
+  publishingSnapshot(): Promise<{ head: string; branch: string; files: { path: string; bytes: number }[]; bytes: number; objects: number }> { return this.serial(async () => {
+    await this.allow('git.diff'); await this.quiet(); const status = await this.status();
+    need(status.head && status.branch && !status.entries.some((entry) => entry.kind === 'unmerged') && status.excludedTrackedCount === 0, 'publishing-not-ready');
+    const oids = text(await this.run({ kind: 'objects', oid: status.head! })).trim().split('\n'); need(oids.length <= 5000, 'history-limit');
+    const result = inspectPublishingHistory(await this.run({ kind: 'object-batch', oids }), oids, status.head!);
+    const after = await this.status(); need(after.head === status.head && after.branch === status.branch, 'review-conflict');
+    return { head: status.head!, branch: status.branch!, ...result };
+  }); }
+  publishingPack(head: string): Promise<Buffer> { return this.serial(async () => {
+    await this.allow('git.diff'); await this.quiet(); const status = await this.status(); need(status.head === head, 'review-conflict');
+    return this.run({ kind: 'pack', oid: head });
+  }); }
   review(input: GitReviewInput): Promise<GitReviewView> { return this.serial(async () => {
     await this.allow(capability(input.kind)); await this.allow('git.diff'); await this.quiet();
     const status = await this.status(); need(!status.entries.some((entry) => entry.kind === 'unmerged'), 'unresolved-conflict');

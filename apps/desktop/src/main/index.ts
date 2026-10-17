@@ -16,6 +16,7 @@ import { ManualChatController } from './manual-chat';
 import { CODEX_AUTH_CHANNEL } from '../shared/codex-auth';
 import { AGENT_PROFILES_CHANNEL } from '../shared/agent-profiles';
 import { GIT_OPERATIONS_CHANNEL } from '../shared/git-operations';
+import { GITHUB_CHANNEL } from '../shared/github-publishing';
 import { CodexAuthorization } from './codex-authorization';
 import { SystemCredentialVault } from './codex-credential-vault';
 import { CodexAppServerProvider } from './codex-app-server';
@@ -53,6 +54,7 @@ async function finishQuit(): Promise<void> {
       }
     }
     if (manualChat && !await manualChat.confirmQuit()) return;
+    projects?.github.dispose();
     await projects?.imageConversions.cancelAll();
     await projects?.avConversions.cancelAll();
     await codexTurns?.shutdown();
@@ -185,6 +187,11 @@ async function startDesktop(): Promise<void> {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
         !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'Git local solo está disponible en la ventana A3 autorizada.' } };
     return projects.git.handle(args[0]);
+  });
+  ipcMain.handle(GITHUB_CHANNEL, (event, ...args: unknown[]) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
+        !isShellDocument(event.senderFrame.url, url) || args.length !== 1 || !projects || closing || quitting) return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'GitHub solo está disponible en la ventana A3 autorizada.' } };
+    return projects.github.handle(args[0]);
   });
   ipcMain.handle(MANUAL_CHAT_CHANNEL, (event, ...args: unknown[]) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame ||
@@ -350,7 +357,7 @@ async function startDesktop(): Promise<void> {
 
 app.on('before-quit', (event) => { if (!quitting) { event.preventDefault(); void finishQuit(); } });
 app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => { codexAuthorization?.dispose(); ipcMain.removeHandler(CODEX_AUTH_CHANNEL); ipcMain.removeHandler(GIT_OPERATIONS_CHANNEL); manualChat?.dispose(); ipcMain.removeHandler(MANUAL_CHAT_CHANNEL); ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(GALLERY_CHANNEL); ipcMain.removeHandler(IMAGE_CONVERSION_CHANNEL); ipcMain.removeHandler(AV_CONVERSION_CHANNEL); ipcMain.removeHandler(VARIABLES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); ipcMain.removeHandler(NAVIGATION_CHANNEL); });
+app.on('will-quit', () => { codexAuthorization?.dispose(); ipcMain.removeHandler(CODEX_AUTH_CHANNEL); ipcMain.removeHandler(GIT_OPERATIONS_CHANNEL); ipcMain.removeHandler(GITHUB_CHANNEL); projects?.github.dispose(); manualChat?.dispose(); ipcMain.removeHandler(MANUAL_CHAT_CHANNEL); ipcMain.removeHandler(APP_INFO_CHANNEL); ipcMain.removeHandler(PROJECTS_CHANNEL); ipcMain.removeHandler(FILES_CHANNEL); ipcMain.removeHandler(GALLERY_CHANNEL); ipcMain.removeHandler(IMAGE_CONVERSION_CHANNEL); ipcMain.removeHandler(AV_CONVERSION_CHANNEL); ipcMain.removeHandler(VARIABLES_CHANNEL); ipcMain.removeHandler(CANVAS_CHANNEL); ipcMain.removeHandler(MARKDOWN_CHANNEL); ipcMain.removeHandler(CODE_CHANNEL); ipcMain.removeHandler(DROP_STAGE_CHANNEL); ipcMain.removeHandler(WORKSPACE_SESSION_CHANNEL); ipcMain.removeHandler(NAVIGATION_CHANNEL); });
 process.on('uncaughtException', fatalStartup);
 process.on('unhandledRejection', fatalStartup);
 void app.whenReady().then(() => { if (primaryInstance) return startDesktop(); }).catch(fatalStartup);

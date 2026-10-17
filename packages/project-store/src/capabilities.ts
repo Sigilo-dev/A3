@@ -94,10 +94,10 @@ const profileModes: Record<Profile, Partial<Record<Capability, GrantMode>>> = {
   personalizado: { 'project.read': 'deny' }
 };
 // E0-C2 did not verify OS process isolation, network confinement, package execution,
-// or arbitrary helpers. E6-A2 exposes only fixed, reviewed local Git operations.
+// or arbitrary helpers. Git is limited to fixed local commands (E6-A2) and the
+// reviewed GitHub-only publishing transport (E6-B1), never generic network access.
 const unavailable = new Set<Capability>([
-  'mount.write', 'process.run', 'network.access', 'apps.connect', 'package.install',
-  'git.push'
+  'mount.write', 'process.run', 'network.access', 'apps.connect', 'package.install'
 ]);
 const known = new Set<string>(CAPABILITIES);
 const trustedBrokers = new WeakSet<object>();
@@ -116,6 +116,7 @@ function safeOperation(value: string): string {
   if (value === 'mount.revoke') return value;
   if (value === 'policy.revoke') return value;
   if (value === 'media.convert') return value;
+  if (value === 'github.publish') return value;
   if (/^git\.(status|diff|stage|commit|branch|restore)$/.test(value)) return value;
   for (const prefix of ['snapshot.create:', 'project.maintenance:', 'resource.write:', 'journal.recovery:']) {
     if (new RegExp(`^${prefix.replaceAll('.', '\\.')} ${uuid}$`.replace(' ', ''), 'i').test(value)) return `${prefix}<operation-id>`;

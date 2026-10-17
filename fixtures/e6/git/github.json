@@ -1,0 +1,7 @@
+{
+  "account": { "id": 7001, "login": "a3-fixture" },
+  "repository": { "id": 8001, "fullName": "a3-fixture/project", "visibility": "private", "canPush": true },
+  "url": "https://github.com/a3-fixture/project.git",
+  "branch": "main",
+  "apiVersion": "2026-03-10"
+}
