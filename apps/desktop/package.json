@@ -26,6 +26,8 @@
     "test:chat": "node test/run-manual-chat.mjs",
     "test:auth": "node --experimental-strip-types --experimental-transform-types --test test/codex-authorization.test.mjs",
     "test:auth:smoke": "node test/run-codex-authorization.mjs",
+    "test:codex:app-server": "node --experimental-strip-types --experimental-transform-types --test test/codex-app-server.test.mjs",
+    "test:codex:app-server:smoke": "node --experimental-strip-types --experimental-transform-types test/run-codex-app-server.mjs",
     "test:memory": "node test/run-memory-search.mjs",
     "test:images:smoke": "node test/run-image-conversion.mjs",
     "test:images:packaged": "node scripts/verify-image-engine.mjs --packaged && node test/run-image-conversion.mjs --packaged",
